@@ -1396,44 +1396,154 @@
   const PLANO_CONTAS_PADRAO = [
     {codigo:'1', nome:'ATIVO', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'1.1', nome:'ATIVO CIRCULANTE', tipo:'Sintética', natureza:'Devedora'},
-    {codigo:'1.1.1', nome:'Caixa', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.1.2', nome:'Bancos Conta Movimento', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.1.3', nome:'Clientes (Contas a Receber)', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.1.4', nome:'Estoques', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.1.5', nome:'Impostos a Recuperar', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.1.01', nome:'Disponibilidades', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.01.001', nome:'Disponibilidades', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.01.001.0001', nome:'Caixa', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.1.01.001.0002', nome:'Bancos Conta Movimento', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.1.02', nome:'Créditos', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.02.001', nome:'Clientes', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.02.001.0001', nome:'Clientes (Contas a Receber)', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.1.03', nome:'Estoques', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.03.001', nome:'Estoques', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.03.001.0001', nome:'Estoques', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.1.04', nome:'Impostos a Recuperar', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.04.001', nome:'Impostos a Recuperar', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.04.001.0001', nome:'Impostos a Recuperar', tipo:'Analítica', natureza:'Devedora'},
     {codigo:'1.2', nome:'ATIVO NÃO CIRCULANTE', tipo:'Sintética', natureza:'Devedora'},
-    {codigo:'1.2.1', nome:'Realizável a Longo Prazo', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.2.2', nome:'Investimentos', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.2.3', nome:'Imobilizado', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.2.4', nome:'Intangível', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.2.01', nome:'Realizável a Longo Prazo', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.01.001', nome:'Realizável a Longo Prazo', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.01.001.0001', nome:'Realizável a Longo Prazo', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.2.02', nome:'Investimentos', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.02.001', nome:'Investimentos', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.02.001.0001', nome:'Investimentos', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.2.03', nome:'Imobilizado', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.03.001', nome:'Imobilizado', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.03.001.0001', nome:'Imobilizado', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.2.04', nome:'Intangível', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.04.001', nome:'Intangível', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.2.04.001.0001', nome:'Intangível', tipo:'Analítica', natureza:'Devedora'},
     {codigo:'2', nome:'PASSIVO', tipo:'Sintética', natureza:'Credora'},
     {codigo:'2.1', nome:'PASSIVO CIRCULANTE', tipo:'Sintética', natureza:'Credora'},
-    {codigo:'2.1.1', nome:'Fornecedores', tipo:'Analítica', natureza:'Credora'},
-    {codigo:'2.1.2', nome:'Obrigações Trabalhistas', tipo:'Analítica', natureza:'Credora'},
-    {codigo:'2.1.3', nome:'Obrigações Tributárias', tipo:'Analítica', natureza:'Credora'},
-    {codigo:'2.1.4', nome:'Empréstimos e Financiamentos', tipo:'Analítica', natureza:'Credora'},
-    {codigo:'2.1.9', nome:'Conta a Classificar (Importação OFX)', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'2.1.01', nome:'Fornecedores', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.01.001', nome:'Fornecedores', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.01.001.0001', nome:'Fornecedores', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'2.1.02', nome:'Obrigações Trabalhistas', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.02.001', nome:'Obrigações Trabalhistas', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.02.001.0001', nome:'Obrigações Trabalhistas', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'2.1.03', nome:'Obrigações Tributárias', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.03.001', nome:'Obrigações Tributárias', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.03.001.0001', nome:'Obrigações Tributárias', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'2.1.04', nome:'Empréstimos e Financiamentos', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.04.001', nome:'Empréstimos e Financiamentos', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.04.001.0001', nome:'Empréstimos e Financiamentos', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'2.1.09', nome:'Conta a Classificar', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.09.001', nome:'Conta a Classificar', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'2.1.09.001.0001', nome:'Conta a Classificar (Importação OFX)', tipo:'Analítica', natureza:'Credora'},
     {codigo:'2.2', nome:'PASSIVO NÃO CIRCULANTE', tipo:'Sintética', natureza:'Credora'},
     {codigo:'3', nome:'PATRIMÔNIO LÍQUIDO', tipo:'Sintética', natureza:'Credora'},
-    {codigo:'3.1', nome:'Capital Social', tipo:'Analítica', natureza:'Credora'},
-    {codigo:'3.2', nome:'Reservas de Lucros', tipo:'Analítica', natureza:'Credora'},
-    {codigo:'3.3', nome:'Lucros/Prejuízos Acumulados', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'3.1', nome:'Capital Social', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.1.01', nome:'Capital Social', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.1.01.001', nome:'Capital Social', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.1.01.001.0001', nome:'Capital Social', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'3.2', nome:'Reservas de Lucros', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.2.01', nome:'Reservas de Lucros', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.2.01.001', nome:'Reservas de Lucros', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.2.01.001.0001', nome:'Reservas de Lucros', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'3.3', nome:'Lucros/Prejuízos Acumulados', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.3.01', nome:'Lucros/Prejuízos Acumulados', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.3.01.001', nome:'Lucros/Prejuízos Acumulados', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'3.3.01.001.0001', nome:'Lucros/Prejuízos Acumulados', tipo:'Analítica', natureza:'Credora'},
     {codigo:'4', nome:'RECEITAS', tipo:'Sintética', natureza:'Credora'},
-    {codigo:'4.1', nome:'Receita Bruta de Vendas/Serviços', tipo:'Analítica', natureza:'Credora'},
-    {codigo:'4.2', nome:'(-) Deduções da Receita', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'4.1', nome:'Receita Bruta de Vendas/Serviços', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'4.1.01', nome:'Receita Bruta de Vendas/Serviços', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'4.1.01.001', nome:'Receita Bruta de Vendas/Serviços', tipo:'Sintética', natureza:'Credora'},
+    {codigo:'4.1.01.001.0001', nome:'Receita de Vendas de Mercadorias', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'4.1.01.001.0002', nome:'Receita de Prestação de Serviços', tipo:'Analítica', natureza:'Credora'},
+    {codigo:'4.2', nome:'(-) Deduções da Receita', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'4.2.01', nome:'(-) Deduções da Receita', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'4.2.01.001', nome:'(-) Deduções da Receita', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'4.2.01.001.0001', nome:'(-) Deduções da Receita', tipo:'Analítica', natureza:'Devedora'},
     {codigo:'5', nome:'CUSTOS', tipo:'Sintética', natureza:'Devedora'},
-    {codigo:'5.1', nome:'Custo das Mercadorias/Serviços Vendidos', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'5.1', nome:'Custo das Mercadorias/Serviços Vendidos', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'5.1.01', nome:'Custo das Mercadorias/Serviços Vendidos', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'5.1.01.001', nome:'Custo das Mercadorias/Serviços Vendidos', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'5.1.01.001.0001', nome:'Custo das Mercadorias/Serviços Vendidos', tipo:'Analítica', natureza:'Devedora'},
     {codigo:'6', nome:'DESPESAS', tipo:'Sintética', natureza:'Devedora'},
-    {codigo:'6.1', nome:'Despesas Administrativas', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'6.2', nome:'Despesas Comerciais', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'6.3', nome:'Despesas Financeiras', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'6.4', nome:'Despesas Tributárias', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.1', nome:'Despesas Administrativas', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.1.01', nome:'Despesas Administrativas', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.1.01.001', nome:'Despesas Administrativas', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.1.01.001.0001', nome:'Aluguel', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.1.01.001.0002', nome:'Água e Esgoto', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.1.01.001.0003', nome:'Energia Elétrica', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.1.01.001.0004', nome:'Telefone e Internet', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.1.01.001.0005', nome:'Material de Escritório', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.1.01.001.0006', nome:'Depreciação', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.1.01.001.0007', nome:'Honorários Contábeis', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.2', nome:'Despesas Comerciais', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.2.01', nome:'Despesas Comerciais', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.2.01.001', nome:'Despesas Comerciais', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.2.01.001.0001', nome:'Propaganda e Publicidade', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.2.01.001.0002', nome:'Comissões sobre Vendas', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.2.01.001.0003', nome:'Fretes e Carretos', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.3', nome:'Despesas Financeiras', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.3.01', nome:'Despesas Financeiras', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.3.01.001', nome:'Despesas Financeiras', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.3.01.001.0001', nome:'Juros Passivos', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.3.01.001.0002', nome:'Tarifas Bancárias', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.3.01.001.0003', nome:'IOF', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.4', nome:'Despesas Tributárias', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.4.01', nome:'Despesas Tributárias', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.4.01.001', nome:'Despesas Tributárias', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.4.01.001.0001', nome:'Despesas Tributárias', tipo:'Analítica', natureza:'Devedora'},
     {codigo:'6.5', nome:'DESPESAS COM PESSOAL', tipo:'Sintética', natureza:'Devedora'},
-    {codigo:'6.5.1', nome:'Salários e Ordenados', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'6.5.2', nome:'Férias', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'6.5.3', nome:'Rescisões Contratuais', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'6.5.4', nome:'Encargos Sociais (INSS/FGTS Patronal)', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.5.01', nome:'Salários e Ordenados', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.01.001', nome:'Salários e Ordenados', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.01.001.0001', nome:'Salários e Ordenados', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.5.02', nome:'Férias', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.02.001', nome:'Férias', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.02.001.0001', nome:'Férias', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.5.03', nome:'Rescisões Contratuais', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.03.001', nome:'Rescisões Contratuais', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.03.001.0001', nome:'Rescisões Contratuais', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.5.04', nome:'Encargos Sociais (INSS/FGTS Patronal)', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.04.001', nome:'Encargos Sociais (INSS/FGTS Patronal)', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.04.001.0001', nome:'Encargos Sociais (INSS/FGTS Patronal)', tipo:'Analítica', natureza:'Devedora'},
   ];
+
+  // Migração: mapeia os códigos antigos (sem máscara) do plano de contas padrão para os
+  // novos códigos mascarados (sintética até 4 segmentos, analítica com 5 segmentos). Usado
+  // para recodificar contas já existentes, mantendo o mesmo "id" (não quebra lançamentos feitos).
+  const PLANO_CONTAS_MIGRACAO_V3 = [
+    {codigoAntigo:'1.1.1', nome:'Caixa', codigoNovo:'1.1.01.001.0001', contaSuperiorNovo:'1.1.01.001'},
+    {codigoAntigo:'1.1.2', nome:'Bancos Conta Movimento', codigoNovo:'1.1.01.001.0002', contaSuperiorNovo:'1.1.01.001'},
+    {codigoAntigo:'1.1.3', nome:'Clientes (Contas a Receber)', codigoNovo:'1.1.02.001.0001', contaSuperiorNovo:'1.1.02.001'},
+    {codigoAntigo:'1.1.4', nome:'Estoques', codigoNovo:'1.1.03.001.0001', contaSuperiorNovo:'1.1.03.001'},
+    {codigoAntigo:'1.1.5', nome:'Impostos a Recuperar', codigoNovo:'1.1.04.001.0001', contaSuperiorNovo:'1.1.04.001'},
+    {codigoAntigo:'1.2.1', nome:'Realizável a Longo Prazo', codigoNovo:'1.2.01.001.0001', contaSuperiorNovo:'1.2.01.001'},
+    {codigoAntigo:'1.2.2', nome:'Investimentos', codigoNovo:'1.2.02.001.0001', contaSuperiorNovo:'1.2.02.001'},
+    {codigoAntigo:'1.2.3', nome:'Imobilizado', codigoNovo:'1.2.03.001.0001', contaSuperiorNovo:'1.2.03.001'},
+    {codigoAntigo:'1.2.4', nome:'Intangível', codigoNovo:'1.2.04.001.0001', contaSuperiorNovo:'1.2.04.001'},
+    {codigoAntigo:'2.1.1', nome:'Fornecedores', codigoNovo:'2.1.01.001.0001', contaSuperiorNovo:'2.1.01.001'},
+    {codigoAntigo:'2.1.2', nome:'Obrigações Trabalhistas', codigoNovo:'2.1.02.001.0001', contaSuperiorNovo:'2.1.02.001'},
+    {codigoAntigo:'2.1.3', nome:'Obrigações Tributárias', codigoNovo:'2.1.03.001.0001', contaSuperiorNovo:'2.1.03.001'},
+    {codigoAntigo:'2.1.4', nome:'Empréstimos e Financiamentos', codigoNovo:'2.1.04.001.0001', contaSuperiorNovo:'2.1.04.001'},
+    {codigoAntigo:'2.1.9', nome:'Conta a Classificar (Importação OFX)', codigoNovo:'2.1.09.001.0001', contaSuperiorNovo:'2.1.09.001'},
+    {codigoAntigo:'3.1', nome:'Capital Social', codigoNovo:'3.1.01.001.0001', contaSuperiorNovo:'3.1.01.001'},
+    {codigoAntigo:'3.2', nome:'Reservas de Lucros', codigoNovo:'3.2.01.001.0001', contaSuperiorNovo:'3.2.01.001'},
+    {codigoAntigo:'3.3', nome:'Lucros/Prejuízos Acumulados', codigoNovo:'3.3.01.001.0001', contaSuperiorNovo:'3.3.01.001'},
+    {codigoAntigo:'4.1', nome:'Receita Bruta de Vendas/Serviços', codigoNovo:'4.1.01.001.0001', contaSuperiorNovo:'4.1.01.001'},
+    {codigoAntigo:'4.2', nome:'(-) Deduções da Receita', codigoNovo:'4.2.01.001.0001', contaSuperiorNovo:'4.2.01.001'},
+    {codigoAntigo:'5.1', nome:'Custo das Mercadorias/Serviços Vendidos', codigoNovo:'5.1.01.001.0001', contaSuperiorNovo:'5.1.01.001'},
+    {codigoAntigo:'6.1', nome:'Despesas Administrativas', codigoNovo:'6.1.01.001.0001', contaSuperiorNovo:'6.1.01.001'},
+    {codigoAntigo:'6.2', nome:'Despesas Comerciais', codigoNovo:'6.2.01.001.0001', contaSuperiorNovo:'6.2.01.001'},
+    {codigoAntigo:'6.3', nome:'Despesas Financeiras', codigoNovo:'6.3.01.001.0001', contaSuperiorNovo:'6.3.01.001'},
+    {codigoAntigo:'6.4', nome:'Despesas Tributárias', codigoNovo:'6.4.01.001.0001', contaSuperiorNovo:'6.4.01.001'},
+    {codigoAntigo:'6.5.1', nome:'Salários e Ordenados', codigoNovo:'6.5.01.001.0001', contaSuperiorNovo:'6.5.01.001'},
+    {codigoAntigo:'6.5.2', nome:'Férias', codigoNovo:'6.5.02.001.0001', contaSuperiorNovo:'6.5.02.001'},
+    {codigoAntigo:'6.5.3', nome:'Rescisões Contratuais', codigoNovo:'6.5.03.001.0001', contaSuperiorNovo:'6.5.03.001'},
+    {codigoAntigo:'6.5.4', nome:'Encargos Sociais (INSS/FGTS Patronal)', codigoNovo:'6.5.04.001.0001', contaSuperiorNovo:'6.5.04.001'},
+  ];
+
   const HISTORICOS_PADRAO = [
     {codigo:'001', descricao:'Pelo pagamento a fornecedores'},
     {codigo:'002', descricao:'Pelo recebimento de clientes'},
@@ -2000,6 +2110,56 @@
         }
         await Store.set('planocontas_seed_v2', '1', true);
       }
+      // Migração v3: recodifica o plano de contas padrão para a máscara oficial (sintética
+      // até 4 segmentos — X.X.XX.XXX — e analítica com 5 — X.X.XX.XXX.XXXX). Renomeia as contas
+      // já existentes (mantendo o mesmo "id", para não quebrar lançamentos já lançados) e cria
+      // os níveis sintéticos intermediários que ainda não existiam.
+      const marker3 = await Store.get('planocontas_seed_v3', true).catch(()=>null);
+      if(!marker3){
+        for(const m of PLANO_CONTAS_MIGRACAO_V3){
+          const existente = state.planoContas.find(c=>c.codigo===m.codigoAntigo && c.nome===m.nome);
+          if(existente){
+            existente.codigo = m.codigoNovo;
+            existente.contaSuperior = m.contaSuperiorNovo;
+            await Store.set('planocontas:'+existente.id, JSON.stringify(existente), true);
+          }
+        }
+        for(const conta of PLANO_CONTAS_PADRAO){
+          if(!state.planoContas.some(c=>c.codigo===conta.codigo)){
+            const c = Object.assign({id: uid()}, conta);
+            await Store.set('planocontas:'+c.id, JSON.stringify(c), true);
+            state.planoContas.push(c);
+          }
+        }
+        await Store.set('planocontas_seed_v3', '1', true);
+      }
+      // Addendum v4: acrescenta exemplos reais de contas analíticas (Aluguel, Água e Esgoto,
+      // Propaganda, Juros Passivos, etc.) e renomeia as contas-placeholder genéricas que a
+      // versão anterior tinha criado nesses mesmos códigos, para não duplicar.
+      const marker4 = await Store.get('planocontas_seed_v4', true).catch(()=>null);
+      if(!marker4){
+        const RENOMEACOES_V4 = [
+          {codigo:'4.1.01.001.0001', nomeAntigo:'Receita Bruta de Vendas/Serviços', nomeNovo:'Receita de Vendas de Mercadorias'},
+          {codigo:'6.1.01.001.0001', nomeAntigo:'Despesas Administrativas', nomeNovo:'Aluguel'},
+          {codigo:'6.2.01.001.0001', nomeAntigo:'Despesas Comerciais', nomeNovo:'Propaganda e Publicidade'},
+          {codigo:'6.3.01.001.0001', nomeAntigo:'Despesas Financeiras', nomeNovo:'Juros Passivos'},
+        ];
+        for(const r of RENOMEACOES_V4){
+          const existente = state.planoContas.find(c=>c.codigo===r.codigo && c.nome===r.nomeAntigo);
+          if(existente){
+            existente.nome = r.nomeNovo;
+            await Store.set('planocontas:'+existente.id, JSON.stringify(existente), true);
+          }
+        }
+        for(const conta of PLANO_CONTAS_PADRAO){
+          if(!state.planoContas.some(c=>c.codigo===conta.codigo)){
+            const c = Object.assign({id: uid()}, conta);
+            await Store.set('planocontas:'+c.id, JSON.stringify(c), true);
+            state.planoContas.push(c);
+          }
+        }
+        await Store.set('planocontas_seed_v4', '1', true);
+      }
     }catch(e){}
     state.planoContas.sort((a,b)=> (a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
   }
@@ -2142,10 +2302,10 @@
 
   async function gerarLancamentosFolha(folha, funcionario){
     const partidas = [
-      { contaDebito:'6.5.1', contaCredito:'2.1.2', valor: Number(folha.liquido)||0, rotulo:'Salário líquido a pagar' },
-      { contaDebito:'6.5.1', contaCredito:'2.1.3', valor: Number(folha.inss)||0, rotulo:'INSS retido a recolher' },
-      { contaDebito:'6.5.1', contaCredito:'2.1.3', valor: Number(folha.irrf)||0, rotulo:'IRRF retido a recolher' },
-      { contaDebito:'6.5.4', contaCredito:'2.1.3', valor: Number(folha.fgts)||0, rotulo:'FGTS patronal a recolher' },
+      { contaDebito:'6.5.01.001.0001', contaCredito:'2.1.02.001.0001', valor: Number(folha.liquido)||0, rotulo:'Salário líquido a pagar' },
+      { contaDebito:'6.5.01.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(folha.inss)||0, rotulo:'INSS retido a recolher' },
+      { contaDebito:'6.5.01.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(folha.irrf)||0, rotulo:'IRRF retido a recolher' },
+      { contaDebito:'6.5.04.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(folha.fgts)||0, rotulo:'FGTS patronal a recolher' },
     ];
     return gerarLancamentosAutomaticos(folha.clientId, partidas, '011', 'Folha de pagamento — ' + (funcionario?funcionario.nome:'') + ' — ' + monthLabel(folha.competencia) + '/' + folha.competencia.slice(0,4));
   }
@@ -2153,23 +2313,23 @@
   async function gerarLancamentosFerias(ferias, funcionario){
     const totalLiquidoBase = Number(ferias.totalBruto||0) - Number(ferias.inss||0) - Number(ferias.irrf||0);
     const partidas = [
-      { contaDebito:'6.5.2', contaCredito:'2.1.2', valor: totalLiquidoBase, rotulo:'Férias líquidas a pagar' },
-      { contaDebito:'6.5.2', contaCredito:'2.1.3', valor: Number(ferias.inss)||0, rotulo:'INSS sobre férias a recolher' },
-      { contaDebito:'6.5.2', contaCredito:'2.1.3', valor: Number(ferias.irrf)||0, rotulo:'IRRF sobre férias a recolher' },
+      { contaDebito:'6.5.02.001.0001', contaCredito:'2.1.02.001.0001', valor: totalLiquidoBase, rotulo:'Férias líquidas a pagar' },
+      { contaDebito:'6.5.02.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(ferias.inss)||0, rotulo:'INSS sobre férias a recolher' },
+      { contaDebito:'6.5.02.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(ferias.irrf)||0, rotulo:'IRRF sobre férias a recolher' },
     ];
     return gerarLancamentosAutomaticos(ferias.clientId, partidas, '012', 'Férias — ' + (funcionario?funcionario.nome:''));
   }
 
   async function gerarLancamentosRescisao(rescisao, funcionario){
     const partidas = [
-      { contaDebito:'6.5.3', contaCredito:'2.1.2', valor: Number(rescisao.totalLiquido)||0, rotulo:'Verbas rescisórias líquidas a pagar' },
+      { contaDebito:'6.5.03.001.0001', contaCredito:'2.1.02.001.0001', valor: Number(rescisao.totalLiquido)||0, rotulo:'Verbas rescisórias líquidas a pagar' },
     ];
     return gerarLancamentosAutomaticos(rescisao.clientId, partidas, '013', 'Rescisão contratual — ' + (funcionario?funcionario.nome:''));
   }
 
   async function gerarLancamentoImposto(obrigacao){
     const partidas = [
-      { contaDebito:'6.4', contaCredito:'2.1.3', valor: Number(obrigacao.valor)||0, rotulo: obrigacao.categoria||'Imposto' },
+      { contaDebito:'6.4.01.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(obrigacao.valor)||0, rotulo: obrigacao.categoria||'Imposto' },
     ];
     return gerarLancamentosAutomaticos(obrigacao.clientId, partidas, '014', 'Apuração de imposto — ' + (obrigacao.categoria||''));
   }
