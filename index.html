@@ -570,6 +570,7 @@
     rescisoes: [],
     dpTab: 'funcionarios',
     contabilTab: 'plano',
+    contabilEmpresaAtiva: '',
     funcModalData: null,
     folhaCalcData: null,
     feriasCalcData: null,
@@ -2080,7 +2081,7 @@
     await loadRelatoriosFiscais(); render();
   }
 
-  async function loadPlanoContas(){
+  async function _loadPlanoContasInner(){
     state.planoContas = [];
     try{
       const keys = await Store.list('planocontas:', true);
@@ -2204,6 +2205,84 @@
     }catch(e){}
     state.planoContas.sort((a,b)=> (a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
   }
+
+  // Wrapper com trava: evita que chamadas simultâneas de loadPlanoContas (ex.: a página
+  // carregando duas vezes em paralelo) rodem as migrações automáticas ao mesmo tempo e
+  // dupliquem contas — o que já aconteceu antes desta trava existir.
+  let _loadPlanoContasPromise = null;
+  async function loadPlanoContas(){
+    if(_loadPlanoContasPromise) return _loadPlanoContasPromise;
+    _loadPlanoContasPromise = _loadPlanoContasInner().finally(()=>{ _loadPlanoContasPromise = null; });
+    return _loadPlanoContasPromise;
+  }
+
+  // Remove contas duplicadas (mesmo código + mesma empresa) que ficaram de uma corrida
+  // anterior nas migrações automáticas — mantém a primeira, apaga as demais, e reaponta
+  // qualquer lançamento contábil que estivesse usando o "id" das duplicatas removidas.
+  async function dedupPlanoContas(){
+    const vistos = new Map();
+    const duplicadas = [];
+    for(const c of state.planoContas){
+      const chave = (c.clientId||'') + '|' + c.codigo;
+      if(vistos.has(chave)) duplicadas.push({dup: c, keepId: vistos.get(chave)});
+      else vistos.set(chave, c.id);
+    }
+    if(!duplicadas.length) return;
+    let lancRepontados = false;
+    for(const {dup, keepId} of duplicadas){
+      for(const l of state.lancamentosContabeis){
+        let mudou = false;
+        if(l.contaDebito === dup.id){ l.contaDebito = keepId; mudou = true; }
+        if(l.contaCredito === dup.id){ l.contaCredito = keepId; mudou = true; }
+        if(mudou){ await Store.set('lancamentoscontabeis:'+l.id, JSON.stringify(l), true); lancRepontados = true; }
+      }
+      await Store.delete('planocontas:'+dup.id, true);
+    }
+    state.planoContas = state.planoContas.filter(c=>!duplicadas.some(d=>d.dup.id===c.id));
+    if(lancRepontados) await loadLancamentosContabeis();
+  }
+
+  // Mesmo cuidado para o Histórico Contábil (não precisa reapontar nada, o histórico do
+  // lançamento é gravado como texto, não como referência a um "id").
+  async function dedupHistoricos(){
+    const vistos = new Map();
+    const duplicados = [];
+    for(const h of state.historicos){
+      const chave = (h.clientId||'') + '|' + h.codigo;
+      if(vistos.has(chave)) duplicados.push(h);
+      else vistos.set(chave, h.id);
+    }
+    if(!duplicados.length) return;
+    for(const h of duplicados){ await Store.delete('historicos:'+h.id, true); }
+    state.historicos = state.historicos.filter(h=>!duplicados.some(d=>d.id===h.id));
+  }
+
+  // Migração única: o Plano de Contas e o Histórico Contábil que já existiam antes de cada
+  // empresa passar a ter os seus próprios (sem "clientId") ficariam órfãos/invisíveis agora.
+  // Se o escritório tiver só UMA empresa cadastrada, não há ambiguidade — atribui os dados
+  // órfãos a ela automaticamente. Com duas ou mais empresas, não arrisca adivinhar e não mexe.
+  async function migrarContabilParaEmpresaUnica(){
+    const marker = await Store.get('contabil_migracao_empresa_unica_v1', true).catch(()=>null);
+    if(marker) return;
+    if(state.clients.length === 1){
+      const clientId = state.clients[0].id;
+      for(const c of state.planoContas){
+        if(!c.clientId){
+          c.clientId = clientId;
+          await Store.set('planocontas:'+c.id, JSON.stringify(c), true);
+        }
+      }
+      for(const h of state.historicos){
+        if(!h.clientId){
+          h.clientId = clientId;
+          await Store.set('historicos:'+h.id, JSON.stringify(h), true);
+        }
+      }
+      state.contabilEmpresaAtiva = clientId;
+    }
+    await Store.set('contabil_migracao_empresa_unica_v1', '1', true);
+  }
+
   async function savePlanoContaItem(c){
     if(!c.id) c.id = uid();
     await Store.set('planocontas:'+c.id, JSON.stringify(c), true);
@@ -2311,28 +2390,31 @@
   // Cada evento pode gerar mais de um lançamento (ex.: líquido + INSS + IRRF), sempre debitando
   // a conta de despesa correspondente e creditando a obrigação (a pagar) — a baixa efetiva do
   // pagamento (contra Bancos/Caixa) continua sendo um lançamento manual ou vindo da importação OFX.
-  function contaIdByCodigo(codigo){
-    const c = state.planoContas.find(x=>x.codigo===codigo);
+  function contaIdByCodigo(codigo, clientId){
+    const c = state.planoContas.find(x=>x.codigo===codigo && x.clientId===clientId);
     return c ? c.id : null;
   }
-  function historicoCatalogoTexto(historicoCodigo, complemento){
-    const h = state.historicos.find(x=>x.codigo===historicoCodigo);
+  function historicoCatalogoTexto(historicoCodigo, complemento, clientId){
+    const h = state.historicos.find(x=>x.codigo===historicoCodigo && x.clientId===clientId);
     const base = h ? (h.codigo + ' — ' + h.descricao) : complemento;
     return h ? base + ' · ' + complemento : base;
   }
   async function gerarLancamentosAutomaticos(clientId, partidas, historicoCodigo, historicoBase){
     if(!clientId) return { ok:false, motivo:'sem-cliente' };
+    if(!state.planoContas.some(c=>c.clientId===clientId)){
+      return { ok:false, motivo:'sem-plano-de-contas', faltando: [] };
+    }
     const faltando = [];
     const entradas = [];
     for(const p of partidas){
       if(!p.valor || p.valor <= 0) continue;
-      const dId = contaIdByCodigo(p.contaDebito);
-      const cId = contaIdByCodigo(p.contaCredito);
+      const dId = contaIdByCodigo(p.contaDebito, clientId);
+      const cId = contaIdByCodigo(p.contaCredito, clientId);
       if(!dId || !cId){ faltando.push(p.contaDebito+'/'+p.contaCredito); continue; }
       entradas.push({
         clientId, data: todayStr(), valor: p.valor,
         contaDebito: dId, contaCredito: cId,
-        historico: historicoCatalogoTexto(historicoCodigo, historicoBase + ' — ' + p.rotulo) + ' (lançamento automático)',
+        historico: historicoCatalogoTexto(historicoCodigo, historicoBase + ' — ' + p.rotulo, clientId) + ' (lançamento automático)',
         origemAutomatica: true,
       });
     }
@@ -2561,6 +2643,9 @@
     await loadPlanoContasReferencial();
     await loadHistoricos();
     await loadLancamentosContabeis();
+    await dedupPlanoContas();
+    await dedupHistoricos();
+    await migrarContabilParaEmpresaUnica();
   }
 
   async function exportAllData(){
@@ -4144,12 +4229,13 @@
   function contaLevel(codigo){ return (String(codigo||'').match(/\./g)||[]).length; }
 
   function planoContasTableHtml(){
-    if(!state.planoContas.length) return `<div class="empty">Nenhuma conta cadastrada.</div>`;
+    const contas = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva);
+    if(!contas.length) return `<div class="empty">Nenhuma conta cadastrada para esta empresa ainda.</div>`;
     return `
       <table>
         <thead><tr><th>Código</th><th>Conta</th><th>Tipo</th><th>Natureza</th><th></th></tr></thead>
         <tbody>
-          ${state.planoContas.map(c=>`
+          ${contas.map(c=>`
             <tr class="${c.tipo==='Sintética'?'conta-sintetica':''}">
               <td class="mono">${escapeHtml(c.codigo)}</td>
               <td class="conta-nivel-${Math.min(contaLevel(c.codigo),3)}">${escapeHtml(c.nome)}</td>
@@ -4163,14 +4249,34 @@
     `;
   }
 
+  function empresaContabilSelectorHtml(){
+    const clientesOrdenados = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return `
+      <div class="field" style="max-width:360px; margin-bottom:16px;">
+        <label>Empresa</label>
+        <select id="contabilEmpresaSelect" class="filter-select" style="width:100%;">
+          <option value="">— Selecione uma empresa —</option>
+          ${clientesOrdenados.map(c=>`<option value="${c.id}" ${state.contabilEmpresaAtiva===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  }
+
   function planoContasPanelHtml(){
+    const empresa = state.clients.find(c=>c.id===state.contabilEmpresaAtiva);
+    const temContas = state.planoContas.some(c=>c.clientId===state.contabilEmpresaAtiva);
     return `
       <div class="panel-head">
-        <h3>Plano de Contas Padrão</h3>
-        <button type="button" class="btn-add" id="novaContaBtn">+ Nova conta</button>
+        <h3>Plano de Contas</h3>
+        ${empresa ? `<button type="button" class="btn-add" id="novaContaBtn">+ Nova conta</button>` : ''}
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Estrutura básica compatível com a Lei 6.404/76 (Ativo, Passivo, Patrimônio Líquido, Receitas, Custos e Despesas) — já vem pré-carregada e pode ser editada conforme a necessidade do escritório.</div>
-      <div id="planoContasContainer">${planoContasTableHtml()}</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Cada empresa tem seu próprio plano de contas, histórico e lançamentos, totalmente separados dos demais clientes.</div>
+      ${empresaContabilSelectorHtml()}
+      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar o plano de contas dela.</div>` : !temContas ? `
+        <div class="form-hint" style="margin-bottom:10px;">${escapeHtml(empresa.name)} ainda não tem nenhuma conta cadastrada.</div>
+        <button type="button" class="btn-calc" id="criarPlanoContasPadraoBtn">Criar plano de contas padrão para esta empresa</button>
+        <div class="form-hint" style="margin-top:8px;">Isso cria a estrutura básica (Ativo, Passivo, Patrimônio Líquido, Receitas, Custos, Despesas) já na máscara X.X.XX.XXX / X.X.XX.XXX.XXXX — depois é só editar/adicionar conforme a necessidade.</div>
+      ` : `<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
 
       <div class="form-section-title">Plano de Contas Referencial (ECF / Receita Federal)</div>
       <div class="form-hint" style="margin:-4px 0 14px;">Importe o arquivo oficial de Tabelas Dinâmicas da ECF (Receita Federal) para consultar os códigos de referência usados no mapeamento da escrituração contábil-fiscal (SPED ECF). Aceita o layout com as colunas CÓDIGO, DESCRIÇÃO, TIPO, CONTA SUPERIOR, NÍVEL e NATUREZA.</div>
@@ -4240,7 +4346,7 @@
   }
 
   function contaSinteticaOptionsHtml(selected, excludeId){
-    const sinteticas = state.planoContas.filter(c=>c.tipo==='Sintética' && c.id!==excludeId).sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
+    const sinteticas = state.planoContas.filter(c=>c.tipo==='Sintética' && c.id!==excludeId && c.clientId===state.contabilEmpresaAtiva).sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
     return `<option value="">— Nenhuma (conta de 1º nível) —</option>` +
       sinteticas.map(c=>`<option value="${escapeHtml(c.codigo)}" ${c.codigo===selected?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('');
   }
@@ -4250,7 +4356,7 @@
   function suggestNextCodigo(contaSuperiorCodigo){
     if(!contaSuperiorCodigo) return '';
     const prefix = contaSuperiorCodigo + '.';
-    const filhas = state.planoContas.filter(c => c.codigo && c.codigo.startsWith(prefix) && c.codigo.slice(prefix.length).indexOf('.') === -1);
+    const filhas = state.planoContas.filter(c => c.clientId===state.contabilEmpresaAtiva && c.codigo && c.codigo.startsWith(prefix) && c.codigo.slice(prefix.length).indexOf('.') === -1);
     let maxN = 0;
     filhas.forEach(c=>{
       const lastSeg = c.codigo.slice(prefix.length);
@@ -4302,18 +4408,24 @@
   }
 
   function historicosPanelHtml(){
+    const empresa = state.clients.find(c=>c.id===state.contabilEmpresaAtiva);
+    const historicos = state.historicos.filter(h=>h.clientId===state.contabilEmpresaAtiva);
     return `
       <div class="panel-head">
         <h3>Histórico Contábil</h3>
-        <button type="button" class="btn-add" id="novoHistoricoBtn">+ Novo histórico</button>
+        ${empresa ? `<button type="button" class="btn-add" id="novoHistoricoBtn">+ Novo histórico</button>` : ''}
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Descrições padronizadas para uso nos lançamentos contábeis — já vem com os históricos mais comuns cadastrados.</div>
-      <div id="historicosContainer">
-        ${!state.historicos.length ? '<div class="empty">Nenhum histórico cadastrado.</div>' : `
+      <div class="form-hint" style="margin:-4px 0 14px;">Descrições padronizadas para uso nos lançamentos contábeis desta empresa.</div>
+      ${empresaContabilSelectorHtml()}
+      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar o histórico contábil dela.</div>` : !historicos.length ? `
+        <div class="form-hint" style="margin-bottom:10px;">${escapeHtml(empresa.name)} ainda não tem nenhum histórico cadastrado.</div>
+        <button type="button" class="btn-calc" id="criarHistoricoPadraoBtn">Criar histórico padrão para esta empresa</button>
+      ` : `
+        <div id="historicosContainer">
           <table>
             <thead><tr><th>Código</th><th>Descrição</th><th></th></tr></thead>
             <tbody>
-              ${state.historicos.map(h=>`
+              ${historicos.map(h=>`
                 <tr>
                   <td class="mono">${escapeHtml(h.codigo)}</td>
                   <td>${escapeHtml(h.descricao)}</td>
@@ -4322,8 +4434,8 @@
               `).join('')}
             </tbody>
           </table>
-        `}
-      </div>
+        </div>
+      `}
     `;
   }
 
@@ -4347,8 +4459,9 @@
     `;
   }
 
-  function contasAnaliticasOptionsHtml(selected){
-    const analiticas = state.planoContas.filter(c=>c.tipo==='Analítica');
+  function contasAnaliticasOptionsHtml(selected, clientId){
+    const analiticas = state.planoContas.filter(c=>c.tipo==='Analítica' && c.clientId===clientId);
+    if(!analiticas.length) return `<option value="">— Nenhuma conta cadastrada para esta empresa —</option>`;
     return analiticas.map(c=>`<option value="${c.id}" ${c.id===selected?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('');
   }
   function contaNomeById(id){
@@ -4381,13 +4494,15 @@
         <h3>Lançamentos Contábeis</h3>
         <button type="button" class="btn-add" id="novoLancContabilBtn">+ Novo lançamento</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), com base no Plano de Contas e no Histórico Contábil cadastrados. Use o seletor "Selecionar cliente" no topo da página para filtrar por empresa.</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       <div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
   }
 
   function lancContabilModalHtml(){
-    if(!state.lancContabilModalData) return '';
+    const d = state.lancContabilModalData;
+    if(!d) return '';
+    const clienteId = d.clientId || '';
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
@@ -4396,21 +4511,22 @@
             <div class="field"><label>Empresa (cliente)</label>
               <select id="lcCliente" required>
                 <option value="">— Selecione —</option>
-                ${state.clients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+                ${state.clients.map(c=>`<option value="${c.id}" ${c.id===clienteId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
               </select>
             </div>
+            <div class="form-hint" style="margin:-8px 0 12px;" id="lcEmpresaHint">${clienteId ? '' : 'Escolha a empresa para carregar o plano de contas dela.'}</div>
             <div class="form-row">
               <div class="field"><label>Data</label><input type="date" id="lcData" value="${todayStr()}" required/></div>
               <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0" id="lcValor" required/></div>
             </div>
             <div class="form-row">
-              <div class="field"><label>Conta Débito</label><select id="lcContaDebito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml()}</select></div>
-              <div class="field"><label>Conta Crédito</label><select id="lcContaCredito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml()}</select></div>
+              <div class="field"><label>Conta Débito</label><select id="lcContaDebito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml(null, clienteId)}</select></div>
+              <div class="field"><label>Conta Crédito</label><select id="lcContaCredito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml(null, clienteId)}</select></div>
             </div>
             <div class="field"><label>Histórico padrão</label>
               <select id="lcHistoricoSelect">
                 <option value="">— Digitar manualmente —</option>
-                ${state.historicos.map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('')}
+                ${state.historicos.filter(h=>h.clientId===clienteId).map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('')}
               </select>
             </div>
             <div class="field"><label>Histórico (texto do lançamento)</label><input type="text" id="lcHistorico" required/></div>
@@ -5611,7 +5727,9 @@
           const resultado = await gerarLancamentoImposto(o);
           if(resultado.ok){
             alert('Guia salva. ' + resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil.');
-          } else if(resultado.faltando && resultado.faltando.length){
+          } else if(resultado.motivo === 'sem-plano-de-contas'){
+          alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
+        } else if(resultado.faltando && resultado.faltando.length){
             alert('Guia salva, mas não foi possível gerar o lançamento automático: conta não encontrada no Plano de Contas (' + resultado.faltando.join(', ') + ').');
           }
         }
@@ -6171,10 +6289,40 @@
     root.querySelectorAll('[data-contabil-tab]').forEach(el=>{
       el.onclick = ()=>{ state.contabilTab = el.getAttribute('data-contabil-tab'); render(); };
     });
+    const contabilEmpresaSelect = document.getElementById('contabilEmpresaSelect');
+    if(contabilEmpresaSelect){
+      contabilEmpresaSelect.onchange = (e)=>{ state.contabilEmpresaAtiva = e.target.value; render(); };
+    }
+    const criarPlanoContasPadraoBtn = document.getElementById('criarPlanoContasPadraoBtn');
+    if(criarPlanoContasPadraoBtn){
+      criarPlanoContasPadraoBtn.onclick = async ()=>{
+        const clientId = state.contabilEmpresaAtiva;
+        if(!clientId) return;
+        for(const conta of PLANO_CONTAS_PADRAO){
+          const c = Object.assign({id: uid(), clientId}, conta);
+          await Store.set('planocontas:'+c.id, JSON.stringify(c), true);
+        }
+        await loadPlanoContas();
+        render();
+      };
+    }
+    const criarHistoricoPadraoBtn = document.getElementById('criarHistoricoPadraoBtn');
+    if(criarHistoricoPadraoBtn){
+      criarHistoricoPadraoBtn.onclick = async ()=>{
+        const clientId = state.contabilEmpresaAtiva;
+        if(!clientId) return;
+        for(const h of HISTORICOS_PADRAO){
+          const hh = Object.assign({id: uid(), clientId}, h);
+          await Store.set('historicos:'+hh.id, JSON.stringify(hh), true);
+        }
+        await loadHistoricos();
+        render();
+      };
+    }
 
     // Plano de Contas
     const novaContaBtn = document.getElementById('novaContaBtn');
-    if(novaContaBtn) novaContaBtn.onclick = ()=>{ state.contaModalData = {}; state.modal='conta'; render(); };
+    if(novaContaBtn) novaContaBtn.onclick = ()=>{ state.contaModalData = { clientId: state.contabilEmpresaAtiva }; state.modal='conta'; render(); };
     const ctCancel = document.getElementById('ctCancel');
     if(ctCancel) ctCancel.onclick = ()=>{ state.modal=null; state.contaModalData=null; render(); };
     const ctContaSuperior = document.getElementById('ctContaSuperior');
@@ -6196,12 +6344,15 @@
       contaForm.onsubmit = (e)=>{
         e.preventDefault();
         const editingId = state.contaModalData && state.contaModalData.id;
+        const clientId = (state.contaModalData && state.contaModalData.clientId) || state.contabilEmpresaAtiva;
+        if(!clientId){ alert('Selecione uma empresa antes de cadastrar uma conta.'); return; }
         const codigo = document.getElementById('ctCodigo').value.trim();
         if(!codigo){ alert('Informe o código da conta (ou escolha uma conta superior para ele ser sugerido automaticamente).'); return; }
-        const duplicada = state.planoContas.some(c=>c.codigo===codigo && c.id!==editingId);
-        if(duplicada){ alert('Já existe uma conta com o código ' + codigo + '.'); return; }
+        const duplicada = state.planoContas.some(c=>c.codigo===codigo && c.clientId===clientId && c.id!==editingId);
+        if(duplicada){ alert('Já existe uma conta com o código ' + codigo + ' nesta empresa.'); return; }
         const c = {
           id: editingId || undefined,
+          clientId,
           codigo,
           nome: document.getElementById('ctNome').value,
           tipo: document.getElementById('ctTipo').value,
@@ -6296,15 +6447,16 @@
     function wireCopyPcrButtons(){
       document.querySelectorAll('[data-copy-pcr-conta]').forEach(el=>{
         el.onclick = ()=>{
+          if(!state.contabilEmpresaAtiva){ alert('Selecione uma empresa no Plano de Contas antes de copiar contas para ela.'); return; }
           const [tabelaId, codigo] = el.getAttribute('data-copy-pcr-conta').split('::');
           const tabela = state.planoContasReferencial.find(t=>t.id===tabelaId);
           const conta = tabela && tabela.contas.find(c=>c.codigo===codigo);
           if(!conta) return;
-          if(state.planoContas.some(c=>c.codigo===conta.codigo)){
-            alert('Já existe uma conta com o código ' + conta.codigo + ' no Plano de Contas.');
+          if(state.planoContas.some(c=>c.codigo===conta.codigo && c.clientId===state.contabilEmpresaAtiva)){
+            alert('Já existe uma conta com o código ' + conta.codigo + ' no Plano de Contas desta empresa.');
             return;
           }
-          savePlanoContaItem({ codigo: conta.codigo, nome: conta.descricao, tipo: conta.tipo||'Analítica', natureza: conta.natureza });
+          savePlanoContaItem({ clientId: state.contabilEmpresaAtiva, codigo: conta.codigo, nome: conta.descricao, tipo: conta.tipo||'Analítica', natureza: conta.natureza });
         };
       });
     }
@@ -6312,15 +6464,18 @@
 
     // Histórico Contábil
     const novoHistoricoBtn = document.getElementById('novoHistoricoBtn');
-    if(novoHistoricoBtn) novoHistoricoBtn.onclick = ()=>{ state.historicoModalData = {}; state.modal='historico'; render(); };
+    if(novoHistoricoBtn) novoHistoricoBtn.onclick = ()=>{ state.historicoModalData = { clientId: state.contabilEmpresaAtiva }; state.modal='historico'; render(); };
     const htCancel = document.getElementById('htCancel');
     if(htCancel) htCancel.onclick = ()=>{ state.modal=null; state.historicoModalData=null; render(); };
     const historicoForm = document.getElementById('historicoForm');
     if(historicoForm){
       historicoForm.onsubmit = (e)=>{
         e.preventDefault();
+        const clientId = (state.historicoModalData && state.historicoModalData.clientId) || state.contabilEmpresaAtiva;
+        if(!clientId){ alert('Selecione uma empresa antes de cadastrar um histórico.'); return; }
         const h = {
           id: (state.historicoModalData && state.historicoModalData.id) || undefined,
+          clientId,
           codigo: document.getElementById('htCodigo').value,
           descricao: document.getElementById('htDescricao').value,
         };
@@ -6346,6 +6501,18 @@
     if(novoLancContabilBtn) novoLancContabilBtn.onclick = ()=>{ state.lancContabilModalData = {}; state.modal='lancContabil'; render(); };
     const lcCancel = document.getElementById('lcCancel');
     if(lcCancel) lcCancel.onclick = ()=>{ state.modal=null; state.lancContabilModalData=null; render(); };
+    const lcClienteSelect = document.getElementById('lcCliente');
+    if(lcClienteSelect){
+      lcClienteSelect.onchange = (e)=>{
+        const clienteId = e.target.value;
+        document.getElementById('lcContaDebito').innerHTML = '<option value="">— Selecione —</option>' + contasAnaliticasOptionsHtml(null, clienteId);
+        document.getElementById('lcContaCredito').innerHTML = '<option value="">— Selecione —</option>' + contasAnaliticasOptionsHtml(null, clienteId);
+        document.getElementById('lcHistoricoSelect').innerHTML = '<option value="">— Digitar manualmente —</option>' +
+          state.historicos.filter(h=>h.clientId===clienteId).map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('');
+        const hint = document.getElementById('lcEmpresaHint');
+        if(hint) hint.textContent = clienteId && !state.planoContas.some(c=>c.clientId===clienteId) ? 'Esta empresa ainda não tem plano de contas — cadastre em Plano de Contas antes de lançar.' : '';
+      };
+    }
     const lcHistoricoSelect = document.getElementById('lcHistoricoSelect');
     if(lcHistoricoSelect){
       lcHistoricoSelect.onchange = (e)=>{
@@ -6398,9 +6565,9 @@
       ofxConfirmImportBtn.onclick = async ()=>{
         const clientId = document.getElementById('ofxCliente').value;
         if(!clientId){ alert('Selecione a empresa (cliente) antes de importar.'); return; }
-        const contaBanco = state.planoContas.find(c=>c.nome==='Bancos Conta Movimento');
-        const contaClassificar = state.planoContas.find(c=>c.nome==='Conta a Classificar (Importação OFX)');
-        if(!contaBanco || !contaClassificar){ alert('Contas padrão "Bancos Conta Movimento" e/ou "Conta a Classificar" não encontradas no Plano de Contas.'); return; }
+        const contaBanco = state.planoContas.find(c=>c.nome==='Bancos Conta Movimento' && c.clientId===clientId);
+        const contaClassificar = state.planoContas.find(c=>c.nome==='Conta a Classificar (Importação OFX)' && c.clientId===clientId);
+        if(!contaBanco || !contaClassificar){ alert('Esta empresa ainda não tem plano de contas cadastrado (ou não tem as contas "Bancos Conta Movimento" e "Conta a Classificar"). Vá em Plano de Contas, selecione a empresa e crie o plano de contas padrão antes de importar o OFX.'); return; }
         const prev = state.ofxPreview;
         for(const t of prev.transacoes){
           const isEntrada = t.valor >= 0;
@@ -6509,6 +6676,8 @@
         const resultado = await gerarLancamentosFolha(folhaData, func);
         if(resultado.ok){
           alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Salários, INSS, IRRF, FGTS).');
+        } else if(resultado.motivo === 'sem-plano-de-contas'){
+          alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
           alert('Folha salva, mas não foi possível gerar os lançamentos automáticos: contas não encontradas no Plano de Contas (' + resultado.faltando.join(', ') + ').');
         }
@@ -6551,6 +6720,8 @@
         const resultado = await gerarLancamentosFerias(feriasData, func);
         if(resultado.ok){
           alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Férias, INSS, IRRF).');
+        } else if(resultado.motivo === 'sem-plano-de-contas'){
+          alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
           alert('Férias salvas, mas não foi possível gerar os lançamentos automáticos: contas não encontradas no Plano de Contas (' + resultado.faltando.join(', ') + ').');
         }
@@ -6599,6 +6770,8 @@
         const resultado = await gerarLancamentosRescisao(rescisaoData, func);
         if(resultado.ok){
           alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Rescisão).');
+        } else if(resultado.motivo === 'sem-plano-de-contas'){
+          alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
           alert('Rescisão salva, mas não foi possível gerar o lançamento automático: conta não encontrada no Plano de Contas (' + resultado.faltando.join(', ') + ').');
         }
