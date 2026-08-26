@@ -1397,9 +1397,11 @@
     {codigo:'1', nome:'ATIVO', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'1.1', nome:'ATIVO CIRCULANTE', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'1.1.01', nome:'Disponibilidades', tipo:'Sintética', natureza:'Devedora'},
-    {codigo:'1.1.01.001', nome:'Disponibilidades', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.01.001', nome:'Caixa', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'1.1.01.001.0001', nome:'Caixa', tipo:'Analítica', natureza:'Devedora'},
-    {codigo:'1.1.01.001.0002', nome:'Bancos Conta Movimento', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.1.01.002', nome:'Bancos', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'1.1.01.002.0001', nome:'Caixa Econômica Federal', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'1.1.01.002.0002', nome:'Bancos Conta Movimento', tipo:'Analítica', natureza:'Devedora'},
     {codigo:'1.1.02', nome:'Créditos', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'1.1.02.001', nome:'Clientes', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'1.1.02.001.0001', nome:'Clientes (Contas a Receber)', tipo:'Analítica', natureza:'Devedora'},
@@ -2159,6 +2161,45 @@
           }
         }
         await Store.set('planocontas_seed_v4', '1', true);
+      }
+      // Addendum v5: separa "Disponibilidades" em subgrupos "Caixa" e "Bancos", e recodifica a
+      // conta "Caixa Econômica Federal" (criada manualmente, em qualquer código anterior) para
+      // 1.1.01.002.0001 — mantendo o mesmo "id" para não duplicar nem quebrar lançamentos feitos.
+      const marker5 = await Store.get('planocontas_seed_v5', true).catch(()=>null);
+      if(!marker5){
+        const RENOMEACOES_V5 = [
+          {codigo:'1.1.01.001', nomeAntigo:'Disponibilidades', nomeNovo:'Caixa'},
+        ];
+        for(const r of RENOMEACOES_V5){
+          const existente = state.planoContas.find(c=>c.codigo===r.codigo && c.nome===r.nomeAntigo);
+          if(existente){
+            existente.nome = r.nomeNovo;
+            await Store.set('planocontas:'+existente.id, JSON.stringify(existente), true);
+          }
+        }
+        // Move "Bancos Conta Movimento" do código antigo (dentro do grupo Caixa) para o novo grupo Bancos.
+        const bancosMovimento = state.planoContas.find(c=>c.nome==='Bancos Conta Movimento' && c.codigo!=='1.1.01.002.0002');
+        if(bancosMovimento){
+          bancosMovimento.codigo = '1.1.01.002.0002';
+          bancosMovimento.contaSuperior = '1.1.01.002';
+          await Store.set('planocontas:'+bancosMovimento.id, JSON.stringify(bancosMovimento), true);
+        }
+        // Recodifica a conta "Caixa Econômica Federal" já cadastrada manualmente (qualquer código anterior).
+        const caixaEconomica = state.planoContas.find(c=>c.nome==='Caixa Econômica Federal' || c.nome==='Caixa Economica Federal');
+        if(caixaEconomica && caixaEconomica.codigo !== '1.1.01.002.0001'){
+          caixaEconomica.codigo = '1.1.01.002.0001';
+          caixaEconomica.contaSuperior = '1.1.01.002';
+          caixaEconomica.tipo = 'Analítica';
+          await Store.set('planocontas:'+caixaEconomica.id, JSON.stringify(caixaEconomica), true);
+        }
+        for(const conta of PLANO_CONTAS_PADRAO){
+          if(!state.planoContas.some(c=>c.codigo===conta.codigo)){
+            const c = Object.assign({id: uid()}, conta);
+            await Store.set('planocontas:'+c.id, JSON.stringify(c), true);
+            state.planoContas.push(c);
+          }
+        }
+        await Store.set('planocontas_seed_v5', '1', true);
       }
     }catch(e){}
     state.planoContas.sort((a,b)=> (a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
@@ -4114,7 +4155,7 @@
               <td class="conta-nivel-${Math.min(contaLevel(c.codigo),3)}">${escapeHtml(c.nome)}</td>
               <td>${escapeHtml(c.tipo)}</td>
               <td><span class="tag ${c.natureza==='Devedora'?'natureza-devedora':'natureza-credora'}">${escapeHtml(c.natureza)}</span></td>
-              <td><button class="btn-sm danger" data-del-conta="${c.id}">Excluir</button></td>
+              <td style="display:flex;gap:6px;"><button class="btn-detail" data-edit-conta="${c.id}">Editar</button><button class="btn-sm danger" data-del-conta="${c.id}">Excluir</button></td>
             </tr>
           `).join('')}
         </tbody>
@@ -4198,8 +4239,8 @@
     `;
   }
 
-  function contaSinteticaOptionsHtml(selected){
-    const sinteticas = state.planoContas.filter(c=>c.tipo==='Sintética').sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
+  function contaSinteticaOptionsHtml(selected, excludeId){
+    const sinteticas = state.planoContas.filter(c=>c.tipo==='Sintética' && c.id!==excludeId).sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
     return `<option value="">— Nenhuma (conta de 1º nível) —</option>` +
       sinteticas.map(c=>`<option value="${escapeHtml(c.codigo)}" ${c.codigo===selected?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('');
   }
@@ -4223,29 +4264,36 @@
   }
 
   function contaModalHtml(){
-    if(!state.contaModalData) return '';
+    const d = state.contaModalData;
+    if(!d) return '';
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>Nova conta contábil</h3>
+          <h3>${d.id ? 'Editar conta contábil' : 'Nova conta contábil'}</h3>
           <form id="contaForm">
             <div class="field"><label>Conta superior (sintética)</label>
-              <select id="ctContaSuperior">${contaSinteticaOptionsHtml()}</select>
+              <select id="ctContaSuperior">${contaSinteticaOptionsHtml(d.contaSuperior, d.id)}</select>
             </div>
-            <div class="form-hint" style="margin:-8px 0 12px;">Escolha a conta superior para o código ser sugerido automaticamente, seguindo a máscara dela. Deixe em branco para criar uma conta de 1º nível.</div>
+            <div class="form-hint" style="margin:-8px 0 12px;">Escolha a conta superior para o código ser sugerido automaticamente, seguindo a máscara dela. Deixe em branco para uma conta de 1º nível.</div>
             <div class="form-row">
-              <div class="field"><label>Código</label><input type="text" id="ctCodigo" placeholder="Ex: 1.1.6"/></div>
+              <div class="field"><label>Código</label><input type="text" id="ctCodigo" placeholder="Ex: 1.1.6" value="${escapeHtml(d.codigo||'')}"/></div>
               <div class="field"><label>Tipo</label>
-                <select id="ctTipo"><option value="Analítica">Analítica</option><option value="Sintética">Sintética</option></select>
+                <select id="ctTipo">
+                  <option value="Analítica" ${d.tipo==='Analítica'?'selected':''}>Analítica</option>
+                  <option value="Sintética" ${d.tipo==='Sintética'?'selected':''}>Sintética</option>
+                </select>
               </div>
             </div>
-            <div class="field"><label>Nome da conta</label><input type="text" id="ctNome" required/></div>
+            <div class="field"><label>Nome da conta</label><input type="text" id="ctNome" value="${escapeHtml(d.nome||'')}" required/></div>
             <div class="field"><label>Natureza</label>
-              <select id="ctNatureza"><option value="Devedora">Devedora</option><option value="Credora">Credora</option></select>
+              <select id="ctNatureza">
+                <option value="Devedora" ${d.natureza==='Devedora'?'selected':''}>Devedora</option>
+                <option value="Credora" ${d.natureza==='Credora'?'selected':''}>Credora</option>
+              </select>
             </div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="ctCancel">Cancelar</button>
-              <button type="submit" class="btn-add">Salvar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
             </div>
           </form>
         </div>
@@ -6147,10 +6195,13 @@
     if(contaForm){
       contaForm.onsubmit = (e)=>{
         e.preventDefault();
+        const editingId = state.contaModalData && state.contaModalData.id;
         const codigo = document.getElementById('ctCodigo').value.trim();
         if(!codigo){ alert('Informe o código da conta (ou escolha uma conta superior para ele ser sugerido automaticamente).'); return; }
-        if(state.planoContas.some(c=>c.codigo===codigo)){ alert('Já existe uma conta com o código ' + codigo + '.'); return; }
+        const duplicada = state.planoContas.some(c=>c.codigo===codigo && c.id!==editingId);
+        if(duplicada){ alert('Já existe uma conta com o código ' + codigo + '.'); return; }
         const c = {
+          id: editingId || undefined,
           codigo,
           nome: document.getElementById('ctNome').value,
           tipo: document.getElementById('ctTipo').value,
@@ -6162,6 +6213,14 @@
         savePlanoContaItem(c);
       };
     }
+    root.querySelectorAll('[data-edit-conta]').forEach(el=>{
+      el.onclick = ()=>{
+        const c = state.planoContas.find(x=>x.id===el.getAttribute('data-edit-conta'));
+        if(!c) return;
+        state.contaModalData = Object.assign({}, c);
+        state.modal='conta'; render();
+      };
+    });
     root.querySelectorAll('[data-del-conta]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir esta conta do plano de contas?')) deletePlanoContaItem(el.getAttribute('data-del-conta')); };
     });
