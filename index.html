@@ -1267,6 +1267,8 @@
       itensExtras: state.propostaItensExtras.slice(),
       incluirBalanco: state.propostaIncluirBalanco,
       observacoes: state.propostaObservacoes,
+      sitFedStatus: cliente?cliente.sitFedStatus:'', sitFedData: cliente?cliente.sitFedData:'', sitFedObs: cliente?cliente.sitFedObs:'',
+      sitEstStatus: cliente?cliente.sitEstStatus:'', sitEstData: cliente?cliente.sitEstData:'', sitEstObs: cliente?cliente.sitEstObs:'',
       totalMensal, criadaEm: new Date().toISOString(),
     };
   }
@@ -1290,6 +1292,51 @@
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
     if(p.clienteDoc) { doc.text('CNPJ/CPF: ' + p.clienteDoc, 14, y); y += 6; }
     doc.text('Data da proposta: ' + new Date().toLocaleDateString('pt-BR'), 14, y); y += 10;
+
+    if(p.sitFedStatus || p.sitEstStatus){
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+      doc.text('Situação Fiscal Atual', 14, y); y += 7;
+      doc.setFontSize(9);
+      function corStatus(s){
+        if(s==='Regular') return [47,122,82];
+        if(s==='Irregular') return [178,59,59];
+        if(s && s.startsWith('Dispensada')) return [90,105,120];
+        return [180,140,30];
+      }
+      if(p.sitFedStatus){
+        doc.setFont('helvetica','bold');
+        const corF = corStatus(p.sitFedStatus);
+        doc.text('Federal (Receita Federal/PGFN): ', 14, y);
+        doc.setTextColor(corF[0], corF[1], corF[2]);
+        doc.text(p.sitFedStatus, 68, y);
+        doc.setTextColor(20,25,30);
+        if(p.sitFedData){ doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.text('(verificado em ' + fmtDate(p.sitFedData) + ')', 68 + doc.getTextWidth(p.sitFedStatus) + 8, y); doc.setFontSize(9); }
+        y += 5.5;
+        if(p.sitFedObs){
+          doc.setFont('helvetica','normal'); doc.setFontSize(8);
+          const l = doc.splitTextToSize(p.sitFedObs, pageW-32);
+          doc.text(l, 18, y); y += l.length*3.8 + 2;
+          doc.setFontSize(9);
+        }
+      }
+      if(p.sitEstStatus){
+        doc.setFont('helvetica','bold');
+        const corE = corStatus(p.sitEstStatus);
+        doc.text('Estadual (Sefaz): ', 14, y);
+        doc.setTextColor(corE[0], corE[1], corE[2]);
+        doc.text(p.sitEstStatus, 50, y);
+        doc.setTextColor(20,25,30);
+        if(p.sitEstData){ doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.text('(verificado em ' + fmtDate(p.sitEstData) + ')', 50 + doc.getTextWidth(p.sitEstStatus) + 8, y); doc.setFontSize(9); }
+        y += 5.5;
+        if(p.sitEstObs){
+          doc.setFont('helvetica','normal'); doc.setFontSize(8);
+          const l = doc.splitTextToSize(p.sitEstObs, pageW-32);
+          doc.text(l, 18, y); y += l.length*3.8 + 2;
+          doc.setFontSize(9);
+        }
+      }
+      y += 4;
+    }
 
     doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
     doc.text('Resumo dos honorários', 14, y); y += 7;
@@ -1684,6 +1731,14 @@
           <div class="pr-line"><span>Funcionários (${state.propostaQtdFuncionarios} × ${fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS)})</span><span>${fmtBRL(valorFuncionarios)}</span></div>
         </div>
         <div class="legis-note">Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (${fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026)}, valor 2026) para faturamento de até R$ 50.000,00/mês. Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
+
+        ${cliente && (cliente.sitFedStatus || cliente.sitEstStatus) ? `
+          <div class="form-section-title">Situação Fiscal Atual (será anexada à proposta)</div>
+          <div class="cc-list">
+            ${cliente.sitFedStatus ? `<div class="cc-row"><div class="cr-main"><div class="cr-title">Federal (Receita Federal/PGFN)</div>${cliente.sitFedData?`<div class="cr-meta">Verificado em ${fmtDate(cliente.sitFedData)}</div>`:''}${cliente.sitFedObs?`<div class="cr-meta">${escapeHtml(cliente.sitFedObs)}</div>`:''}</div><span class="tag ${sitFiscalClass(cliente.sitFedStatus)}">${escapeHtml(cliente.sitFedStatus)}</span></div>` : ''}
+            ${cliente.sitEstStatus ? `<div class="cc-row"><div class="cr-main"><div class="cr-title">Estadual (Sefaz)</div>${cliente.sitEstData?`<div class="cr-meta">Verificado em ${fmtDate(cliente.sitEstData)}</div>`:''}${cliente.sitEstObs?`<div class="cr-meta">${escapeHtml(cliente.sitEstObs)}</div>`:''}</div><span class="tag ${sitFiscalClass(cliente.sitEstStatus)}">${escapeHtml(cliente.sitEstStatus)}</span></div>` : ''}
+          </div>
+        ` : cliente ? `<div class="form-hint" style="margin-top:14px;">Este cliente ainda não tem Situação Fiscal registrada (Depto Fiscal → Situação Fiscal → Atualizar) — a proposta será gerada sem essa seção.</div>` : ''}
 
         <div class="form-section-title">Pendências de Situação Fiscal (opcional — cobrança por regularização/declaração)</div>
         ${!clientId ? `<div class="form-hint">Selecione um cliente para ver as pendências já importadas da Receita Federal.</div>` : !pendencias.length ? `<div class="form-hint">Nenhuma pendência vencida importada para este cliente (veja em Depto Fiscal → Situação Fiscal → Ver relatórios).</div>` : `
