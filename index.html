@@ -1269,6 +1269,7 @@
       observacoes: state.propostaObservacoes,
       sitFedStatus: cliente?cliente.sitFedStatus:'', sitFedData: cliente?cliente.sitFedData:'', sitFedObs: cliente?cliente.sitFedObs:'',
       sitEstStatus: cliente?cliente.sitEstStatus:'', sitEstData: cliente?cliente.sitEstData:'', sitEstObs: cliente?cliente.sitEstObs:'',
+      demonstrativoPendencias: clientId ? demonstrativoPendenciasPorImposto(clientId) : [],
       totalMensal, criadaEm: new Date().toISOString(),
     };
   }
@@ -1336,6 +1337,31 @@
         }
       }
       y += 4;
+    }
+
+    if(p.demonstrativoPendencias && p.demonstrativoPendencias.length){
+      if(y > 245){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
+      doc.text('Demonstrativo — declarações/impostos pendentes por tipo', 14, y); y += 7;
+      doc.setFontSize(8.5);
+      doc.setFillColor(240,242,245); doc.rect(14, y-4, pageW-28, 5.5, 'F');
+      doc.setFont('helvetica','bold');
+      doc.text('Imposto/Declaração', 16, y); doc.text('Competência(s)', 90, y); doc.text('Total pendente', pageW-16, y, {align:'right'});
+      y += 5.5; doc.setFont('helvetica','normal');
+      let totalDemonstrativo = 0;
+      p.demonstrativoPendencias.forEach(g=>{
+        if(y > 275){ doc.addPage(); y = 20; }
+        const compTexto = doc.splitTextToSize(g.competencias.join(', '), 85);
+        doc.text(g.nome, 16, y);
+        doc.text(compTexto, 90, y);
+        doc.text(fmtBRL(g.total), pageW-16, y, {align:'right'});
+        totalDemonstrativo += g.total;
+        y += Math.max(5, compTexto.length*3.8);
+      });
+      doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 5;
+      doc.setFont('helvetica','bold');
+      doc.text('Total geral', 16, y); doc.text(fmtBRL(totalDemonstrativo), pageW-16, y, {align:'right'});
+      y += 10;
     }
 
     doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
@@ -1681,10 +1707,24 @@
     return itens;
   }
 
+  // Agrupa as pendências pelo nome do imposto/declaração, somando o valor total e listando
+  // todas as competências em que ele aparece — usado como demonstrativo na proposta.
+  function demonstrativoPendenciasPorImposto(clientId){
+    const itens = pendenciasClienteParaProposta(clientId);
+    const grupos = {};
+    itens.forEach(it=>{
+      if(!grupos[it.nome]) grupos[it.nome] = { nome: it.nome, total: 0, competencias: [] };
+      grupos[it.nome].total += Number(it.valorDebito)||0;
+      if(it.competencia && !grupos[it.nome].competencias.includes(it.competencia)) grupos[it.nome].competencias.push(it.competencia);
+    });
+    return Object.values(grupos).sort((a,b)=> b.total - a.total);
+  }
+
   function renderServicosContabeis(){
     const clientId = state.propostaClienteId;
     const cliente = state.clients.find(c=>c.id===clientId);
     const pendencias = clientId ? pendenciasClienteParaProposta(clientId) : [];
+    const demonstrativo = clientId ? demonstrativoPendenciasPorImposto(clientId) : [];
     const qtdFuncSugerida = clientId ? state.funcionarios.filter(f=>f.clientId===clientId && f.status!=='Desligado').length : 0;
 
     let honorarioBase = null, faixaInfo = null, aCombinar = false;
@@ -1743,6 +1783,23 @@
             ${cliente.sitEstStatus ? `<div class="cc-row"><div class="cr-main"><div class="cr-title">Estadual (Sefaz)</div>${cliente.sitEstData?`<div class="cr-meta">Verificado em ${fmtDate(cliente.sitEstData)}</div>`:''}${cliente.sitEstObs?`<div class="cr-meta">${escapeHtml(cliente.sitEstObs)}</div>`:''}</div><span class="tag ${sitFiscalClass(cliente.sitEstStatus)}">${escapeHtml(cliente.sitEstStatus)}</span></div>` : ''}
           </div>
         ` : cliente ? `<div class="form-hint" style="margin-top:14px;">Este cliente ainda não tem Situação Fiscal registrada (Depto Fiscal → Situação Fiscal → Atualizar) — a proposta será gerada sem essa seção.</div>` : ''}
+
+        ${clientId && demonstrativo.length ? `
+          <div class="form-hint" style="margin:14px 0 6px; font-weight:700; color:var(--ink);">Demonstrativo — declarações/impostos pendentes por tipo (será anexado à proposta)</div>
+          <table>
+            <thead><tr><th>Imposto/Declaração</th><th>Competência(s)</th><th style="text-align:right">Total pendente</th></tr></thead>
+            <tbody>
+              ${demonstrativo.map(g=>`
+                <tr>
+                  <td>${escapeHtml(g.nome)}</td>
+                  <td>${escapeHtml(g.competencias.join(', '))}</td>
+                  <td style="text-align:right" class="mono">${fmtBRL(g.total)}</td>
+                </tr>
+              `).join('')}
+              <tr class="conta-sintetica"><td>Total geral</td><td></td><td style="text-align:right">${fmtBRL(demonstrativo.reduce((s,g)=>s+g.total,0))}</td></tr>
+            </tbody>
+          </table>
+        ` : ''}
 
         <div class="form-section-title">Pendências de Situação Fiscal (opcional — cobrança por regularização/declaração)</div>
         ${!clientId ? `<div class="form-hint">Selecione um cliente para ver as pendências já importadas da Receita Federal.</div>` : !pendencias.length ? `<div class="form-hint">Nenhuma pendência vencida importada para este cliente (veja em Depto Fiscal → Situação Fiscal → Ver relatórios).</div>` : `
