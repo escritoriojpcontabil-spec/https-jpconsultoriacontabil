@@ -1092,6 +1092,20 @@
     };
   }
 
+  function baixarArquivoBase64(base64, filename, mimeType){
+    mimeType = mimeType || 'application/pdf';
+    const byteChars = atob(base64);
+    const byteNumbers = new Array(byteChars.length);
+    for(let i=0; i<byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], {type: mimeType});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   function generateRelatorioFiscalPDF(relatorioId){
     const r = state.relatoriosFiscais.find(x=>x.id===relatorioId);
     if(!r) return;
@@ -4751,11 +4765,14 @@
                   <span class="tag ${sitFiscalClass(r.status)}">${escapeHtml(r.status||'—')}</span>
                   <div class="si-meta" style="margin-top:6px;">Arquivo original: ${escapeHtml(r.nomeArquivoOriginal||'—')} · Importado em ${r.dataImportacao ? new Date(r.dataImportacao).toLocaleString('pt-BR') : '—'}</div>
                 </div>
-                <div style="display:flex; gap:6px; flex-shrink:0;">
-                  <button type="button" class="btn-detail" data-pdf-relatorio="${r.id}">Baixar PDF</button>
+                <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">
+                  ${r.arquivoOriginalBase64 ? `<button type="button" class="btn-detail" data-pdf-original="${r.id}">Baixar PDF Original</button>` : ''}
+                  <button type="button" class="btn-detail" data-pdf-relatorio="${r.id}">Baixar Resumo (Sistema)</button>
+                  ${r.arquivoOriginalBase64 ? `<button type="button" class="btn-add btn-send-system" data-enviar-relatorio="${r.id}">Enviar para o Cliente</button>` : ''}
                   <button type="button" class="btn-sm danger" data-del-relatorio="${r.id}">Excluir</button>
                 </div>
               </div>
+              ${!r.arquivoOriginalBase64 ? `<div class="form-hint" style="margin-bottom:8px; color:var(--ink-soft);">Arquivo original não disponível para reenvio (relatório importado antes desta função existir, ou o PDF era maior que 4MB) — só o resumo gerado pelo sistema pode ser enviado.</div>` : ''}
               <div class="si-meta" style="margin-bottom:4px; font-weight:700; color:var(--ink);">📄 Fonte: informações extraídas diretamente do relatório oficial da Receita Federal</div>
               <div class="si-meta" style="margin-bottom:8px;">${escapeHtml(r.resumo||'')}</div>
               ${r.totalMultas>0 ? `<div class="si-meta" style="margin-bottom:8px; color:var(--red); font-weight:700;">Total de multas nas pendências deste relatório: ${fmtBRL(r.totalMultas)}</div>` : ''}
@@ -6880,6 +6897,16 @@
           showMsg('CNPJ ' + result.cnpj + ' identificado no PDF, mas não encontrado no Cadastro de Clientes. Cadastre esta empresa primeiro, ou registre manualmente.', 'error');
           return;
         }
+        let arquivoOriginalBase64 = null;
+        if(file.size <= 4 * 1024 * 1024){
+          try{
+            const buf = await file.arrayBuffer();
+            let binary = '';
+            const bytes = new Uint8Array(buf);
+            for(let i=0; i<bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+            arquivoOriginalBase64 = btoa(binary);
+          }catch(err){ arquivoOriginalBase64 = null; }
+        }
         await saveRelatorioFiscal({
           clientId: found.id,
           esfera: result.esfera || 'Não identificada',
@@ -6887,6 +6914,7 @@
           resumo: result.resumo,
           textoCompleto: text,
           nomeArquivoOriginal: file.name,
+          arquivoOriginalBase64,
           dataImportacao: new Date().toISOString(),
           gruposImposto: result.gruposImposto,
           porCategoria: result.porCategoria,
@@ -6933,6 +6961,29 @@
     if(relatorioViewClose) relatorioViewClose.onclick = ()=>{ state.modal=null; state.relatorioViewClientId=null; render(); };
     root.querySelectorAll('[data-pdf-relatorio]').forEach(el=>{
       el.onclick = ()=> generateRelatorioFiscalPDF(el.getAttribute('data-pdf-relatorio'));
+    });
+    root.querySelectorAll('[data-pdf-original]').forEach(el=>{
+      el.onclick = ()=>{
+        const r = state.relatoriosFiscais.find(x=>x.id===el.getAttribute('data-pdf-original'));
+        if(r && r.arquivoOriginalBase64) baixarArquivoBase64(r.arquivoOriginalBase64, r.nomeArquivoOriginal||'relatorio.pdf');
+      };
+    });
+    root.querySelectorAll('[data-enviar-relatorio]').forEach(el=>{
+      el.onclick = ()=>{
+        const r = state.relatoriosFiscais.find(x=>x.id===el.getAttribute('data-enviar-relatorio'));
+        if(!r || !r.arquivoOriginalBase64) return;
+        const client = state.clients.find(c=>c.id===r.clientId);
+        baixarArquivoBase64(r.arquivoOriginalBase64, r.nomeArquivoOriginal||'relatorio.pdf');
+        state.comunicadoCanal = 'email';
+        state.comunicadoDestino = 'individual';
+        state.comunicadoClienteId = r.clientId;
+        state.comunicadoAssunto = 'Situação Fiscal ' + (r.esfera||'') + ' — ' + (client?client.name:'');
+        state.comunicadoCorpo = 'Olá, [NOME_CLIENTE]!\n\nSegue em anexo o relatório de situação fiscal ' + (r.esfera||'') + ' da sua empresa.\n\nResumo: ' + (r.resumo||'') + '\n\nQualquer dúvida, estamos à disposição.\n\nAtenciosamente,\nJP Consultoria Contábil';
+        state.modal = null; state.relatorioViewClientId = null;
+        state.view = 'dashboard';
+        render();
+        alert('O PDF original foi baixado agora para o seu computador. O email já foi preparado em "Comunicados aos Clientes" (Painel Geral) — clique em "Enviar Email" e anexe o arquivo baixado manualmente na janela do seu programa de email (o navegador não permite anexar automaticamente por segurança, em nenhum site).');
+      };
     });
     root.querySelectorAll('[data-del-relatorio]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este relatório importado?')) deleteRelatorioFiscal(el.getAttribute('data-del-relatorio')); };
