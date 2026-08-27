@@ -1399,7 +1399,11 @@
     const condicoes = [
       'Reajustes: todos os valores serão reajustados após 12 (doze) meses de contrato, conforme a tabela do salário mínimo vigente.',
     ];
-    if(p.incluirBalanco) condicoes.push('Balanço Anual: caso seja necessário o fechamento de balanço anual, será cobrado no final de cada ano um honorário a mais para encerramento de exercício, conforme consta no CFC.');
+    if(p.incluirBalanco){
+      condicoes.push('Balanço Anual: caso seja necessário o fechamento de balanço anual, será cobrado no final de cada ano um honorário a mais para encerramento de exercício, conforme consta no CFC.');
+      condicoes.push('Para fins de fechamento de balanço é necessário fechar a contabilidade mês a mês em tempo hábil. Para isso é necessário ter as seguintes informações: extratos bancários em formato PDF e OFX; relatório de despesas com informações de tipo de despesa, data de pagamento, valores, juros, multas e identificação do fornecedor. Estes relatórios servirão de conferência dos lançamentos nos bancos que não são identificados.');
+      condicoes.push('Orientamos que as despesas jurídicas (da empresa) não poderão ser misturadas com pagamentos pessoais (pessoa física dos sócios).');
+    }
     condicoes.push('Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (' + fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026) + ', valor 2026) para faturamento de até R$ 50.000,00/mês.');
     condicoes.forEach(c=>{
       if(y > 280){ doc.addPage(); y = 20; }
