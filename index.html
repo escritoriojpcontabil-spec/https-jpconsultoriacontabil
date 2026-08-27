@@ -1369,6 +1369,24 @@
       doc.text(l, 14, y); y += l.length*4.2;
     }
 
+    // Validade da proposta + contato
+    y += 6;
+    if(y > 265){ doc.addPage(); y = 20; }
+    doc.setDrawColor(230,230,230); doc.line(14, y, pageW-14, y); y += 8;
+    doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('Validade desta proposta: 30 (trinta) dias a partir da data de emissão.', 14, y); y += 7;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    doc.text('Dúvidas? Fale conosco pelo WhatsApp: (81) 99918-0003', 14, y); y += 14;
+
+    // Assinatura do contratante
+    if(y > 250){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, 110, y); y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Assinatura do Contratante (em nome da empresa)', 14, y); y += 4.5;
+    doc.text(p.clienteNome || '', 14, y);
+    doc.setTextColor(20,25,30);
+
     doc.setFontSize(7.5); doc.setTextColor(140,150,160);
     doc.text('JP Consultoria Contábil — Proposta gerada em ' + new Date().toLocaleString('pt-BR'), 14, 292);
     doc.save('proposta-' + (p.clienteNome||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
