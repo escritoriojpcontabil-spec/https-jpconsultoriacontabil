@@ -1353,7 +1353,7 @@
       'Reajustes: todos os valores serão reajustados após 12 (doze) meses de contrato, conforme a tabela do salário mínimo vigente.',
     ];
     if(p.incluirBalanco) condicoes.push('Balanço Anual: caso seja necessário o fechamento de balanço anual, será cobrado no final de cada ano um honorário a mais para encerramento de exercício, conforme consta no CFC.');
-    condicoes.push('Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (' + fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026) + ', valor 2026) para faturamento de até R$ 100.000,00/mês.');
+    condicoes.push('Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (' + fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026) + ', valor 2026) para faturamento de até R$ 50.000,00/mês.');
     condicoes.forEach(c=>{
       if(y > 280){ doc.addPage(); y = 20; }
       const l = doc.splitTextToSize(c, pageW-28);
@@ -1574,20 +1574,41 @@
   }
 
   function pendenciasClienteParaProposta(clientId){
-    const relatorios = state.relatoriosFiscais.filter(r=>r.clientId===clientId);
     const itens = [];
-    relatorios.forEach(r=>{
+
+    // Fonte 1: relatórios da Receita Federal importados (PDF), itens já vencidos.
+    state.relatoriosFiscais.filter(r=>r.clientId===clientId).forEach(r=>{
       const vencidos = (r.porCategoria && r.porCategoria['Vencido']) || [];
       vencidos.forEach(comp=>{
         comp.itens.forEach(item=>{
           itens.push({
-            id: r.id + '::' + item.codigo + '::' + item.periodo,
+            id: 'pdf::' + r.id + '::' + item.codigo + '::' + item.periodo,
             nome: item.nome, competencia: item.periodo, esfera: r.esfera,
-            valorDebito: item.valor, multa: item.multa||0,
+            valorDebito: item.valor, multa: item.multa||0, origem: 'Relatório da Receita Federal',
           });
         });
       });
     });
+
+    // Fonte 2: Guias/obrigações do tipo Imposto cadastradas manualmente (Calendário/Centro de Controle), ainda não concluídas.
+    state.obrigacoes.filter(o=>o.clientId===clientId && o.tipo==='Imposto' && !o.concluded).forEach(o=>{
+      itens.push({
+        id: 'obg::' + o.id,
+        nome: o.categoria || o.titulo || 'Imposto', competencia: o.vencimento ? o.vencimento.slice(0,7).split('-').reverse().join('/') : '—',
+        esfera: '', valorDebito: Number(o.valor)||0, multa: 0, origem: 'Guia cadastrada no sistema',
+      });
+    });
+
+    // Fonte 3: Parcelamentos de impostos ativos (não quitados/rescindidos).
+    state.parcelamentos.filter(p=>p.clientId===clientId && p.status!=='Quitado' && p.status!=='Rescindido').forEach(p=>{
+      const pagas = Number(p.parcelasPagas)||0, total = Number(p.quantidadeParcelas)||0, valorParcela = Number(p.valorParcela)||0;
+      itens.push({
+        id: 'parc::' + p.id,
+        nome: (p.tipoImposto||'Parcelamento') + ' (' + pagas + '/' + total + ' parcelas)', competencia: p.proximoVencimento ? fmtDate(p.proximoVencimento) : '—',
+        esfera: p.esfera||'', valorDebito: Math.max(0, valorParcela*(total-pagas)), multa: 0, origem: 'Parcelamento (' + (p.status||'Em dia') + ')',
+      });
+    });
+
     return itens;
   }
 
@@ -1644,7 +1665,7 @@
           ` : `<div class="pr-line"><span>Informe o faturamento para calcular a faixa</span><span>—</span></div>`) : `<div class="pr-line"><span>Informe o faturamento mensal acima</span><span>—</span></div>`}
           <div class="pr-line"><span>Funcionários (${state.propostaQtdFuncionarios} × ${fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS)})</span><span>${fmtBRL(valorFuncionarios)}</span></div>
         </div>
-        <div class="legis-note">Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (${fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026)}, valor 2026) para faturamento de até R$ 100.000,00/mês. Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
+        <div class="legis-note">Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (${fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026)}, valor 2026) para faturamento de até R$ 50.000,00/mês. Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
 
         <div class="form-section-title">Pendências de Situação Fiscal (opcional — cobrança por regularização/declaração)</div>
         ${!clientId ? `<div class="form-hint">Selecione um cliente para ver as pendências já importadas da Receita Federal.</div>` : !pendencias.length ? `<div class="form-hint">Nenhuma pendência vencida importada para este cliente (veja em Depto Fiscal → Situação Fiscal → Ver relatórios).</div>` : `
@@ -1658,7 +1679,7 @@
                     <input type="checkbox" class="prop-pend-check" data-pend-id="${p.id}" data-pend-nome="${escapeHtml(p.nome)}" data-pend-comp="${escapeHtml(p.competencia)}" ${selecionada?'checked':''}/>
                     <div>
                       <div class="cr-title">${escapeHtml(p.nome)} — Competência ${escapeHtml(p.competencia)}</div>
-                      <div class="cr-meta">${escapeHtml(p.esfera||'')} · Débito na Receita: ${fmtBRL(p.valorDebito)}${p.multa>0?' (inclui '+fmtBRL(p.multa)+' de multa)':''}</div>
+                      <div class="cr-meta">${escapeHtml(p.esfera||'')} · ${escapeHtml(p.origem||'')} · Débito: ${fmtBRL(p.valorDebito)}${p.multa>0?' (inclui '+fmtBRL(p.multa)+' de multa)':''}</div>
                     </div>
                   </label>
                 </div>
