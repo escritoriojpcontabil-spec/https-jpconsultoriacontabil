@@ -361,7 +361,7 @@
   .empty{text-align:center;padding:40px 10px;color:var(--ink-soft);font-size:13.5px;}
 
   .modal-bg{position:fixed;inset:0;background:rgba(15,39,64,.45);display:flex;align-items:center;justify-content:center;z-index:50;}
-  .modal{background:#fff;border-radius:16px;padding:26px;width:100%;max-width:420px;max-height:88vh;overflow-y:auto;}
+  .modal{background:#fff;border-radius:16px;padding:26px;width:100%;max-width:420px;max-height:88vh;overflow-y:auto;overflow-x:hidden;word-wrap:break-word;overflow-wrap:break-word;}
   .modal.modal-wide{max-width:640px;}
   .modal h3{font-family:'Sora',sans-serif;font-size:17px;margin:0 0 18px;}
   .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
@@ -971,26 +971,67 @@
   function parseDebitoRows(text){
     const rows = [];
     const norm = text.replace(/[ \t]*\n[ \t]*/g, ' ').replace(/\s+/g, ' ') + ' ZZZFIM';
-    const re = /(\d{3,4}-\d{2})\s*-\s*([A-ZÀ-Ú][A-ZÀ-Ú\.\-\/ ]*?)\s+((?:\d{1,2}º\s*TRIM\/\d{4})|(?:\d{1,2}\/\d{4}))\s+(\d{2}\/\d{2}\/\d{4})\s+((?:[\d.,]+\s+)+?)(DEVEDOR|A ANALISAR[A-ZÀ-Ú\- ]*?VENCER|PARCELADO|SUSPENSO)(?=\s+\d{3,4}-\d{2}\s*-|\s+[A-ZÀ-Ú]|\s+_|\s+ZZZFIM)/g;
-    let m;
-    while((m = re.exec(norm)) !== null){
-      const nums = m[5].trim().split(/\s+/).map(parseBRNumber);
-      const situacao = m[6].trim();
-      // Tabela de Pendência-Débito (SIEF) traz 5 colunas: Vl.Original, Sdo.Devedor, Multa, Juros, Sdo.Dev.Cons.
-      // Tabela de Exigibilidade Suspensa traz só 2: Vl.Original, Sdo.Devedor (sem multa/juros discriminados).
-      let valorOriginal, multa, juros, valor;
-      if(nums.length >= 5){
-        valorOriginal = nums[0]; multa = nums[2]; juros = nums[3]; valor = nums[4];
-      } else {
-        valorOriginal = nums[0]||0; multa = 0; juros = 0; valor = nums.length ? nums[nums.length-1] : 0;
+
+    // Divide o texto em seções por cabeçalho conhecido, para saber a situação padrão de
+    // cada linha mesmo quando a palavra "DEVEDOR" não vem explícita no texto extraído do
+    // PDF (acontece em alguns layouts, onde a coluna de situação fica "escondida" atrás de
+    // outro texto, como "Notificação de lançamento").
+    const marcadoresSecao = [
+      {regex: /Pend[êe]ncia\s*-\s*D[ée]bito\s*\(SIEF\)/i, situacaoPadrao: 'DEVEDOR'},
+      {regex: /D[ée]bito com Exigibilidade Suspensa/i, situacaoPadrao: 'A VENCER'},
+      {regex: /Pend[êe]ncia\s*-\s*Parcelamento/i, situacaoPadrao: 'PARCELADO'},
+    ];
+    let marcas = [];
+    marcadoresSecao.forEach(ms=>{
+      const re = new RegExp(ms.regex.source, 'gi');
+      let match;
+      while((match = re.exec(norm)) !== null){ marcas.push({index: match.index + match[0].length, situacaoPadrao: ms.situacaoPadrao}); }
+    });
+    marcas.sort((a,b)=> a.index - b.index);
+    const secoes = [];
+    if(marcas.length){
+      for(let i=0;i<marcas.length;i++){
+        const inicio = marcas[i].index;
+        const fim = i+1<marcas.length ? marcas[i+1].index : norm.length;
+        secoes.push({ texto: norm.slice(inicio, fim), situacaoPadrao: marcas[i].situacaoPadrao });
       }
-      rows.push({
-        codigo: m[1], nome: m[2].trim().replace(/\.$/,''), periodo: m[3], vencimento: m[4],
-        valorOriginal, multa, juros, valor, situacao, categoria: classificarVencimento(situacao, m[4]),
-      });
+    } else {
+      secoes.push({ texto: norm, situacaoPadrao: null });
     }
+
+    // Aceita competência em três formatos: "Nº TRIM/AAAA", "MM/AAAA" ou uma data completa
+    // "DD/MM/AAAA" (alguns layouts usam data completa na coluna PA/Exerc.). A situação
+    // (DEVEDOR etc.) é opcional no texto — quando ausente, usa o padrão da seção.
+    const rowRe = /(\d{3,4}-\d{2})\s*-\s*([A-ZÀ-Ú][A-ZÀ-Ú0-9\.\-\/ ]*?)\s+((?:\d{1,2}º\s*TRIM\/\d{4})|(?:\d{1,2}\/\d{1,2}\/\d{4})|(?:\d{1,2}\/\d{4}))\s+(\d{2}\/\d{2}\/\d{4})\s+((?:[\d.,]+\s+){2,5}?)(DEVEDOR|A ANALISAR[A-ZÀ-Ú\- ]*?VENCER|PARCELADO|SUSPENSO)?(?=\s*\d{3,4}-\d{2}\s*-|\s*Notifica[çc][ãa]o|\s*[A-ZÀ-Ú][a-zà-ú]|\s*_|\s*ZZZFIM)/g;
+
+    secoes.forEach(sec=>{
+      let m;
+      rowRe.lastIndex = 0;
+      while((m = rowRe.exec(sec.texto)) !== null){
+        const nums = m[5].trim().split(/\s+/).map(parseBRNumber);
+        const situacao = m[6] ? m[6].trim() : (sec.situacaoPadrao || '');
+        // Tabela de Pendência-Débito (SIEF) traz até 5 colunas: Vl.Original, Sdo.Devedor, Multa,
+        // Juros, Sdo.Dev.Cons. Tabela de Exigibilidade Suspensa traz só 2 (Vl.Original, Sdo.Devedor).
+        // Alguns layouts trazem só 3 (sem Juros/Consolidado explícitos no texto extraído) — nesse
+        // caso o valor usado é Sdo.Devedor + Multa (pode ficar levemente subestimado se houver
+        // juros não capturados no texto do PDF).
+        let valorOriginal, multa, juros, valor;
+        if(nums.length >= 5){
+          valorOriginal = nums[0]; multa = nums[2]; juros = nums[3]; valor = nums[4];
+        } else if(nums.length === 3){
+          valorOriginal = nums[0]; multa = nums[2]; juros = 0; valor = round2(nums[1]+nums[2]);
+        } else {
+          valorOriginal = nums[0]||0; multa = 0; juros = 0; valor = nums.length ? nums[nums.length-1] : 0;
+        }
+        rows.push({
+          codigo: m[1], nome: m[2].trim().replace(/\.$/,''), periodo: m[3], vencimento: m[4],
+          valorOriginal, multa, juros, valor, situacao, categoria: classificarVencimento(situacao, m[4]),
+        });
+      }
+    });
     return rows;
   }
+
 
   // Classifica cada pendência como Vencido ou A Vencer — primeiro pela própria palavra do
   // relatório (DEVEDOR = já vencido; "A VENCER" = ainda não venceu); se não achar nenhuma das
