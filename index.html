@@ -1086,6 +1086,99 @@
     return { porCategoria: resultado, totalVencido, totalAVencer };
   }
 
+  // Detecta se o PDF é o "Relatório de Dívida Ativa da União/FGTS" do sistema Regularize (PGFN) —
+  // formato de cartões, bem diferente da tabela colunar do relatório "Informações de Apoio" da RFB.
+  function isRelatorioPGFN(text){
+    return /REGULARIZE|Relat[óo]rio Consolidado da D[íi]vida|inscri[çc][õo]es em d[íi]vida ativa/i.test(text);
+  }
+
+  // Extrai as inscrições do Relatório de Dívida Ativa da União (PGFN/Regularize). Layout em
+  // cartões — usa âncoras de rótulo (não depende da ordem exata do texto extraído, já que
+  // PDFs em duas colunas costumam ter ordem de leitura pouco previsível).
+  function parseInscricoesPGFN(text){
+    const norm = text.replace(/[ \t]*\n[ \t]*/g, ' ').replace(/\s+/g, ' ');
+    const rows = [];
+    const inicioCartaoRe = /\d{1,3}\s\d\s\d{2}\s\d{6}-\d{2}\s+\d{2}\/\d{2}\/\d{4}\s+[A-ZÀ-Ú]/g;
+    const posicoes = [];
+    let mm;
+    while((mm = inicioCartaoRe.exec(norm)) !== null){ posicoes.push(mm.index); }
+    if(!posicoes.length) return rows;
+
+    for(let i=0; i<posicoes.length; i++){
+      const inicio = posicoes[i];
+      const fim = i+1 < posicoes.length ? posicoes[i+1] : norm.length;
+      const bloco = norm.slice(inicio, fim);
+
+      const inscricaoM = bloco.match(/^(\d{1,3}\s\d\s\d{2}\s\d{6}-\d{2})\s+(\d{2}\/\d{2}\/\d{4})/);
+      if(!inscricaoM) continue;
+      const numeroInscricao = inscricaoM[1];
+      const dataInscricao = inscricaoM[2];
+
+      const situacaoM = bloco.match(/(ATIVA EM COBRAN[ÇC]A|NEGOCIADA|GARANTIDA|SUSPENSA|EXTINTA)\s+R\$\s*([\d.,]+)/i);
+      const situacaoTexto = situacaoM ? situacaoM[1].toUpperCase() : '';
+      const valorConsolidado = situacaoM ? parseBRNumber(situacaoM[2]) : 0;
+
+      const receitaM = bloco.match(/Receita da d[íi]vida:\s*([\dA-Za-zÀ-ú]{1,6}\s*-\s*[^:]+?)(?=\s*Data da extin|\s*Principal\s*R\$)/i);
+      const nome = receitaM ? receitaM[1].trim() : 'Dívida Ativa da União';
+
+      const principalM = bloco.match(/Principal\s*R\$\s*([\d.,]+)/i);
+      const multaM = bloco.match(/Multa\s*R\$\s*([\d.,]+)/i);
+      const jurosM = bloco.match(/Juros de mora\s*R\$\s*([\d.,]+)/i);
+      const encargoM = bloco.match(/Encargo legal\s*R\$\s*([\d.,]+)/i);
+
+      const multa = multaM ? parseBRNumber(multaM[1]) : 0;
+      const valor = valorConsolidado || round2((principalM?parseBRNumber(principalM[1]):0) + multa + (jurosM?parseBRNumber(jurosM[1]):0) + (encargoM?parseBRNumber(encargoM[1]):0));
+
+      // O relatório da PGFN não traz um "mês de referência" como o da Receita Federal —
+      // usa-se a Data da Inscrição (MM/AAAA) como competência de referência disponível.
+      const partesData = dataInscricao.split('/');
+      const competencia = partesData.length===3 ? partesData[1]+'/'+partesData[2] : dataInscricao;
+
+      rows.push({
+        codigo: numeroInscricao, nome, periodo: competencia, vencimento: dataInscricao,
+        valorOriginal: principalM?parseBRNumber(principalM[1]):0, multa, juros: jurosM?parseBRNumber(jurosM[1]):0,
+        valor, situacao: situacaoTexto,
+        categoria: /ATIVA EM COBRAN/i.test(situacaoTexto) ? 'Vencido' : 'Indefinido',
+      });
+    }
+    return rows;
+  }
+
+  // Detecta a "Certidão de Regularidade Fiscal" estadual (Sefaz) — formato de certidão, com
+  // débitos tributários (regime + período + valor) e, às vezes, débitos de veículo (IPVA).
+  function isCertidaoEstadual(text){
+    return /CERTID[ÃA]O DE REGULARIDADE FISCAL/i.test(text) && /Fazenda P[úu]blica Estadual|SEFAZ/i.test(text);
+  }
+
+  function parseCertidaoEstadual(text){
+    const norm = text.replace(/[ \t]*\n[ \t]*/g, ' ').replace(/\s+/g, ' ');
+    const rows = [];
+
+    // Débitos tributários: nome do regime (ex.: SIMPLES NACIONAL) + competência MM/AAAA + valor.
+    const debitoRe = /([A-ZÀ-Ú][A-ZÀ-Ú ]{3,30}?)\s+(\d{2}\/\d{4})\s+([\d.,]+)/g;
+    let m;
+    while((m = debitoRe.exec(norm)) !== null){
+      rows.push({
+        codigo: '', nome: m[1].trim() + ' (Estadual)', periodo: m[2], vencimento: '',
+        valorOriginal: parseBRNumber(m[3]), multa: 0, juros: 0, valor: parseBRNumber(m[3]),
+        situacao: 'IRREGULAR', categoria: 'Vencido',
+      });
+    }
+
+    // Débitos de veículo (IPVA): placa + ano + tipo — geralmente sem valor monetário informado
+    // na própria certidão (exige consulta à Sefaz/Detran para o valor exato).
+    const ipvaRe = /([A-Z]{3}(?:\d{4}|\d[A-Z]\d{2}))\s+(\d{4})\s+([A-ZÀ-Ú]+)/g;
+    while((m = ipvaRe.exec(norm)) !== null){
+      rows.push({
+        codigo: m[1], nome: m[3] + ' — Placa ' + m[1] + ' (valor a consultar na Sefaz)', periodo: m[2], vencimento: '',
+        valorOriginal: 0, multa: 0, juros: 0, valor: 0,
+        situacao: 'IRREGULAR', categoria: 'Vencido',
+      });
+    }
+
+    return rows;
+  }
+
   function parseSituacaoFiscalPdf(text){
     const cnpjMatch = text.match(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/);
     const cnpj = cnpjMatch ? cnpjMatch[1] : '';
@@ -1098,27 +1191,40 @@
     const countDevedor = (text.match(/DEVEDOR/gi) || []).length;
     const countSemPendencia = (text.match(/Não foram detectadas pend[êe]ncias/gi) || []).length;
     const countSuspensa = (text.match(/Exigibilidade Suspensa/gi) || []).length;
+    const ehPGFN = isRelatorioPGFN(text);
+    const ehCertidaoEstadual = isCertidaoEstadual(text);
+    const countAtivaEmCobranca = ehPGFN ? (text.match(/ATIVA EM COBRAN[ÇC]A/gi) || []).length : 0;
+    const countIrregularidadesEstadual = ehCertidaoEstadual ? (text.match(/IRREGULARIDADE/gi) || []).length : 0;
+
+    if(ehCertidaoEstadual) esfera = 'Estadual';
 
     let status;
-    if(countDevedor > 0) status = 'Irregular';
-    else if(countSemPendencia > 0) status = 'Regular';
+    if(countDevedor > 0 || countAtivaEmCobranca > 0 || countIrregularidadesEstadual > 0) status = 'Irregular';
+    else if(countSemPendencia > 0 || ehCertidaoEstadual) status = 'Regular';
     else status = 'Pendente de verificação';
 
     const situacaoCadastralMatch = text.match(/Situa[çc][ãa]o:\s*([A-ZÀ-Ú]{2,10})/i);
     const emissaoMatch = text.match(/(\d{2}\/\d{2}\/\d{4})\s*\d{2}:\d{2}/);
 
-    const debitoRows = parseDebitoRows(text);
+    const debitoRows = ehPGFN ? parseInscricoesPGFN(text) : ehCertidaoEstadual ? parseCertidaoEstadual(text) : parseDebitoRows(text);
     const gruposImposto = agruparPorImposto(debitoRows);
     const totalGeral = debitoRows.reduce((s,r)=>s+r.valor, 0);
     const totalMultas = debitoRows.reduce((s,r)=>s+(Number(r.multa)||0), 0);
     const { porCategoria, totalVencido, totalAVencer } = agruparPorCategoriaEImposto(debitoRows);
 
     const partes = [];
-    partes.push('Informações extraídas diretamente do relatório oficial da Receita Federal.');
-    partes.push(countDevedor > 0 ? countDevedor + ' pendência(s)/débito(s) localizado(s) no relatório.' : 'Nenhum débito em situação "DEVEDOR" localizado no relatório.');
-    if(countSuspensa > 0) partes.push(countSuspensa + ' registro(s) com exigibilidade suspensa (em discussão/parcelado).');
+    const fonteTexto = ehPGFN ? 'Procuradoria-Geral da Fazenda Nacional (PGFN/Regularize).' : ehCertidaoEstadual ? 'Secretaria da Fazenda Estadual (Sefaz).' : 'Receita Federal.';
+    partes.push('Informações extraídas diretamente do relatório oficial da ' + fonteTexto);
+    if(ehPGFN){
+      partes.push(countAtivaEmCobranca > 0 ? debitoRows.length + ' inscrição(ões) em dívida ativa ativa(s) em cobrança localizada(s) no relatório.' : 'Nenhuma inscrição ativa em cobrança localizada no relatório.');
+    } else if(ehCertidaoEstadual){
+      partes.push(debitoRows.length > 0 ? debitoRows.length + ' irregularidade(s) localizada(s) na certidão estadual.' : 'Nenhuma irregularidade localizada na certidão estadual.');
+    } else {
+      partes.push(countDevedor > 0 ? countDevedor + ' pendência(s)/débito(s) localizado(s) no relatório.' : 'Nenhum débito em situação "DEVEDOR" localizado no relatório.');
+      if(countSuspensa > 0) partes.push(countSuspensa + ' registro(s) com exigibilidade suspensa (em discussão/parcelado).');
+    }
     if(debitoRows.length){
-      partes.push('Vencidos: ' + fmtBRL(totalVencido) + '. A vencer: ' + fmtBRL(totalAVencer) + '. Total: ' + fmtBRL(totalGeral) + ' em ' + gruposImposto.length + ' imposto(s) diferente(s).');
+      partes.push('Vencidos: ' + fmtBRL(totalVencido) + '. A vencer: ' + fmtBRL(totalAVencer) + '. Total: ' + fmtBRL(totalGeral) + ' em ' + gruposImposto.length + ' imposto(s)/inscrição(ões) diferente(s).');
     }
     if(totalMultas > 0) partes.push('Total de multas incluídas nesses valores: ' + fmtBRL(totalMultas) + '.');
     if(situacaoCadastralMatch) partes.push('Situação cadastral no relatório: ' + situacaoCadastralMatch[1] + '.');
