@@ -574,6 +574,22 @@
     contabilRelSubTab: 'balancete',
     relDataInicio: '',
     relDataFim: todayStr(),
+    propostas: [],
+    propostaClienteId: '',
+    propostaFaturamento: '',
+    propostaRegime: 'Simples Nacional',
+    propostaQtdFuncionarios: 0,
+    propostaIncluirBalanco: false,
+    propostaPendenciasSelecionadas: [],
+    propostaItensExtras: [],
+    propostaObservacoes: '',
+    propostaPreview: null,
+    comunicadoCanal: 'email',
+    comunicadoDestino: 'individual',
+    comunicadoClienteId: '',
+    comunicadoAssunto: '',
+    comunicadoCorpo: '',
+    comunicadoFilaEnviados: [],
     funcModalData: null,
     folhaCalcData: null,
     feriasCalcData: null,
@@ -612,6 +628,7 @@
     fiscalDoc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z" stroke-linejoin="round"/><path d="M9 8h6M9 12h6" stroke-linecap="round"/></svg>',
     contabilBook: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v18H6.5A2.5 2.5 0 0 0 4 22.5v-18z" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke-linecap="round"/></svg>',
     legalScale: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M5 7l-3 6a3 3 0 0 0 6 0l-3-6zM19 7l-3 6a3 3 0 0 0 6 0l-3-6zM5 7h14M9 21h6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    proposta: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z" stroke-linejoin="round"/><path d="M14 3v5h5M9 13h6M9 17h4" stroke-linecap="round"/></svg>',
   };
 
   const DEPARTMENTS = ['Departamento Pessoal', 'Fiscal', 'Contábil', 'Legal'];
@@ -753,6 +770,15 @@
   };
 
   const SIT_FISCAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação'];
+  const SIT_ESTADUAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação', 'Dispensada (sem atividade de comércio)'];
+
+  // Inscrição Estadual só é obrigatória para empresas com atividade de comércio, indústria ou
+  // transporte intermunicipal/interestadual (contribuintes de ICMS) — empresas puramente de
+  // serviço (sujeitas só a ISS) costumam ser dispensadas. Detecta pela atividade cadastrada.
+  function temAtividadeComercio(c){
+    const texto = ((c.mainActivity||'') + ' ' + (c.secondaryActivities||'')).toLowerCase();
+    return /com[eé]rcio|comercial|varejist|atacadist|revenda|\bloja\b|mercearia|supermercado|distribuidora|fabricação|indústria|industrial|transporte/.test(texto);
+  }
 
   // ============================================================================
   // TABELAS TRABALHISTAS/PREVIDENCIÁRIAS VIGENTES EM 2026
@@ -914,6 +940,7 @@
   function sitFiscalClass(status){
     if(status==='Regular') return 'sit-ativa';
     if(status==='Irregular') return 'sit-baixada';
+    if(status && status.startsWith('Dispensada')) return 'sit-outra';
     return 'sit-pendente';
   }
 
@@ -948,9 +975,19 @@
     let m;
     while((m = re.exec(norm)) !== null){
       const nums = m[5].trim().split(/\s+/).map(parseBRNumber);
-      const valor = nums.length ? nums[nums.length-1] : 0;
       const situacao = m[6].trim();
-      rows.push({ codigo: m[1], nome: m[2].trim().replace(/\.$/,''), periodo: m[3], vencimento: m[4], valor, situacao, categoria: classificarVencimento(situacao, m[4]) });
+      // Tabela de Pendência-Débito (SIEF) traz 5 colunas: Vl.Original, Sdo.Devedor, Multa, Juros, Sdo.Dev.Cons.
+      // Tabela de Exigibilidade Suspensa traz só 2: Vl.Original, Sdo.Devedor (sem multa/juros discriminados).
+      let valorOriginal, multa, juros, valor;
+      if(nums.length >= 5){
+        valorOriginal = nums[0]; multa = nums[2]; juros = nums[3]; valor = nums[4];
+      } else {
+        valorOriginal = nums[0]||0; multa = 0; juros = 0; valor = nums.length ? nums[nums.length-1] : 0;
+      }
+      rows.push({
+        codigo: m[1], nome: m[2].trim().replace(/\.$/,''), periodo: m[3], vencimento: m[4],
+        valorOriginal, multa, juros, valor, situacao, categoria: classificarVencimento(situacao, m[4]),
+      });
     }
     return rows;
   }
@@ -987,8 +1024,9 @@
     const grupos = {};
     rows.forEach(r=>{
       const key = r.periodo || 'Sem competência';
-      if(!grupos[key]) grupos[key] = { periodo: key, total: 0, itens: [] };
+      if(!grupos[key]) grupos[key] = { periodo: key, total: 0, totalMulta: 0, itens: [] };
       grupos[key].total += r.valor;
+      grupos[key].totalMulta += Number(r.multa)||0;
       grupos[key].itens.push(r);
     });
     return Object.values(grupos).sort((a,b)=> b.periodo.localeCompare(a.periodo));
@@ -1031,14 +1069,17 @@
     const debitoRows = parseDebitoRows(text);
     const gruposImposto = agruparPorImposto(debitoRows);
     const totalGeral = debitoRows.reduce((s,r)=>s+r.valor, 0);
+    const totalMultas = debitoRows.reduce((s,r)=>s+(Number(r.multa)||0), 0);
     const { porCategoria, totalVencido, totalAVencer } = agruparPorCategoriaEImposto(debitoRows);
 
     const partes = [];
+    partes.push('Informações extraídas diretamente do relatório oficial da Receita Federal.');
     partes.push(countDevedor > 0 ? countDevedor + ' pendência(s)/débito(s) localizado(s) no relatório.' : 'Nenhum débito em situação "DEVEDOR" localizado no relatório.');
     if(countSuspensa > 0) partes.push(countSuspensa + ' registro(s) com exigibilidade suspensa (em discussão/parcelado).');
     if(debitoRows.length){
       partes.push('Vencidos: ' + fmtBRL(totalVencido) + '. A vencer: ' + fmtBRL(totalAVencer) + '. Total: ' + fmtBRL(totalGeral) + ' em ' + gruposImposto.length + ' imposto(s) diferente(s).');
     }
+    if(totalMultas > 0) partes.push('Total de multas incluídas nesses valores: ' + fmtBRL(totalMultas) + '.');
     if(situacaoCadastralMatch) partes.push('Situação cadastral no relatório: ' + situacaoCadastralMatch[1] + '.');
     partes.push('Importado automaticamente de PDF em ' + todayStr().split('-').reverse().join('/') + '.');
     const resumo = partes.join(' ');
@@ -1047,7 +1088,7 @@
       ok: !!cnpj,
       cnpj, esfera, status, resumo,
       countDevedor, countSemPendencia, emissao: emissaoMatch ? emissaoMatch[1] : '',
-      debitoRows, gruposImposto, totalGeral, porCategoria, totalVencido, totalAVencer,
+      debitoRows, gruposImposto, totalGeral, totalMultas, porCategoria, totalVencido, totalAVencer,
     };
   }
 
@@ -1059,10 +1100,19 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     let y = pdfHeader(doc, 'Relatório de Situação Fiscal (Importado)', c ? c.name : '—');
+    doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(178,59,59);
+    doc.text('Fonte: informações extraídas diretamente do relatório oficial da Receita Federal', 14, y); y += 7;
+    doc.setTextColor(20,25,30);
     doc.setFont('helvetica','normal'); doc.setFontSize(10);
     doc.text('Esfera: ' + (r.esfera||'—') + '   Status: ' + (r.status||'—'), 14, y); y += 7;
     doc.text('Arquivo original: ' + (r.nomeArquivoOriginal||'—'), 14, y); y += 7;
-    doc.text('Importado em: ' + (r.dataImportacao ? new Date(r.dataImportacao).toLocaleString('pt-BR') : '—'), 14, y); y += 10;
+    doc.text('Importado em: ' + (r.dataImportacao ? new Date(r.dataImportacao).toLocaleString('pt-BR') : '—'), 14, y); y += 7;
+    if(r.totalMultas > 0){
+      doc.setFont('helvetica','bold'); doc.setTextColor(178,59,59);
+      doc.text('Total de multas nas pendências deste relatório: ' + fmtBRL(r.totalMultas), 14, y); y += 7;
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal');
+    }
+    y += 3;
     doc.setFont('helvetica','bold'); doc.text('Resumo automático:', 14, y); y += 6;
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
     const resumoLines = doc.splitTextToSize(r.resumo||'—', 180);
@@ -1077,18 +1127,19 @@
       competenciaGroups.forEach(comp=>{
         if(y > 260){ doc.addPage(); y = 20; }
         doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
-        doc.text('Competência ' + comp.periodo + ' — ' + fmtBRL(comp.total), 14, y); y += 6;
+        doc.text('Competência ' + comp.periodo + ' — ' + fmtBRL(comp.total) + (comp.totalMulta>0 ? ' (multa: '+fmtBRL(comp.totalMulta)+')' : ''), 14, y); y += 6;
         doc.setFontSize(8.5);
         doc.setFillColor(240,242,245);
         doc.rect(14, y-4, 182, 5.5, 'F');
         doc.setFont('helvetica','bold');
-        doc.text('Imposto', 16, y); doc.text('Vencimento', 120, y); doc.text('Valor', 196, y, {align:'right'});
+        doc.text('Imposto', 16, y); doc.text('Vencimento', 108, y); doc.text('Multa', 150, y); doc.text('Valor', 196, y, {align:'right'});
         y += 5.5;
         doc.setFont('helvetica','normal');
         comp.itens.forEach(item=>{
           if(y > 270){ doc.addPage(); y = 20; }
           doc.text(item.nome, 16, y);
-          doc.text(item.vencimento || '—', 120, y);
+          doc.text(item.vencimento || '—', 108, y);
+          doc.text(item.multa>0 ? fmtBRL(item.multa) : '—', 150, y);
           doc.text(fmtBRL(item.valor), 196, y, {align:'right'});
           y += 5.5;
         });
@@ -1183,6 +1234,130 @@
 
     const safeName = (c.name||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
     doc.save('situacao-fiscal-' + safeName + '.pdf');
+  }
+
+  function montarPropostaSnapshot(){
+    const clientId = state.propostaClienteId;
+    const cliente = state.clients.find(c=>c.id===clientId);
+    const fat = parseFloat(state.propostaFaturamento) || 0;
+    const { valor: honorarioBase, aCombinar, faixa } = calcHonorarioBase(fat, state.propostaRegime);
+    const valorFuncionarios = (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS;
+    const totalExtras = state.propostaItensExtras.reduce((s,i)=>s+(Number(i.valor)||0),0);
+    const totalMensal = (honorarioBase||0) + valorFuncionarios + totalExtras;
+    return {
+      clientId, clienteNome: cliente?cliente.name:'', clienteDoc: cliente?cliente.doc:'',
+      regime: state.propostaRegime, faturamento: fat,
+      honorarioBase, aCombinar, faixaTexto: faixa ? (fmtBRL(faixa.min)+' até '+(faixa.max===Infinity?'—':fmtBRL(faixa.max))) : '',
+      qtdFuncionarios: Number(state.propostaQtdFuncionarios)||0, valorFuncionarios,
+      pendencias: state.propostaPendenciasSelecionadas.slice(),
+      itensExtras: state.propostaItensExtras.slice(),
+      incluirBalanco: state.propostaIncluirBalanco,
+      observacoes: state.propostaObservacoes,
+      totalMensal, criadaEm: new Date().toISOString(),
+    };
+  }
+
+  function gerarPropostaPDF(p){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    try{ doc.addImage(LOGO, 'JPEG', 14, 10, 22, 22); }catch(e){}
+    doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(27,58,92);
+    doc.text('JP CONSULTORIA CONTÁBIL', 42, 18);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(90,105,120);
+    doc.text('Proposta Comercial de Serviços Contábeis', 42, 25);
+    doc.setDrawColor(230,230,230); doc.line(14, 36, pageW-14, 36);
+
+    let y = 46;
+    doc.setTextColor(20,25,30);
+    doc.setFont('helvetica','bold'); doc.setFontSize(11);
+    doc.text('Cliente: ' + (p.clienteNome||'—'), 14, y); y += 6;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    if(p.clienteDoc) { doc.text('CNPJ/CPF: ' + p.clienteDoc, 14, y); y += 6; }
+    doc.text('Data da proposta: ' + new Date().toLocaleDateString('pt-BR'), 14, y); y += 10;
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+    doc.text('Resumo dos honorários', 14, y); y += 7;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.text('Regime tributário: ' + p.regime, 14, y); y += 6;
+    if(p.faturamento) { doc.text('Faturamento mensal informado: ' + fmtBRL(p.faturamento), 14, y); y += 6; }
+
+    function linha(nome, valor, negrito){
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      doc.text(nome, 14, y); doc.text(p.aCombinar && negrito ? 'A combinar' : fmtBRL(valor), pageW-14, y, {align:'right'});
+      y += 6;
+    }
+    y += 2;
+    linha('Honorário base (Tabela de Honorários)' + (p.faixaTexto?' — '+p.faixaTexto:''), p.honorarioBase||0, true);
+    if(p.qtdFuncionarios>0) linha('Funcionários registrados (' + p.qtdFuncionarios + ' × ' + fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS) + ')', p.valorFuncionarios);
+    p.itensExtras.forEach(it=> linha(it.descricao, it.valor));
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
+    linha('TOTAL MENSAL ESTIMADO', p.totalMensal, true);
+    y += 6;
+
+    if(p.pendencias && p.pendencias.length){
+      if(y > 250){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+      doc.text('Regularização de pendências de situação fiscal (avulso)', 14, y); y += 7;
+      doc.setFontSize(8.5);
+      doc.setFillColor(240,242,245); doc.rect(14, y-4, pageW-28, 5.5, 'F');
+      doc.setFont('helvetica','bold');
+      doc.text('Declaração/Imposto', 16, y); doc.text('Competência', 110, y); doc.text('Valor a cobrar', pageW-16, y, {align:'right'});
+      y += 5.5; doc.setFont('helvetica','normal');
+      let totalPend = 0;
+      p.pendencias.forEach(pd=>{
+        if(y > 275){ doc.addPage(); y = 20; }
+        doc.text(pd.nome, 16, y); doc.text(pd.competencia, 110, y); doc.text(fmtBRL(pd.valorCobranca), pageW-16, y, {align:'right'});
+        totalPend += Number(pd.valorCobranca)||0;
+        y += 5.5;
+      });
+      doc.setFont('helvetica','bold');
+      doc.text('Total pela regularização das pendências', 16, y); doc.text(fmtBRL(totalPend), pageW-16, y, {align:'right'});
+      y += 9;
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(90,105,120);
+      const notaLines = doc.splitTextToSize('Os valores de débito informados nesta seção foram extraídos diretamente do relatório oficial da Receita Federal importado no sistema; os valores "a cobrar" acima referem-se ao serviço de regularização/entrega das declarações, não ao imposto em si.', pageW-28);
+      doc.text(notaLines, 14, y); y += notaLines.length*3.6 + 6;
+      doc.setTextColor(20,25,30);
+    }
+
+    if(y > 240){ doc.addPage(); y = 20; }
+    doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+    doc.text('O que faremos por sua empresa', 14, y); y += 7;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    SERVICOS_INCLUIDOS_HONORARIOS.forEach(s=>{
+      if(y > 280){ doc.addPage(); y = 20; }
+      const l = doc.splitTextToSize('• ' + s, pageW-28);
+      doc.text(l, 14, y); y += l.length*4.6;
+    });
+    y += 4;
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+    doc.text('Condições', 14, y); y += 7;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    const condicoes = [
+      'Reajustes: todos os valores serão reajustados após 12 (doze) meses de contrato, conforme a tabela do salário mínimo vigente.',
+    ];
+    if(p.incluirBalanco) condicoes.push('Balanço Anual: caso seja necessário o fechamento de balanço anual, será cobrado no final de cada ano um honorário a mais para encerramento de exercício, conforme consta no CFC.');
+    condicoes.push('Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (' + fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026) + ', valor 2026) para faturamento de até R$ 100.000,00/mês.');
+    condicoes.forEach(c=>{
+      if(y > 280){ doc.addPage(); y = 20; }
+      const l = doc.splitTextToSize(c, pageW-28);
+      doc.text(l, 14, y); y += l.length*4 + 3;
+    });
+
+    if(p.observacoes){
+      y += 2;
+      if(y > 270){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text('Observações:', 14, y); y += 5;
+      doc.setFont('helvetica','normal');
+      const l = doc.splitTextToSize(p.observacoes, pageW-28);
+      doc.text(l, 14, y); y += l.length*4.2;
+    }
+
+    doc.setFontSize(7.5); doc.setTextColor(140,150,160);
+    doc.text('JP Consultoria Contábil — Proposta gerada em ' + new Date().toLocaleString('pt-BR'), 14, 292);
+    doc.save('proposta-' + (p.clienteNome||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function pdfHeader(doc, titulo, subtitulo){
@@ -1384,6 +1559,150 @@
     doc.save('razao-' + conta.codigo.replace(/\./g,'-') + '-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
+  function pendenciasClienteParaProposta(clientId){
+    const relatorios = state.relatoriosFiscais.filter(r=>r.clientId===clientId);
+    const itens = [];
+    relatorios.forEach(r=>{
+      const vencidos = (r.porCategoria && r.porCategoria['Vencido']) || [];
+      vencidos.forEach(comp=>{
+        comp.itens.forEach(item=>{
+          itens.push({
+            id: r.id + '::' + item.codigo + '::' + item.periodo,
+            nome: item.nome, competencia: item.periodo, esfera: r.esfera,
+            valorDebito: item.valor, multa: item.multa||0,
+          });
+        });
+      });
+    });
+    return itens;
+  }
+
+  function renderServicosContabeis(){
+    const clientId = state.propostaClienteId;
+    const cliente = state.clients.find(c=>c.id===clientId);
+    const pendencias = clientId ? pendenciasClienteParaProposta(clientId) : [];
+    const qtdFuncSugerida = clientId ? state.funcionarios.filter(f=>f.clientId===clientId && f.status!=='Desligado').length : 0;
+
+    let honorarioBase = null, faixaInfo = null, aCombinar = false;
+    const fat = parseFloat(state.propostaFaturamento);
+    if(fat > 0){
+      const r = calcHonorarioBase(fat, state.propostaRegime);
+      honorarioBase = r.valor; aCombinar = r.aCombinar; faixaInfo = r.faixa;
+    }
+    const valorFuncionarios = (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS;
+    const totalPendencias = state.propostaPendenciasSelecionadas.reduce((s,p)=>s+(Number(p.valorCobranca)||0), 0);
+    const totalExtras = state.propostaItensExtras.reduce((s,i)=>s+(Number(i.valor)||0), 0);
+    const totalMensal = (honorarioBase||0) + valorFuncionarios + totalExtras;
+
+    return `
+      <div class="panel">
+        <div class="panel-head"><h3>Serviços Contábeis — Proposta Comercial</h3></div>
+        <div class="form-hint" style="margin:-4px 0 16px;">Monta uma proposta de honorários com a logomarca do escritório, usando a Tabela de Honorários Mensais vigente, puxando automaticamente a quantidade de funcionários e as pendências de situação fiscal já importadas para o cliente selecionado.</div>
+
+        <div class="form-row">
+          <div class="field"><label>Cliente</label>
+            <select id="propCliente">
+              <option value="">— Selecione —</option>
+              ${state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>`<option value="${c.id}" ${c.id===clientId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Regime tributário</label>
+            <select id="propRegime">
+              <option value="Simples Nacional" ${state.propostaRegime==='Simples Nacional'?'selected':''}>Simples Nacional</option>
+              <option value="Lucro Presumido" ${state.propostaRegime==='Lucro Presumido'?'selected':''}>Lucro Presumido</option>
+              <option value="Lucro Real" ${state.propostaRegime==='Lucro Real'?'selected':''}>Lucro Real (fora da tabela — valor a combinar)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Faturamento mensal (R$)</label><input type="number" step="0.01" min="0" id="propFaturamento" value="${escapeHtml(state.propostaFaturamento)}" placeholder="Ex: 25000"/></div>
+          <div class="field"><label>Quantidade de funcionários registrados</label><input type="number" min="0" step="1" id="propQtdFunc" value="${state.propostaQtdFuncionarios}"/></div>
+        </div>
+        ${clientId && qtdFuncSugerida !== Number(state.propostaQtdFuncionarios) ? `<div class="form-hint" style="margin:-8px 0 12px;">O Cadastro de Funcionários mostra ${qtdFuncSugerida} funcionário(s) ativo(s) para este cliente. <button type="button" class="btn-sm" id="propUsarQtdSugerida" style="margin-left:6px;">Usar ${qtdFuncSugerida}</button></div>` : ''}
+
+        <div class="form-section-title">Honorário base (Tabela de Honorários Mensais)</div>
+        <div class="payroll-result">
+          ${fat > 0 ? (aCombinar ? `
+            <div class="pr-line total"><span>Faturamento acima de R$ 100.000,00 — valor a combinar</span><span>—</span></div>
+          ` : faixaInfo ? `
+            <div class="pr-line"><span>Faixa: ${fmtBRL(faixaInfo.min)} até ${faixaInfo.max===Infinity?'—':fmtBRL(faixaInfo.max)}</span><span>${escapeHtml(state.propostaRegime)}</span></div>
+            <div class="pr-line total"><span>Honorário base mensal</span><span>${fmtBRL(honorarioBase)}</span></div>
+          ` : `<div class="pr-line"><span>Informe o faturamento para calcular a faixa</span><span>—</span></div>`) : `<div class="pr-line"><span>Informe o faturamento mensal acima</span><span>—</span></div>`}
+          <div class="pr-line"><span>Funcionários (${state.propostaQtdFuncionarios} × ${fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS)})</span><span>${fmtBRL(valorFuncionarios)}</span></div>
+        </div>
+        <div class="legis-note">Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (${fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026)}, valor 2026) para faturamento de até R$ 100.000,00/mês. Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
+
+        <div class="form-section-title">Pendências de Situação Fiscal (opcional — cobrança por regularização/declaração)</div>
+        ${!clientId ? `<div class="form-hint">Selecione um cliente para ver as pendências já importadas da Receita Federal.</div>` : !pendencias.length ? `<div class="form-hint">Nenhuma pendência vencida importada para este cliente (veja em Depto Fiscal → Situação Fiscal → Ver relatórios).</div>` : `
+          <div class="cc-list">
+            ${pendencias.map(p=>{
+              const selecionada = state.propostaPendenciasSelecionadas.find(s=>s.id===p.id);
+              return `
+              <div class="cc-row">
+                <div class="cr-main">
+                  <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input type="checkbox" class="prop-pend-check" data-pend-id="${p.id}" data-pend-nome="${escapeHtml(p.nome)}" data-pend-comp="${escapeHtml(p.competencia)}" ${selecionada?'checked':''}/>
+                    <div>
+                      <div class="cr-title">${escapeHtml(p.nome)} — Competência ${escapeHtml(p.competencia)}</div>
+                      <div class="cr-meta">${escapeHtml(p.esfera||'')} · Débito na Receita: ${fmtBRL(p.valorDebito)}${p.multa>0?' (inclui '+fmtBRL(p.multa)+' de multa)':''}</div>
+                    </div>
+                  </label>
+                </div>
+                <input type="number" step="0.01" min="0" class="prop-pend-valor" data-pend-id="${p.id}" placeholder="Valor a cobrar" value="${selecionada?selecionada.valorCobranca:''}" style="width:120px;" ${selecionada?'':'disabled'}/>
+              </div>
+            `;}).join('')}
+          </div>
+          ${totalPendencias>0 ? `<div class="form-hint" style="margin-top:8px; font-weight:700;">Total por regularização de pendências: ${fmtBRL(totalPendencias)}</div>` : ''}
+        `}
+
+        <div class="form-section-title">Itens extras (opcional)</div>
+        <div id="propItensExtrasContainer">
+          ${state.propostaItensExtras.map((it,idx)=>`
+            <div class="form-row" style="align-items:flex-end;">
+              <div class="field"><label>Descrição</label><input type="text" class="prop-extra-desc" data-idx="${idx}" value="${escapeHtml(it.descricao)}"/></div>
+              <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0" class="prop-extra-valor" data-idx="${idx}" value="${it.valor}"/></div>
+              <button type="button" class="btn-sm danger" data-del-extra="${idx}" style="margin-bottom:14px;">Remover</button>
+            </div>
+          `).join('')}
+        </div>
+        <button type="button" class="btn-sm" id="propAddExtraBtn">+ Adicionar item extra</button>
+
+        <div class="form-section-title">Balanço Anual</div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-soft); cursor:pointer;">
+          <input type="checkbox" id="propIncluirBalanco" ${state.propostaIncluirBalanco?'checked':''}/> Mencionar cobrança de honorário extra para fechamento de Balanço Anual (conforme CFC)
+        </label>
+
+        <div class="field" style="margin-top:14px;"><label>Observações adicionais na proposta</label><input type="text" id="propObservacoes" value="${escapeHtml(state.propostaObservacoes)}"/></div>
+
+        <div class="payroll-result" style="margin-top:16px;">
+          <div class="pr-line total"><span>TOTAL MENSAL ESTIMADO</span><span>${aCombinar ? 'A combinar' : fmtBRL(totalMensal)}</span></div>
+        </div>
+
+        <div style="display:flex; gap:10px; margin-top:14px;">
+          <button type="button" class="btn-add" id="propGerarPdfBtn" ${!clientId?'disabled':''}>Gerar Proposta em PDF</button>
+          <button type="button" class="btn-detail" id="propSalvarBtn" ${!clientId?'disabled':''}>Salvar Proposta</button>
+        </div>
+
+        <div class="form-section-title">Propostas salvas</div>
+        ${!state.propostas.length ? `<div class="empty">Nenhuma proposta salva ainda.</div>` : `
+          <table>
+            <thead><tr><th>Cliente</th><th>Data</th><th style="text-align:right">Total mensal</th><th></th></tr></thead>
+            <tbody>
+              ${state.propostas.map(p=>`
+                <tr>
+                  <td>${escapeHtml(clientName(p.clientId))}</td>
+                  <td>${p.criadaEm ? new Date(p.criadaEm).toLocaleDateString('pt-BR') : '—'}</td>
+                  <td style="text-align:right" class="mono">${p.aCombinar ? 'A combinar' : fmtBRL(p.totalMensal)}</td>
+                  <td><button class="btn-sm danger" data-del-proposta="${p.id}">Excluir</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `}
+      </div>
+    `;
+  }
+
   function generateGuiaPDF(tipo){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const { jsPDF } = window.jspdf;
@@ -1513,6 +1832,45 @@
   ];
   const REFORMA_DEFAULT_CBS = 8.8;
   const REFORMA_DEFAULT_IBS = 17.7;
+
+  // ============================================================================
+  // TABELA DE HONORÁRIOS MENSAIS — Empresas (Comércio/Indústria/Serviços), sem
+  // empregados. Transcrita exatamente conforme a tabela oficial do escritório.
+  // ============================================================================
+  const TABELA_HONORARIOS = [
+    {min:0.01, max:5000.00, simples:500.00, presumido:600.00},
+    {min:5000.01, max:10000.00, simples:550.00, presumido:650.00},
+    {min:10000.01, max:15000.00, simples:600.00, presumido:650.00},
+    {min:15000.01, max:20000.00, simples:650.00, presumido:750.00},
+    {min:20000.01, max:30000.00, simples:750.00, presumido:850.00},
+    {min:30000.01, max:40000.00, simples:650.00, presumido:750.00},
+    {min:40000.01, max:50000.00, simples:700.00, presumido:800.00},
+    {min:50000.01, max:60000.00, simples:750.00, presumido:850.00},
+    {min:60000.01, max:70000.00, simples:800.00, presumido:900.00},
+    {min:70000.01, max:80000.00, simples:850.00, presumido:950.00},
+    {min:80000.01, max:90000.00, simples:900.00, presumido:1000.00},
+    {min:90000.01, max:100000.00, simples:950.00, presumido:1050.00},
+    {min:100000.01, max:Infinity, simples:null, presumido:null},
+  ];
+  const VALOR_POR_EMPREGADO_HONORARIOS = 50.00;
+  const VALOR_MEIO_SALARIO_MINIMO_2026 = 810.50;
+  const SERVICOS_INCLUIDOS_HONORARIOS = [
+    'Alterações Contratuais', 'Envio e Transmissão das Obrigações (declarações) acessórias mensais e anuais',
+    'Declaração Pessoa Física - Sócios', 'Declaração Pessoa Jurídica - Empresa',
+    'Departamentos: Pessoal / Fiscal / Contábil / Legal', 'Consultorias e Orientações Técnicas',
+    'Situações Fiscais Mensais: Federal / Estadual / Municipal', 'Visitas Técnicas',
+    'Cursos e Treinamentos', 'Reuniões Administrativas',
+  ];
+
+  function buscarFaixaHonorario(faturamento){
+    return TABELA_HONORARIOS.find(f => faturamento >= f.min && faturamento <= f.max) || null;
+  }
+  function calcHonorarioBase(faturamento, regime){
+    const faixa = buscarFaixaHonorario(faturamento);
+    if(!faixa) return { valor: null, aCombinar: true, faixa: null };
+    const valor = regime === 'Lucro Presumido' ? faixa.presumido : faixa.simples;
+    return { valor, aCombinar: valor===null, faixa };
+  }
 
   // ============================================================================
   // DEPARTAMENTO CONTÁBIL — Plano de Contas padrão (estrutura básica compatível
@@ -2485,6 +2843,28 @@
   // empresa passar a ter os seus próprios (sem "clientId") ficariam órfãos/invisíveis agora.
   // Se o escritório tiver só UMA empresa cadastrada, não há ambiguidade — atribui os dados
   // órfãos a ela automaticamente. Com duas ou mais empresas, não arrisca adivinhar e não mexe.
+  async function loadPropostas(){
+    state.propostas = [];
+    try{
+      const keys = await Store.list('propostas:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.propostas.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.propostas.sort((a,b)=> (b.criadaEm||'').localeCompare(a.criadaEm||''));
+  }
+  async function savePropostaItem(p){
+    if(!p.id) p.id = uid();
+    await Store.set('propostas:'+p.id, JSON.stringify(p), true);
+    await loadPropostas(); render();
+  }
+  async function deletePropostaItem(id){
+    await Store.delete('propostas:'+id, true);
+    await loadPropostas(); render();
+  }
+
   async function migrarContabilParaEmpresaUnica(){
     const marker = await Store.get('contabil_migracao_empresa_unica_v1', true).catch(()=>null);
     if(marker) return;
@@ -2870,6 +3250,7 @@
     await dedupPlanoContas();
     await dedupHistoricos();
     await migrarContabilParaEmpresaUnica();
+    await loadPropostas();
   }
 
   async function exportAllData(){
@@ -2893,6 +3274,7 @@
       historicos: state.historicos,
       lancamentosContabeis: state.lancamentosContabeis,
       planoContasReferencial: state.planoContasReferencial,
+      propostas: state.propostas,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -2944,6 +3326,7 @@
       {key:'historicos', prefix:'historicos:', idField:'id'},
       {key:'lancamentosContabeis', prefix:'lancamentoscontabeis:', idField:'id'},
       {key:'planoContasReferencial', prefix:'planocontasref:', idField:'id'},
+      {key:'propostas', prefix:'propostas:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -3232,6 +3615,7 @@
       {k:'depto-contabil', label:'Depto Contábil', subtitle:'Livro Diário, Balanço e DRE', icon:ICONS.contabilBook, dept:'Contábil'},
       {k:'depto-legal', label:'Setor Jurídico', subtitle:'Contratos e Processos', icon:ICONS.legalScale, dept:'Legal'},
       {k:'lancamentos', label:'Setor Financeiro', subtitle:'Fluxo e Lançamentos', icon:ICONS.lanc},
+      {k:'servicos-contabeis', label:'Serviços Contábeis', subtitle:'Propostas e Honorários', icon:ICONS.proposta},
       {k:'relatorios', label:'Relatórios', subtitle:'Gráficos e resumos', icon:ICONS.relatorios},
     ].filter(it => !it.dept || userHasDeptAccess(state.user, it.dept));
     if(state.user.role==='admin'){
@@ -3572,6 +3956,94 @@
     `;
   }
 
+  function comunicadoRenderTexto(texto, cliente){
+    return (texto||'').replace(/\[NOME_CLIENTE\]/g, cliente ? cliente.name : '[NOME_CLIENTE]');
+  }
+
+  function comunicadosPanelHtml(){
+    const clientesOrdenados = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const clienteSel = state.clients.find(c=>c.id===state.comunicadoClienteId);
+    const previewCliente = state.comunicadoDestino==='individual' ? clienteSel : null;
+    const corpoPreview = comunicadoRenderTexto(state.comunicadoCorpo, previewCliente);
+    let elegiveis = [];
+    if(state.comunicadoDestino==='todos'){
+      elegiveis = clientesOrdenados.filter(c => state.comunicadoCanal==='whatsapp' ? !!c.phone : !!c.email);
+    }
+    return `
+      <div class="panel-head">
+        <h3>Comunicados aos Clientes</h3>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Envie um aviso livre (não precisa ser sobre imposto) para um cliente específico ou para todos de uma vez, por Email ou WhatsApp. Use [NOME_CLIENTE] no texto para personalizar automaticamente.</div>
+
+      <div class="form-row">
+        <div class="field"><label>Canal</label>
+          <select id="comCanal">
+            <option value="email" ${state.comunicadoCanal==='email'?'selected':''}>Email</option>
+            <option value="whatsapp" ${state.comunicadoCanal==='whatsapp'?'selected':''}>WhatsApp</option>
+          </select>
+        </div>
+        <div class="field"><label>Destinatários</label>
+          <select id="comDestino">
+            <option value="individual" ${state.comunicadoDestino==='individual'?'selected':''}>Cliente específico</option>
+            <option value="todos" ${state.comunicadoDestino==='todos'?'selected':''}>Todos os clientes</option>
+          </select>
+        </div>
+      </div>
+      ${state.comunicadoDestino==='individual' ? `
+        <div class="field"><label>Cliente</label>
+          <select id="comCliente">
+            <option value="">— Selecione —</option>
+            ${clientesOrdenados.map(c=>`<option value="${c.id}" ${c.id===state.comunicadoClienteId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        ${clienteSel ? `<div class="form-hint" style="margin:-8px 0 12px;">${state.comunicadoCanal==='whatsapp' ? 'Telefone: '+escapeHtml(clienteSel.phone||'não cadastrado') : 'Email: '+escapeHtml(clienteSel.email||'não cadastrado')}</div>` : ''}
+      ` : `
+        <div class="form-hint" style="margin:0 0 12px;">${elegiveis.length} de ${clientesOrdenados.length} clientes têm ${state.comunicadoCanal==='whatsapp'?'telefone':'email'} cadastrado e vão receber este comunicado.</div>
+      `}
+
+      ${state.comunicadoCanal==='email' ? `<div class="field"><label>Assunto</label><input type="text" id="comAssunto" value="${escapeHtml(state.comunicadoAssunto)}"/></div>` : ''}
+      <div class="field"><label>Mensagem</label><textarea id="comCorpo" rows="6" style="width:100%; resize:vertical; font-family:inherit; font-size:13px; padding:10px; border:1px solid var(--line); border-radius:8px;">${escapeHtml(state.comunicadoCorpo)}</textarea></div>
+
+      <div class="form-hint" style="margin-top:10px;">Pré-visualização${previewCliente?' (para '+escapeHtml(previewCliente.name)+')':''}</div>
+      <div class="msg-send-preview">${state.comunicadoCanal==='email' ? '<strong>Assunto:</strong> '+escapeHtml(comunicadoRenderTexto(state.comunicadoAssunto, previewCliente))+'\n\n' : ''}${escapeHtml(corpoPreview)}</div>
+
+      ${state.comunicadoDestino==='individual' ? `
+        <div class="msg-actions" style="margin-top:14px;">
+          <button type="button" class="btn-add btn-send-system" id="comEnviarIndividualBtn">Enviar ${state.comunicadoCanal==='whatsapp'?'WhatsApp':'Email'}</button>
+        </div>
+      ` : state.comunicadoCanal==='email' ? `
+        <div class="msg-actions" style="margin-top:14px;">
+          <button type="button" class="btn-add btn-send-system" id="comEnviarTodosEmailBtn">Enviar para todos por Email (${elegiveis.length})</button>
+        </div>
+        <div class="form-hint" style="margin-top:6px;">Abre um único email com todos os destinatários em cópia oculta (CCO/BCC) — cada cliente só vê o próprio endereço.</div>
+      ` : `
+        <div class="form-hint" style="margin:14px 0 6px; font-weight:700; color:var(--ink);">WhatsApp não permite disparo em massa pelo navegador — envie um por um clicando em cada cliente abaixo (${state.comunicadoFilaEnviados.length} de ${elegiveis.length} já enviados nesta sessão):</div>
+        <div class="cc-list">
+          ${elegiveis.map(c=>{
+            const jaEnviado = state.comunicadoFilaEnviados.includes(c.id);
+            return `
+            <div class="cc-row">
+              <div class="cr-main"><div class="cr-title">${escapeHtml(c.name)}</div><div class="cr-meta">${escapeHtml(c.phone||'')}</div></div>
+              <button type="button" class="btn-sm ${jaEnviado?'':'btn-send-system'}" data-com-enviar-whats="${c.id}">${jaEnviado?'✓ Enviado':'Enviar'}</button>
+            </div>
+          `;}).join('')}
+        </div>
+      `}
+
+      ${state.envios.some(e=>e.isComunicado) ? `
+        <div class="form-section-title">Últimos comunicados enviados</div>
+        <div class="msg-history">
+          ${state.envios.filter(e=>e.isComunicado).slice(0,10).map(e=>`
+            <div class="msg-history-item">
+              <span class="tag ${e.canal==='whatsapp'?'sit-ativa':'sit-outra'}">${e.canal==='whatsapp'?'WhatsApp':'Email'}</span>
+              ${escapeHtml(clientName(e.clientId))} — ${e.sentAt ? new Date(e.sentAt).toLocaleString('pt-BR') : ''}
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+    `;
+  }
+
   function mensagensPanelHtml(){
     return `
       <div class="panel-head">
@@ -3615,6 +4087,8 @@
         ${informativoRFHtml()}
         <div class="form-section-title"></div>
         ${mensagensPanelHtml()}
+        <div class="form-section-title"></div>
+        ${comunicadosPanelHtml()}
       </div>
     `;
   }
@@ -4237,14 +4711,15 @@
       <div class="form-hint" style="margin:10px 0 6px; font-weight:700; text-transform:none; font-size:12.5px; color:var(--ink);">${escapeHtml(titulo)} — Total ${fmtBRL(total)}</div>
       ${competenciaGroups.map(comp=>`
         <div style="margin-bottom:10px;">
-          <div style="font-size:11.5px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; margin-bottom:4px;">Competência ${escapeHtml(comp.periodo)} — ${fmtBRL(comp.total)}</div>
+          <div style="font-size:11.5px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; margin-bottom:4px;">Competência ${escapeHtml(comp.periodo)} — ${fmtBRL(comp.total)}${comp.totalMulta>0 ? ' (inclui ' + fmtBRL(comp.totalMulta) + ' de multa)' : ''}</div>
           <table style="margin-bottom:6px;">
-            <thead><tr><th>Imposto</th><th>Vencimento</th><th style="text-align:right">Valor</th></tr></thead>
+            <thead><tr><th>Imposto</th><th>Vencimento</th><th style="text-align:right">Multa</th><th style="text-align:right">Valor</th></tr></thead>
             <tbody>
               ${comp.itens.map(item=>`
                 <tr>
                   <td>${escapeHtml(item.nome)}</td>
                   <td>${item.vencimento || '—'}</td>
+                  <td style="text-align:right" class="mono">${item.multa>0 ? fmtBRL(item.multa) : '—'}</td>
                   <td style="text-align:right" class="val-cell ${corClass}">${fmtBRL(item.valor)}</td>
                 </tr>
               `).join('')}
@@ -4281,7 +4756,9 @@
                   <button type="button" class="btn-sm danger" data-del-relatorio="${r.id}">Excluir</button>
                 </div>
               </div>
+              <div class="si-meta" style="margin-bottom:4px; font-weight:700; color:var(--ink);">📄 Fonte: informações extraídas diretamente do relatório oficial da Receita Federal</div>
               <div class="si-meta" style="margin-bottom:8px;">${escapeHtml(r.resumo||'')}</div>
+              ${r.totalMultas>0 ? `<div class="si-meta" style="margin-bottom:8px; color:var(--red); font-weight:700;">Total de multas nas pendências deste relatório: ${fmtBRL(r.totalMultas)}</div>` : ''}
               ${temDados ? `
                 ${categoriaTableHtml('Impostos Vencidos', pc['Vencido'], r.totalVencido, 'despesa')}
                 ${categoriaTableHtml('Impostos a Vencer', pc['A Vencer'], r.totalAVencer, 'receita')}
@@ -4317,12 +4794,14 @@
             <div class="field"><label>Observações (federal)</label><input type="text" id="sfFedObs" value="${escapeHtml(c.sitFedObs||'')}"/></div>
 
             <div class="form-section-title">Estadual (Sefaz)</div>
+            <div class="form-hint" style="margin:-4px 0 8px;">${temAtividadeComercio(c) ? 'Pela atividade cadastrada, esta empresa tem comércio/indústria/transporte — Inscrição Estadual é obrigatória.' : 'Pela atividade cadastrada, esta empresa não tem comércio, indústria ou transporte — Inscrição Estadual pode ser dispensada (contribuinte só de ISS).'}</div>
             <div class="form-row">
               <div class="field"><label>Status</label>
-                <select id="sfEstStatus">${optHtml(SIT_FISCAL_STATUS, c.sitEstStatus)}</select>
+                <select id="sfEstStatus">${optHtml(SIT_ESTADUAL_STATUS, c.sitEstStatus)}</select>
               </div>
               <div class="field"><label>Data da verificação</label><input type="date" id="sfEstData" value="${c.sitEstData||todayStr()}"/></div>
             </div>
+            ${!temAtividadeComercio(c) ? `<button type="button" class="btn-sm" id="sfEstDispensadaBtn" style="margin-bottom:10px;">Marcar como Dispensada (sem atividade de comércio)</button>` : ''}
             <div class="field"><label>Observações (estadual)</label><input type="text" id="sfEstObs" value="${escapeHtml(c.sitEstObs||'')}"/></div>
 
             <div class="modal-actions">
@@ -5936,6 +6415,7 @@
     }
     else if(state.view==='lancamentos') content = renderLancamentos();
     else if(state.view==='clientes') content = renderClientes();
+    else if(state.view==='servicos-contabeis') content = renderServicosContabeis();
     else if(state.view==='relatorios') content = renderRelatorios();
     else if(state.view==='admin') content = renderAdmin();
 
@@ -6312,6 +6792,63 @@
     const msgSendCancel = document.getElementById('msgSendCancel');
     if(msgSendCancel) msgSendCancel.onclick = ()=>{ state.modal=null; state.msgSendData=null; render(); };
 
+    // ===== Comunicados aos Clientes =====
+    const comCanal = document.getElementById('comCanal');
+    if(comCanal) comCanal.onchange = (e)=>{ state.comunicadoCanal = e.target.value; state.comunicadoFilaEnviados = []; render(); };
+    const comDestino = document.getElementById('comDestino');
+    if(comDestino) comDestino.onchange = (e)=>{ state.comunicadoDestino = e.target.value; render(); };
+    const comCliente = document.getElementById('comCliente');
+    if(comCliente) comCliente.onchange = (e)=>{ state.comunicadoClienteId = e.target.value; render(); };
+    const comAssunto = document.getElementById('comAssunto');
+    if(comAssunto) comAssunto.onchange = (e)=>{ state.comunicadoAssunto = e.target.value; render(); };
+    const comCorpo = document.getElementById('comCorpo');
+    if(comCorpo) comCorpo.onchange = (e)=>{ state.comunicadoCorpo = e.target.value; render(); };
+
+    const comEnviarIndividualBtn = document.getElementById('comEnviarIndividualBtn');
+    if(comEnviarIndividualBtn){
+      comEnviarIndividualBtn.onclick = async ()=>{
+        const client = state.clients.find(c=>c.id===state.comunicadoClienteId);
+        if(!client){ alert('Selecione um cliente.'); return; }
+        const texto = comunicadoRenderTexto(state.comunicadoCorpo, client);
+        const assunto = comunicadoRenderTexto(state.comunicadoAssunto, client);
+        if(state.comunicadoCanal==='whatsapp'){
+          if(!client.phone){ alert('Este cliente não tem telefone cadastrado.'); return; }
+        } else if(!client.email){ alert('Este cliente não tem email cadastrado.'); return; }
+        await saveEnvio({ clientId: client.id, canal: state.comunicadoCanal, texto, assunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.email:'' });
+        if(state.comunicadoCanal==='whatsapp'){
+          window.open('https://wa.me/'+waPhoneDigits(client.phone)+'?text='+encodeURIComponent(texto), '_blank');
+        } else {
+          window.location.href = 'mailto:'+encodeURIComponent(client.email)+'?subject='+encodeURIComponent(assunto)+'&body='+encodeURIComponent(texto);
+        }
+        render();
+      };
+    }
+    const comEnviarTodosEmailBtn = document.getElementById('comEnviarTodosEmailBtn');
+    if(comEnviarTodosEmailBtn){
+      comEnviarTodosEmailBtn.onclick = async ()=>{
+        const elegiveis = state.clients.filter(c=>!!c.email);
+        if(!elegiveis.length){ alert('Nenhum cliente com email cadastrado.'); return; }
+        for(const client of elegiveis){
+          await saveEnvio({ clientId: client.id, canal:'email', texto: comunicadoRenderTexto(state.comunicadoCorpo, client), assunto: state.comunicadoAssunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.email:'' });
+        }
+        const bcc = elegiveis.map(c=>c.email).join(',');
+        window.location.href = 'mailto:?bcc='+encodeURIComponent(bcc)+'&subject='+encodeURIComponent(state.comunicadoAssunto)+'&body='+encodeURIComponent(state.comunicadoCorpo);
+        render();
+      };
+    }
+    root.querySelectorAll('[data-com-enviar-whats]').forEach(el=>{
+      el.onclick = async ()=>{
+        const clientId = el.getAttribute('data-com-enviar-whats');
+        const client = state.clients.find(c=>c.id===clientId);
+        if(!client || !client.phone) return;
+        const texto = comunicadoRenderTexto(state.comunicadoCorpo, client);
+        await saveEnvio({ clientId: client.id, canal:'whatsapp', texto, assunto:'', isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.email:'' });
+        window.open('https://wa.me/'+waPhoneDigits(client.phone)+'?text='+encodeURIComponent(texto), '_blank');
+        if(!state.comunicadoFilaEnviados.includes(clientId)) state.comunicadoFilaEnviados.push(clientId);
+        render();
+      };
+    });
+
     // Situação Fiscal wiring
     wireSitFiscalButtons(root);
     const sitFiscalClientSelect = document.getElementById('sitFiscalClientSelect');
@@ -6353,6 +6890,7 @@
           dataImportacao: new Date().toISOString(),
           gruposImposto: result.gruposImposto,
           porCategoria: result.porCategoria,
+          totalMultas: result.totalMultas,
           totalVencido: result.totalVencido,
           totalAVencer: result.totalAVencer,
           totalGeral: result.totalGeral,
@@ -6381,6 +6919,14 @@
     }
     const sfCancel = document.getElementById('sfCancel');
     if(sfCancel) sfCancel.onclick = ()=>{ state.modal=null; state.sitFiscalModalData=null; render(); };
+    const sfEstDispensadaBtn = document.getElementById('sfEstDispensadaBtn');
+    if(sfEstDispensadaBtn){
+      sfEstDispensadaBtn.onclick = ()=>{
+        document.getElementById('sfEstStatus').value = 'Dispensada (sem atividade de comércio)';
+        const obsInput = document.getElementById('sfEstObs');
+        if(!obsInput.value) obsInput.value = 'Dispensada de Inscrição Estadual — empresa sem atividade de comércio, indústria ou transporte (só ISS).';
+      };
+    }
 
     // Relatórios Fiscais importados — visualização
     const relatorioViewClose = document.getElementById('relatorioViewClose');
@@ -6690,6 +7236,101 @@
     if(pdfBalancoBtn) pdfBalancoBtn.onclick = ()=> gerarPdfBalanco();
     const pdfDreBtn = document.getElementById('pdfDreBtn');
     if(pdfDreBtn) pdfDreBtn.onclick = ()=> gerarPdfDre();
+
+    // ===== Serviços Contábeis — Proposta Comercial =====
+    const propCliente = document.getElementById('propCliente');
+    if(propCliente){
+      propCliente.onchange = (e)=>{
+        state.propostaClienteId = e.target.value;
+        state.propostaPendenciasSelecionadas = [];
+        const qtd = state.funcionarios.filter(f=>f.clientId===e.target.value && f.status!=='Desligado').length;
+        state.propostaQtdFuncionarios = qtd;
+        render();
+      };
+    }
+    const propRegime = document.getElementById('propRegime');
+    if(propRegime) propRegime.onchange = (e)=>{ state.propostaRegime = e.target.value; render(); };
+    const propFaturamento = document.getElementById('propFaturamento');
+    if(propFaturamento) propFaturamento.onchange = (e)=>{ state.propostaFaturamento = e.target.value; render(); };
+    const propQtdFunc = document.getElementById('propQtdFunc');
+    if(propQtdFunc) propQtdFunc.onchange = (e)=>{ state.propostaQtdFuncionarios = e.target.value; render(); };
+    const propUsarQtdSugerida = document.getElementById('propUsarQtdSugerida');
+    if(propUsarQtdSugerida){
+      propUsarQtdSugerida.onclick = ()=>{
+        state.propostaQtdFuncionarios = state.funcionarios.filter(f=>f.clientId===state.propostaClienteId && f.status!=='Desligado').length;
+        render();
+      };
+    }
+    root.querySelectorAll('.prop-pend-check').forEach(el=>{
+      el.onchange = (e)=>{
+        const id = e.target.getAttribute('data-pend-id');
+        const nome = e.target.getAttribute('data-pend-nome');
+        const comp = e.target.getAttribute('data-pend-comp');
+        if(e.target.checked){
+          if(!state.propostaPendenciasSelecionadas.some(p=>p.id===id)){
+            state.propostaPendenciasSelecionadas.push({ id, nome, competencia: comp, valorCobranca: 0 });
+          }
+        } else {
+          state.propostaPendenciasSelecionadas = state.propostaPendenciasSelecionadas.filter(p=>p.id!==id);
+        }
+        render();
+      };
+    });
+    root.querySelectorAll('.prop-pend-valor').forEach(el=>{
+      el.onchange = (e)=>{
+        const id = e.target.getAttribute('data-pend-id');
+        const p = state.propostaPendenciasSelecionadas.find(x=>x.id===id);
+        if(p){ p.valorCobranca = parseFloat(e.target.value)||0; render(); }
+      };
+    });
+    const propAddExtraBtn = document.getElementById('propAddExtraBtn');
+    if(propAddExtraBtn){
+      propAddExtraBtn.onclick = ()=>{
+        state.propostaItensExtras.push({ descricao: '', valor: 0 });
+        render();
+      };
+    }
+    root.querySelectorAll('.prop-extra-desc').forEach(el=>{
+      el.onchange = (e)=>{
+        const idx = Number(e.target.getAttribute('data-idx'));
+        if(state.propostaItensExtras[idx]) state.propostaItensExtras[idx].descricao = e.target.value;
+      };
+    });
+    root.querySelectorAll('.prop-extra-valor').forEach(el=>{
+      el.onchange = (e)=>{
+        const idx = Number(e.target.getAttribute('data-idx'));
+        if(state.propostaItensExtras[idx]){ state.propostaItensExtras[idx].valor = parseFloat(e.target.value)||0; render(); }
+      };
+    });
+    root.querySelectorAll('[data-del-extra]').forEach(el=>{
+      el.onclick = ()=>{
+        const idx = Number(el.getAttribute('data-del-extra'));
+        state.propostaItensExtras.splice(idx,1);
+        render();
+      };
+    });
+    const propIncluirBalanco = document.getElementById('propIncluirBalanco');
+    if(propIncluirBalanco) propIncluirBalanco.onchange = (e)=>{ state.propostaIncluirBalanco = e.target.checked; };
+    const propObservacoes = document.getElementById('propObservacoes');
+    if(propObservacoes) propObservacoes.onchange = (e)=>{ state.propostaObservacoes = e.target.value; };
+    const propGerarPdfBtn = document.getElementById('propGerarPdfBtn');
+    if(propGerarPdfBtn){
+      propGerarPdfBtn.onclick = ()=>{
+        if(!state.propostaClienteId){ alert('Selecione um cliente.'); return; }
+        gerarPropostaPDF(montarPropostaSnapshot());
+      };
+    }
+    const propSalvarBtn = document.getElementById('propSalvarBtn');
+    if(propSalvarBtn){
+      propSalvarBtn.onclick = ()=>{
+        if(!state.propostaClienteId){ alert('Selecione um cliente.'); return; }
+        savePropostaItem(montarPropostaSnapshot());
+        alert('Proposta salva no histórico.');
+      };
+    }
+    root.querySelectorAll('[data-del-proposta]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta proposta salva?')) deletePropostaItem(el.getAttribute('data-del-proposta')); };
+    });
 
     const criarPlanoContasPadraoBtn = document.getElementById('criarPlanoContasPadraoBtn');
     if(criarPlanoContasPadraoBtn){
