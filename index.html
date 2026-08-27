@@ -5061,13 +5061,13 @@
             const temDados = (pc['Vencido']&&pc['Vencido'].length) || (pc['A Vencer']&&pc['A Vencer'].length) || (pc['Indefinido']&&pc['Indefinido'].length);
             return `
             <div style="border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; background:#F8F9FB;">
-              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:8px;">
-                <div>
+              <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:8px;">
+                <div style="min-width:0;">
                   <span class="tag ${parcEsferaClass(r.esfera)||'sit-outra'}">${escapeHtml(r.esfera||'—')}</span>
                   <span class="tag ${sitFiscalClass(r.status)}">${escapeHtml(r.status||'—')}</span>
-                  <div class="si-meta" style="margin-top:6px;">Arquivo original: ${escapeHtml(r.nomeArquivoOriginal||'—')} · Importado em ${r.dataImportacao ? new Date(r.dataImportacao).toLocaleString('pt-BR') : '—'}</div>
+                  <div class="si-meta" style="margin-top:6px; word-break:break-word;">Arquivo original: ${escapeHtml(r.nomeArquivoOriginal||'—')} · Importado em ${r.dataImportacao ? new Date(r.dataImportacao).toLocaleString('pt-BR') : '—'}</div>
                 </div>
-                <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">
+                <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; width:100%;">
                   ${r.arquivoOriginalBase64 ? `<button type="button" class="btn-detail" data-pdf-original="${r.id}">Baixar PDF Original</button>` : ''}
                   <button type="button" class="btn-detail" data-pdf-relatorio="${r.id}">Baixar Resumo (Sistema)</button>
                   ${r.arquivoOriginalBase64 ? `<button type="button" class="btn-add btn-send-system" data-enviar-relatorio="${r.id}">Enviar para o Cliente</button>` : ''}
@@ -5082,7 +5082,11 @@
                 ${categoriaTableHtml('Impostos Vencidos', pc['Vencido'], r.totalVencido, 'despesa')}
                 ${categoriaTableHtml('Impostos a Vencer', pc['A Vencer'], r.totalAVencer, 'receita')}
                 ${categoriaTableHtml('Situação não identificada', pc['Indefinido'], (pc['Indefinido']||[]).reduce((s,g)=>s+g.total,0), '')}
-              ` : `<div class="form-hint" style="margin:10px 0;">Não foi possível identificar tabelas de pendências por imposto neste relatório (formato pode não ter sido reconhecido pelo leitor automático).</div>`}
+              ` : `
+                <div class="form-hint" style="margin:10px 0 6px;">Não foi possível identificar tabelas de pendências por imposto neste relatório (formato pode não ter sido reconhecido pelo leitor automático).</div>
+                <button type="button" class="btn-sm" data-copiar-diagnostico="${r.id}">Copiar texto para diagnóstico</button>
+                <div class="form-hint" style="margin-top:4px;">Copia o texto exato que o sistema extraiu deste PDF — cole aqui no chat pra eu ajustar o leitor com precisão.</div>
+              `}
             </div>
           `;}).join('')}
           <div class="modal-actions">
@@ -7263,6 +7267,19 @@
     if(relatorioViewClose) relatorioViewClose.onclick = ()=>{ state.modal=null; state.relatorioViewClientId=null; render(); };
     root.querySelectorAll('[data-pdf-relatorio]').forEach(el=>{
       el.onclick = ()=> generateRelatorioFiscalPDF(el.getAttribute('data-pdf-relatorio'));
+    });
+    root.querySelectorAll('[data-copiar-diagnostico]').forEach(el=>{
+      el.onclick = async ()=>{
+        const r = state.relatoriosFiscais.find(x=>x.id===el.getAttribute('data-copiar-diagnostico'));
+        if(!r || !r.textoCompleto) { alert('Texto não disponível para este relatório.'); return; }
+        try{
+          await navigator.clipboard.writeText(r.textoCompleto);
+          el.textContent = 'Copiado! Cole aqui no chat';
+          setTimeout(()=>{ el.textContent = 'Copiar texto para diagnóstico'; }, 2500);
+        }catch(e){
+          alert('Não foi possível copiar automaticamente. Texto do relatório:\n\n' + r.textoCompleto);
+        }
+      };
     });
     root.querySelectorAll('[data-pdf-original]').forEach(el=>{
       el.onclick = ()=>{
