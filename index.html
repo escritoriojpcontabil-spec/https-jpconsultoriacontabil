@@ -5220,6 +5220,34 @@
     return { faixaNum: faixaIdx+1, aliqNominal: faixa.aliq, deduz: faixa.deduz, aliqEfetiva, imposto };
   }
 
+  // Soma o faturamento de um cliente num mês (YYYY-MM), a partir das Notas Fiscais registradas
+  // com tipo de operação "Saída" (venda) ou "Serviços" (prestação) — notas de "Entrada" são
+  // compras do cliente, não contam como faturamento dele para fins de apuração do Simples.
+  function faturamentoNotasMes(clientId, competencia){
+    if(!clientId || !competencia) return { total: 0, quantidade: 0 };
+    const notas = state.notasFiscais.filter(n=>
+      n.clientId === clientId &&
+      (n.tipoOperacao === 'Saída' || n.tipoOperacao === 'Serviços') &&
+      n.status !== 'Cancelada' &&
+      (n.dataEmissao||'').slice(0,7) === competencia
+    );
+    return { total: notas.reduce((s,n)=>s+(Number(n.valor)||0), 0), quantidade: notas.length };
+  }
+
+  // RBT12: soma o faturamento dos 12 meses terminando na competência informada (inclusive) —
+  // usado como referência para a Receita Bruta dos Últimos 12 Meses do Simples Nacional.
+  function faturamentoNotas12Meses(clientId, competenciaFinal){
+    if(!clientId || !competenciaFinal) return 0;
+    const [ano, mes] = competenciaFinal.split('-').map(Number);
+    let total = 0;
+    for(let i=0; i<12; i++){
+      const d = new Date(ano, mes-1-i, 1);
+      const comp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+      total += faturamentoNotasMes(clientId, comp).total;
+    }
+    return total;
+  }
+
   function simplesCalcFormHtml(){
     return `
       <div class="form-row">
@@ -5230,13 +5258,16 @@
           <select id="calcCliente"><option value="">— Nenhum —</option>${state.clients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>
         </div>
       </div>
+      <div class="field"><label>Competência (mês de apuração)</label><input type="month" id="calcCompetencia" value="${state.competenciaAtiva}"/></div>
+      <button type="button" class="btn-sm" id="calcUsarNotasBtn" style="margin-bottom:14px;">Usar faturamento das Notas Fiscais (Saída + Serviços)</button>
+      <div id="calcNotasResumo"></div>
       <div class="form-row">
         <div class="field"><label>RBT12 — Receita bruta últimos 12 meses (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
         <div class="field"><label>Receita do mês (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaMes" placeholder="Ex: 25000"/></div>
       </div>
       <button type="button" class="btn-calc" id="calcSimplesBtn">Calcular DAS</button>
       <div id="calcSimplesResult"></div>
-      <div class="calc-disclaimer">Tabelas do Simples Nacional (Anexos I a V) vigentes desde 2018, sem alteração até 2026. Este cálculo é uma estimativa da alíquota efetiva sobre a receita do mês — não substitui a apuração oficial no PGDAS-D, que também considera o Fator R (para Anexos III/V), sublimites estaduais de ICMS/ISS e eventuais retenções.</div>
+      <div class="calc-disclaimer">Tabelas do Simples Nacional (Anexos I a V) vigentes desde 2018, sem alteração até 2026. Este cálculo é uma estimativa da alíquota efetiva sobre a receita do mês — não substitui a apuração oficial no PGDAS-D, que também considera o Fator R (para Anexos III/V), sublimites estaduais de ICMS/ISS e eventuais retenções. O faturamento puxado das Notas Fiscais depende de todas as notas do período já estarem corretamente registradas e classificadas como Saída/Serviços no sistema.</div>
     `;
   }
 
@@ -7404,6 +7435,22 @@
     root.querySelectorAll('[data-calc-tab]').forEach(el=>{
       el.onclick = ()=>{ state.calcTab = el.getAttribute('data-calc-tab'); render(); };
     });
+    const calcUsarNotasBtn = document.getElementById('calcUsarNotasBtn');
+    if(calcUsarNotasBtn){
+      calcUsarNotasBtn.onclick = ()=>{
+        const clientId = document.getElementById('calcCliente').value;
+        const competencia = document.getElementById('calcCompetencia').value;
+        if(!clientId){ alert('Selecione um cliente para puxar o faturamento das Notas Fiscais.'); return; }
+        if(!competencia){ alert('Informe a competência (mês de apuração).'); return; }
+        const doMes = faturamentoNotasMes(clientId, competencia);
+        const dos12Meses = faturamentoNotas12Meses(clientId, competencia);
+        document.getElementById('calcReceitaMes').value = doMes.total.toFixed(2);
+        document.getElementById('calcRbt12').value = dos12Meses.toFixed(2);
+        document.getElementById('calcNotasResumo').innerHTML = `
+          <div class="form-hint" style="margin:-8px 0 12px;">${doMes.quantidade} nota(s) de Saída/Serviços encontrada(s) em ${monthLabel(competencia)}/${competencia.slice(0,4)}, somando ${fmtBRL(doMes.total)}. RBT12 (12 meses até essa competência) calculado a partir das notas: ${fmtBRL(dos12Meses)}.</div>
+        `;
+      };
+    }
     const calcSimplesBtn = document.getElementById('calcSimplesBtn');
     if(calcSimplesBtn){
       calcSimplesBtn.onclick = ()=>{
