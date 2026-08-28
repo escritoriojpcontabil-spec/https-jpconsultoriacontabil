@@ -1749,6 +1749,12 @@
 
     let y = pdfHeader(doc, 'Relatório de Faturamento Mensal', cliente ? cliente.name : 'Todos os clientes');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    if(cliente){
+      if(cliente.doc) { doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 6; }
+      const enderecoPartes = [cliente.address, cliente.city, cliente.uf].filter(Boolean).join(', ');
+      if(enderecoPartes) { doc.text('Endereço: ' + enderecoPartes, 14, y); y += 6; }
+      y += 2;
+    }
     doc.text('Período: ' + monthLabel(mesInicio) + '/' + mesInicio.slice(0,4) + ' a ' + monthLabel(mesFim) + '/' + mesFim.slice(0,4) + '   ·   Tipo: ' + (tipo==='ambos'?'Vendas + Serviços':(tipo==='vendas'?'Só Vendas':'Só Serviços')), 14, y);
     y += 10;
 
@@ -1767,12 +1773,19 @@
       linhas.forEach(l=>{
         if(y > 275){ doc.addPage(); y = 20; }
         const total = (mostrarVendas?l.vendas:0) + (mostrarServicos?l.servicos:0);
+        const clienteObj = state.clients.find(c=>c.id===l.clientId);
         doc.text(l.clientName, colX, y);
         if(mostrarVendas) doc.text(fmtBRL(l.vendas), 120, y, {align:'right'});
         if(mostrarServicos) doc.text(fmtBRL(l.servicos), 155, y, {align:'right'});
         doc.text(fmtBRL(total), pageW-16, y, {align:'right'});
         totalGeral += total;
-        y += 5.5;
+        y += 4.6;
+        if(clienteObj && clienteObj.doc){
+          doc.setFontSize(7); doc.setTextColor(120,130,140);
+          doc.text('CNPJ/CPF: ' + clienteObj.doc, colX, y);
+          doc.setFontSize(8.5); doc.setTextColor(20,25,30);
+          y += 4.6;
+        }
       });
     } else {
       if(mostrarVendas) doc.text('Vendas', 100, y, {align:'right'});
