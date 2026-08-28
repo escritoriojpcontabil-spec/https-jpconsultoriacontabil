@@ -9,6 +9,7 @@
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 
 <style>
@@ -1246,6 +1247,32 @@
       countDevedor, countSemPendencia, emissao: emissaoMatch ? emissaoMatch[1] : '',
       debitoRows, gruposImposto, totalGeral, totalMultas, porCategoria, totalVencido, totalAVencer,
     };
+  }
+
+  // Recebe uma lista de arquivos (File[]) vinda de um <input type="file">; qualquer .zip é
+  // "aberto" e seus arquivos internos entram na lista no lugar do .zip — assim quem chama essa
+  // função nem precisa saber que um .zip foi usado, só recebe a lista final já expandida.
+  // WinRAR também salva/abre .zip normalmente (não precisa ser especificamente o .rar).
+  async function expandirArquivosZip(fileList){
+    if(!window.JSZip) return Array.from(fileList);
+    const resultado = [];
+    for(const file of fileList){
+      const ehZip = /\.zip$/i.test(file.name) || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
+      if(!ehZip){ resultado.push(file); continue; }
+      try{
+        const zip = await window.JSZip.loadAsync(file);
+        const entradas = Object.values(zip.files).filter(e => !e.dir);
+        for(const entrada of entradas){
+          const blob = await entrada.async('blob');
+          const nomeArquivo = entrada.name.split('/').pop();
+          const arquivoExtraido = new File([blob], nomeArquivo, {type: blob.type || ''});
+          resultado.push(arquivoExtraido);
+        }
+      }catch(err){
+        console.error('Erro ao abrir ZIP', file.name, err);
+      }
+    }
+    return resultado;
   }
 
   function baixarArquivoBase64(base64, filename, mimeType){
@@ -6014,7 +6041,7 @@
           <div class="attach-box">
             <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Importação de Arquivos — qualquer formato, único ou em lote (opcional)</label>
             <input type="file" id="nfXmlInput" multiple/>
-            <div class="form-hint" style="margin:8px 0 0;">Arquivos XML de NF-e, NFC-e ou NFS-e são lidos automaticamente (preenchem os campos e identificam o cliente/tipo de operação). Outros formatos (PDF, imagem, etc.) ficam anexados como referência — preencha os campos manualmente. Em lote, apenas arquivos XML são processados automaticamente.</div>
+            <div class="form-hint" style="margin:8px 0 0;">Arquivos XML de NF-e, NFC-e ou NFS-e são lidos automaticamente (preenchem os campos e identificam o cliente/tipo de operação). Também aceita um ou mais arquivos <strong>.zip</strong> — o sistema abre sozinho e processa os XML de dentro (o WinRAR também salva/abre .zip normalmente, além do .rar). Outros formatos (PDF, imagem, etc.) ficam anexados como referência — preencha os campos manualmente. Em lote, apenas arquivos XML são processados automaticamente.</div>
           </div>
           <div id="nfXmlMsg" class="lookup-msg" style="display:none; margin-bottom:14px;"></div>
           <form id="nfForm">
@@ -7456,11 +7483,17 @@
     const nfXmlInput = document.getElementById('nfXmlInput');
     if(nfXmlInput){
       nfXmlInput.onchange = async (e)=>{
-        const files = Array.from(e.target.files || []);
+        let files = Array.from(e.target.files || []);
         const msgEl = document.getElementById('nfXmlMsg');
         if(!files.length) return;
         function showMsg(text, type){
           msgEl.textContent = text; msgEl.className = 'lookup-msg ' + type; msgEl.style.display = 'block';
+        }
+        if(files.some(f=>/\.zip$/i.test(f.name))){
+          showMsg('Abrindo arquivo(s) .zip...', 'info');
+          const antes = files.length;
+          files = await expandirArquivosZip(files);
+          showMsg(files.length + ' arquivo(s) encontrado(s) dentro do(s) ' + antes + ' .zip selecionado(s). Processando...', 'info');
         }
         function isXml(file){
           return /\.xml$/i.test(file.name) || file.type === 'text/xml' || file.type === 'application/xml';
