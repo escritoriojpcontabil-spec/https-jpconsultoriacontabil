@@ -2572,6 +2572,36 @@
       };
     }
 
+    // --- NFS-e Padrão Nacional (Lei Complementar 175/2020 — tag <infNFSe>, adotado por número
+    // crescente de prefeituras desde 2025) ---
+    const infNFSe = doc.getElementsByTagName('infNFSe')[0];
+    if(infNFSe){
+      const nNFSe = getTagText(infNFSe, 'nNFSe');
+      const cStat = getTagText(infNFSe, 'cStat');
+      const emitEl = infNFSe.getElementsByTagName('emit')[0];
+      const emitCNPJ = getTagText(emitEl, 'CNPJ') || getTagText(emitEl, 'CPF');
+      const emitNome = getTagText(emitEl, 'xNome');
+      const valoresEl = infNFSe.getElementsByTagName('valores')[0];
+      const vLiq = getTagText(valoresEl, 'vLiq');
+      const infDPS = infNFSe.getElementsByTagName('infDPS')[0];
+      const dhEmi = getTagText(infDPS, 'dhEmi') || getTagText(infDPS, 'dCompet');
+      const serie = getTagText(infDPS, 'serie');
+      const tomaEl = infDPS ? infDPS.getElementsByTagName('toma')[0] : null;
+      const tomaCNPJ = getTagText(tomaEl, 'CNPJ') || getTagText(tomaEl, 'CPF');
+      const tomaNome = getTagText(tomaEl, 'xNome');
+      // cStat 100 = autorizada/emitida. Demais códigos indicam cancelamento/rejeição na maioria
+      // dos leiautes NFS-e nacionais — trate qualquer código diferente de 100 como Cancelada.
+      const status = cStat === '100' ? 'Emitida' : 'Cancelada';
+      return {
+        ok:true,
+        tipo: 'NFS-e (Serviço)',
+        numero: nNFSe, serie: serie || '', dataEmissao: dhEmi ? dhEmi.slice(0,10) : '',
+        valor: vLiq, status,
+        emitDoc: emitCNPJ, emitNome, destDoc: tomaCNPJ, destNome: tomaNome,
+        tipoOperacaoSugerida: 'Serviços',
+      };
+    }
+
     // --- NFS-e (sem padrão nacional único — tentativa com layout ABRASF, o mais comum) ---
     const looksLikeNfse = doc.getElementsByTagName('InfNfse').length || doc.getElementsByTagName('Nfse').length || doc.getElementsByTagName('CompNfse').length;
     if(looksLikeNfse){
@@ -2863,7 +2893,11 @@
         }
       }
     }catch(e){}
-    state.notasFiscais.sort((a,b)=> (b.dataEmissao||'').localeCompare(a.dataEmissao||''));
+    state.notasFiscais.sort((a,b)=> {
+      const dataComp = (a.dataEmissao||'').localeCompare(b.dataEmissao||'');
+      if(dataComp !== 0) return dataComp;
+      return (a.numero||'').localeCompare(b.numero||'', undefined, {numeric:true});
+    });
   }
 
   async function loadRelatoriosFiscais(){
