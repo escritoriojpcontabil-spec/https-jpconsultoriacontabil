@@ -1521,7 +1521,7 @@
           linhas.push({
             mes: MESES_PT[m-1], vencimento: honorarioVencimento(h), historico: (h.tipoServico || 'HONORÁRIOS CONTÁBEIS') + (statusTxt==='Parcial' ? ' (pago parcial)' : ''),
             aReceber: valor, recebido, saldoFinal: saldoAcumulado,
-            dataRec: h.dataPagamento || null, formaRec: formaRecTexto,
+            dataRec: h.dataPagamento || h.dataRecebimentoParcial || null, formaRec: formaRecTexto,
           });
         });
       }
@@ -1726,19 +1726,12 @@
 
     doc.setFont('helvetica','normal');
     let totalListado = 0;
-    (alocacao.aplicados||[]).forEach(h=>{
+    (alocacao.cobertos||[]).forEach(h=>{
       const venc = honorarioVencimento(h);
       doc.text((h.tipoServico||'Boleto Bancário Mensal') + ' — Vencimento ' + (venc?fmtDate(venc):'—') + ' — ' + fmtBRL(h.valor), 14, y);
       totalListado += Number(h.valor)||0;
       y += 7;
     });
-    if(alocacao.parcial){
-      const h = alocacao.parcial.honorario;
-      const venc = honorarioVencimento(h);
-      doc.text((h.tipoServico||'Boleto Bancário Mensal') + ' — Vencimento ' + (venc?fmtDate(venc):'—') + ' — ' + fmtBRL(h.valor) + ' (pago parcial nesta data: ' + fmtBRL(alocacao.parcial.valorAplicado) + ')', 14, y);
-      totalListado += Number(h.valor)||0;
-      y += 7;
-    }
     y += 4;
     doc.setDrawColor(20,25,30); doc.line(14, y-4, pageW-14, y-4);
     doc.setFont('helvetica','bold'); doc.setFontSize(11);
@@ -2667,28 +2660,27 @@
   // atrasados) sobre os honorários em aberto do cliente, do mais antigo pro mais recente. Cobre
   // integralmente enquanto der, e aplica o restante como pagamento PARCIAL no próximo em aberto
   // (o saldo que faltar continua devido e aparece nos meses seguintes, em vez de ser descartado).
+  // Identifica quais competências em aberto o pagamento cobre (do mais antigo pro mais
+  // recente), só para fins de descrição — o valor INTEIRO é lançado numa única linha "âncora"
+  // (a última competência alcançada), sem dividir entre as demais, igual ao modelo do escritório.
   function alocarPagamentoAvulso(clientId, valorPago){
     const abertos = state.honorarios
       .filter(h=>h.clientId===clientId && honorarioStatus(h)!=='Pago')
       .sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
     let restante = round2(Number(valorPago)||0);
-    const aplicados = [];
-    let parcial = null;
+    const cobertos = [];
+    let alvo = null;
     for(const h of abertos){
       if(restante <= 0) break;
       const valor = Number(h.valor)||0;
       const jaRecebido = honorarioValorRecebido(h);
       const falta = round2(valor - jaRecebido);
       if(falta <= 0) continue;
-      if(restante >= falta - 0.005){
-        aplicados.push(h);
-        restante = round2(restante - falta);
-      } else {
-        parcial = { honorario: h, valorAplicado: restante, jaRecebido, falta };
-        restante = 0;
-      }
+      cobertos.push(h);
+      alvo = h;
+      restante = round2(Math.max(0, restante - falta));
     }
-    return { aplicados, parcial, restante: Math.max(0, round2(restante)) };
+    return { cobertos, alvo, restante: Math.max(0, round2(restante)) };
   }
 
   function pagamentoAvulsoPreviewHtml(d){
@@ -2696,18 +2688,14 @@
     if(!d.clientId) return `<div class="form-hint">Selecione a empresa e informe o valor para ver a prévia.</div>`;
     if(!valor) return `<div class="form-hint">Informe o valor pago para ver a prévia.</div>`;
     const preview = alocarPagamentoAvulso(d.clientId, valor);
-    if(!preview.aplicados.length && !preview.parcial){
+    if(!preview.alvo){
       return `<div class="form-hint" style="color:var(--red);">Não há nenhuma competência em aberto para esta empresa — nada a aplicar.</div>`;
     }
     return `
       <div class="calc-result">
-        ${preview.aplicados.length ? `<div class="form-hint" style="margin:0 0 8px; text-transform:none; font-weight:700; color:var(--ink);">Este pagamento quita integralmente ${preview.aplicados.length} competência(s):</div>` : ''}
-        ${preview.aplicados.map(h=>`<div class="pr-line"><span>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)} — ${escapeHtml(h.tipoServico||'')}</span><span>${fmtBRL(h.valor)}</span></div>`).join('')}
-        ${preview.parcial ? `
-          <div class="form-hint" style="margin:10px 0 6px; text-transform:none; font-weight:700; color:var(--ink);">E cobre parte de mais uma competência (saldo continua devido):</div>
-          <div class="pr-line"><span>${monthLabel(preview.parcial.honorario.competencia)}/${(preview.parcial.honorario.competencia||'').slice(0,4)} — ${escapeHtml(preview.parcial.honorario.tipoServico||'')} (paga ${fmtBRL(preview.parcial.valorAplicado)} de ${fmtBRL(preview.parcial.falta)} restante)</span><span>${fmtBRL(preview.parcial.valorAplicado)}</span></div>
-          <div class="form-hint" style="margin-top:4px;">Saldo que continuará devido nesta competência: ${fmtBRL(round2(preview.parcial.falta - preview.parcial.valorAplicado))}</div>
-        ` : ''}
+        <div class="form-hint" style="margin:0 0 8px; text-transform:none; font-weight:700; color:var(--ink);">Este pagamento cobre ${preview.cobertos.length} competência(s) em aberto:</div>
+        ${preview.cobertos.map(h=>`<div class="pr-line"><span>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)} — ${escapeHtml(h.tipoServico||'')}</span><span>${fmtBRL(h.valor)}</span></div>`).join('')}
+        <div class="form-hint" style="margin-top:10px;">O valor total de <strong>${fmtBRL(valor)}</strong> será lançado como recebido na competência de <strong>${monthLabel(preview.alvo.competencia)}/${(preview.alvo.competencia||'').slice(0,4)}</strong> (a mais recente dentre as cobertas) — as demais ficam com "Recebido" zerado individualmente, mas o Saldo Final acumulado já reflete a quitação, igual ao modelo do escritório.</div>
         ${preview.restante > 0 ? `<div class="pr-line total"><span>Sobra sem nenhuma competência em aberto para aplicar (excedente)</span><span>${fmtBRL(preview.restante)}</span></div>` : ''}
       </div>
     `;
@@ -2748,7 +2736,7 @@
 
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="pavCancel">Cancelar</button>
-              <button type="submit" class="btn-add" id="pavConfirmBtn" ${(!preview || (!preview.aplicados.length && !preview.parcial)) ? 'disabled' : ''}>Confirmar e Aplicar Pagamento</button>
+              <button type="submit" class="btn-add" id="pavConfirmBtn" ${(!preview || !preview.alvo) ? 'disabled' : ''}>Confirmar e Aplicar Pagamento</button>
             </div>
           </form>
         </div>
@@ -2934,6 +2922,10 @@
               </div>
             </div>
             <div class="field"><label>Detalhe do recebimento (opcional — ex: "Banco Nubank - Junho")</label><input type="text" id="honDetalheRecebimento" value="${escapeHtml(d.detalheRecebimento||'')}" placeholder="Ex: Banco Nubank - referente a Março/Abril/Maio"/></div>
+            <div class="form-row">
+              <div class="field"><label>Valor já recebido (para pagamento parcial)</label><input type="number" step="0.01" min="0" id="honValorRecebido" value="${d.valorRecebido!==undefined?d.valorRecebido:''}" placeholder="Deixe em branco se pago integral ou nada recebido"/></div>
+              <div class="field"><label>Data do recebimento parcial</label><input type="date" id="honDataRecebimentoParcial" value="${d.dataRecebimentoParcial||''}"/></div>
+            </div>
             <div class="field"><label>Observações</label><input type="text" id="honObs" value="${escapeHtml(d.observacoes||'')}"/></div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="honCancel">Cancelar</button>
@@ -9226,7 +9218,7 @@
       if(btn){
         const valor = parseFloat(d.valor)||0;
         const preview = (d.clientId && valor>0) ? alocarPagamentoAvulso(d.clientId, valor) : null;
-        btn.disabled = !preview || (!preview.aplicados.length && !preview.parcial);
+        btn.disabled = !preview || !preview.alvo;
       }
     }
     if(pavEmpresa) pavEmpresa.onchange = (e)=>{ state.pagamentoAvulsoModalData.clientId = e.target.value; atualizarPreviewPagamentoAvulso(); };
@@ -9250,39 +9242,29 @@
         if(!valor){ alert('Informe o valor pago.'); return; }
         if(!d.formaPagamento){ alert('Selecione a forma de pagamento.'); return; }
         const banco = document.getElementById('pavBanco') ? document.getElementById('pavBanco').value : '';
-        const { aplicados, parcial, restante } = alocarPagamentoAvulso(d.clientId, valor);
-        if(!aplicados.length && !parcial){ alert('N\u00e3o h\u00e1 nenhuma compet\u00eancia em aberto para aplicar este pagamento.'); return; }
+        const { cobertos, alvo, restante } = alocarPagamentoAvulso(d.clientId, valor);
+        if(!alvo){ alert('N\u00e3o h\u00e1 nenhuma compet\u00eancia em aberto para aplicar este pagamento.'); return; }
         const dataPagamento = d.dataPagamento || todayStr();
         // Monta o "detalhe" no mesmo estilo da planilha do escrit\u00f3rio: "Banco X - M\u00eas1/ M\u00eas2 / M\u00eas3"
-        const todosMeses = [].concat(aplicados, parcial ? [parcial.honorario] : []).map(h=>MESES_PT[Number((h.competencia||'').split('-')[1])-1]);
-        const listaMeses = todosMeses.join('/ ');
+        const listaMeses = cobertos.map(h=>MESES_PT[Number((h.competencia||'').split('-')[1])-1]).join('/ ');
         const detalhe = (banco ? banco : '') + (banco && listaMeses ? ' - ' : '') + listaMeses;
-        const notaObs = 'Pago via pagamento avulso em ' + fmtDate(dataPagamento) + (d.observacoes ? ' \u2014 ' + d.observacoes : '');
-        for(const h of aplicados){
-          const atualizado = Object.assign({}, h, {
-            dataPagamento, formaPagamento: d.formaPagamento, valorRecebido: Number(h.valor)||0, detalheRecebimento: detalhe,
-            observacoes: h.observacoes ? h.observacoes + ' \u00b7 ' + notaObs : notaObs,
-          });
-          await saveHonorarioItem(atualizado);
-        }
-        if(parcial){
-          const h = parcial.honorario;
-          const novoRecebido = round2(parcial.jaRecebido + parcial.valorAplicado);
-          const notaParcial = 'Recebido parcial de ' + fmtBRL(parcial.valorAplicado) + ' via pagamento avulso em ' + fmtDate(dataPagamento) + (d.observacoes ? ' \u2014 ' + d.observacoes : '');
-          const atualizado = Object.assign({}, h, {
-            formaPagamento: d.formaPagamento, valorRecebido: novoRecebido, detalheRecebimento: detalhe,
-            observacoes: h.observacoes ? h.observacoes + ' \u00b7 ' + notaParcial : notaParcial,
-          });
-          await saveHonorarioItem(atualizado);
-        }
-        gerarPdfReciboPagamento(d.clientId, { aplicados, parcial }, valor, dataPagamento, d.formaPagamento, d.observacoes);
+        const notaObs = 'Recebido ' + fmtBRL(valor) + ' via pagamento avulso em ' + fmtDate(dataPagamento) + (cobertos.length>1 ? ' \u2014 referente a ' + listaMeses : '') + (d.observacoes ? ' \u2014 ' + d.observacoes : '');
+        // O valor INTEIRO \u00e9 lan\u00e7ado numa \u00fanica linha (a mais recente das cobertas) \u2014 as demais
+        // competi\u00eancias cobertas ficam com "Recebido" zerado individualmente, mas o Saldo Final
+        // acumulado j\u00e1 reflete a quita\u00e7\u00e3o, igual ao modelo de planilha do escrit\u00f3rio.
+        const jaRecebidoAlvo = honorarioValorRecebido(alvo);
+        const atualizado = Object.assign({}, alvo, {
+          formaPagamento: d.formaPagamento, valorRecebido: round2(jaRecebidoAlvo + valor), detalheRecebimento: detalhe,
+          dataRecebimentoParcial: dataPagamento,
+          observacoes: alvo.observacoes ? alvo.observacoes + ' \u00b7 ' + notaObs : notaObs,
+        });
+        await saveHonorarioItem(atualizado);
+        gerarPdfReciboPagamento(d.clientId, { cobertos, alvo }, valor, dataPagamento, d.formaPagamento, d.observacoes);
         state.modal=null; state.pagamentoAvulsoModalData=null;
         render();
-        const partes = [];
-        if(aplicados.length) partes.push(aplicados.length + ' compet\u00eancia(s) quitada(s) integralmente');
-        if(parcial) partes.push('1 compet\u00eancia recebida parcialmente (saldo de ' + fmtBRL(round2(parcial.falta - parcial.valorAplicado)) + ' continua devido)');
-        if(restante>0) partes.push('sobraram ' + fmtBRL(restante) + ' sem nenhuma compet\u00eancia em aberto para aplicar');
-        alert(partes.join('; ') + '. O recibo em PDF foi baixado para o seu computador.');
+        let msg = fmtBRL(valor) + ' lan\u00e7ado(s) na compet\u00eancia ' + monthLabel(alvo.competencia) + '/' + (alvo.competencia||'').slice(0,4) + ', cobrindo ' + cobertos.length + ' compet\u00eancia(s) em aberto pelo saldo acumulado';
+        if(restante>0) msg += '; sobraram ' + fmtBRL(restante) + ' sem nenhuma compet\u00eancia em aberto para aplicar';
+        alert(msg + '. O recibo em PDF foi baixado para o seu computador.');
       };
     }
     root.querySelectorAll('[data-edit-honorario]').forEach(el=>{
@@ -9322,6 +9304,8 @@
           dataPagamento: document.getElementById('honDataPagamento').value,
           formaPagamento: document.getElementById('honFormaPagamento').value,
           detalheRecebimento: document.getElementById('honDetalheRecebimento').value,
+          valorRecebido: document.getElementById('honValorRecebido').value !== '' ? document.getElementById('honValorRecebido').value : undefined,
+          dataRecebimentoParcial: document.getElementById('honDataRecebimentoParcial').value,
           observacoes: document.getElementById('honObs').value,
         };
         state.modal=null; state.honorarioModalData=null;
