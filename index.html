@@ -299,6 +299,10 @@
   /* ---------- CALCULADORA DE IMPOSTOS / SITUAÇÃO FISCAL ---------- */
   .calc-tabs{display:flex;gap:6px;margin-bottom:18px;}
   .calc-result{background:#F8F9FB;border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-top:16px;}
+  .nf-resumo-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px;}
+  .nf-resumo-card{background:#F8F9FB;border:1px solid var(--line);border-radius:10px;padding:14px 16px;}
+  .nf-resumo-label{font-size:11.5px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;margin-bottom:6px;}
+  .nf-resumo-valor{font-size:20px;font-weight:700;font-family:'IBM Plex Mono',monospace;}
   .calc-result .cr-line{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--line);}
   .calc-result .cr-line:last-child{border-bottom:none;}
   .calc-result .cr-line.total{font-weight:700;font-size:14.5px;color:var(--navy);border-top:1.5px solid var(--line);margin-top:6px;padding-top:10px;}
@@ -594,6 +598,14 @@
     propostaItensExtras: [],
     propostaObservacoes: '',
     propostaPreview: null,
+    honorarios: [],
+    honorarioEmpresaAtiva: '',
+    honorarioModalData: null,
+    quitacaoCompetenciaInicio: '',
+    quitacaoCompetenciaFim: '',
+    contratos: [],
+    contratoEmpresaAtiva: '',
+    contratoModalData: null,
     faturamentoRelClienteId: 'all',
     faturamentoRelTipo: 'ambos',
     faturamentoRelMesInicio: (()=>{ const d=new Date(); d.setMonth(d.getMonth()-5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })(),
@@ -1461,6 +1473,61 @@
     };
   }
 
+  function gerarPdfTermoQuitacao(clientId, mesInicio, mesFim){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const cliente = state.clients.find(c=>c.id===clientId);
+    let pagos = state.honorarios.filter(h=>h.clientId===clientId && honorarioStatus(h)==='Pago');
+    if(mesInicio) pagos = pagos.filter(h=>h.competencia >= mesInicio);
+    if(mesFim) pagos = pagos.filter(h=>h.competencia <= mesFim);
+    pagos = pagos.sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
+    if(!pagos.length){ alert('Nenhum pagamento encontrado para esta empresa no período selecionado.'); return; }
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Termo de Quitação de Honorários', cliente ? cliente.name : '—');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 8; }
+
+    const primeiraComp = pagos[0].competencia, ultimaComp = pagos[pagos.length-1].competencia;
+    const textoDeclaracao = 'Declaramos, para os devidos fins, que ' + (cliente?cliente.name:'o(a) cliente acima identificado(a)') +
+      (cliente && cliente.doc ? ', inscrito(a) sob o CNPJ/CPF ' + cliente.doc + ',' : '') +
+      ' encontra-se em dia com o pagamento dos honorários contábeis referentes ao(s) período(s) relacionado(s) abaixo, compreendendo a(s) competência(s) de ' +
+      monthLabel(primeiraComp) + '/' + primeiraComp.slice(0,4) + ' a ' + monthLabel(ultimaComp) + '/' + ultimaComp.slice(0,4) +
+      ', nada mais sendo devido ao escritório relativo a esses períodos específicos.';
+    const linhasDeclaracao = doc.splitTextToSize(textoDeclaracao, pageW-28);
+    doc.text(linhasDeclaracao, 14, y); y += linhasDeclaracao.length*5 + 8;
+
+    doc.setFontSize(8.5); doc.setFont('helvetica','bold');
+    doc.setFillColor(240,242,245); doc.rect(14, y-4.5, pageW-28, 6, 'F');
+    doc.text('Competência', 16, y); doc.text('Serviço', 60, y); doc.text('Data Pagamento', 130, y); doc.text('Forma', 165, y); doc.text('Valor', pageW-16, y, {align:'right'});
+    y += 6.5; doc.setFont('helvetica','normal');
+    let total = 0;
+    pagos.forEach(h=>{
+      if(y > 275){ doc.addPage(); y = 20; }
+      doc.text(monthLabel(h.competencia)+'/'+h.competencia.slice(0,4), 16, y);
+      doc.text((h.tipoServico||'—').slice(0,28), 60, y);
+      doc.text(h.dataPagamento ? fmtDate(h.dataPagamento) : '—', 130, y);
+      doc.text(h.formaPagamento||'—', 165, y);
+      doc.text(fmtBRL(h.valor), pageW-16, y, {align:'right'});
+      total += Number(h.valor)||0;
+      y += 5.5;
+    });
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
+    doc.setFont('helvetica','bold');
+    doc.text('Total quitado no período', 16, y); doc.text(fmtBRL(total), pageW-16, y, {align:'right'});
+    y += 16;
+
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, 110, y); y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('JP Consultoria Contábil', 14, y); y += 10;
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Este termo se refere exclusivamente aos períodos e valores relacionados acima, não quitando débitos de outras competências ou serviços não listados neste documento.');
+    doc.save('termo-quitacao-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+
   function gerarPropostaPDF(p){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const { jsPDF } = window.jspdf;
@@ -2135,6 +2202,117 @@
             </tbody>
           </table>
         `}
+
+        ${honorariosSectionHtml()}
+      </div>
+    `;
+  }
+
+  const TIPOS_SERVICO_SUGERIDOS = ['Honorários Contábeis Mensais', 'Abertura de Empresa', 'Alteração Contratual', 'Baixa de Empresa', 'Balanço Anual', 'Declaração Pessoa Física', 'Declaração Pessoa Jurídica', 'Parcelamento de Débitos', 'Outro'];
+  const FORMAS_COBRANCA = ['Boleto', 'Pix', 'Cartão de Crédito', 'Transferência (TED/DOC)', 'Dinheiro', 'Débito Automático'];
+
+  function honorarioStatusClass(status){
+    if(status==='Pago') return 'sit-ativa';
+    if(status==='Vencido') return 'sit-baixada';
+    return 'sit-pendente';
+  }
+
+  function honorariosSectionHtml(){
+    const empresa = state.clients.find(c=>c.id===state.honorarioEmpresaAtiva);
+    const honorariosCliente = state.honorarios.filter(h=>h.clientId===state.honorarioEmpresaAtiva).sort((a,b)=> (b.competencia||'').localeCompare(a.competencia||''));
+    const pagos = honorariosCliente.filter(h=>honorarioStatus(h)==='Pago');
+    return `
+      <div class="form-section-title">Controle de Honorários</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Cadastro de cobranças por cliente (mensalidade, serviços avulsos, etc.), com forma de cobrança, vencimento, competência e pagamento — cada empresa tem seu próprio controle, separado das demais.</div>
+      ${empresaContabilSelectorHtmlHonorario()}
+      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar os honorários dela.</div>` : `
+        <button type="button" class="btn-add" id="novoHonorarioBtn" style="margin-bottom:14px;">+ Novo lançamento de honorário</button>
+        ${!honorariosCliente.length ? `<div class="empty">Nenhum honorário cadastrado para ${escapeHtml(empresa.name)} ainda.</div>` : `
+          <table>
+            <thead><tr><th>Competência</th><th>Serviço</th><th>Cobrança</th><th>Vencimento</th><th style="text-align:right">Valor</th><th>Pagamento</th><th>Forma Pgto</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              ${honorariosCliente.map(h=>{
+                const venc = honorarioVencimento(h);
+                const status = honorarioStatus(h);
+                return `
+                <tr>
+                  <td>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)}</td>
+                  <td>${escapeHtml(h.tipoServico||'—')}</td>
+                  <td>${escapeHtml(h.tipoCobranca||'—')}</td>
+                  <td>${venc ? fmtDate(venc) : '—'}</td>
+                  <td style="text-align:right" class="mono">${fmtBRLorDash(h.valor)}</td>
+                  <td>${h.dataPagamento ? fmtDate(h.dataPagamento) : '—'}</td>
+                  <td>${escapeHtml(h.formaPagamento||'—')}</td>
+                  <td><span class="tag ${honorarioStatusClass(status)}">${status}</span></td>
+                  <td style="display:flex; gap:6px;"><button class="btn-detail" data-edit-honorario="${h.id}">Editar</button><button class="btn-sm danger" data-del-honorario="${h.id}">Excluir</button></td>
+                </tr>
+              `;}).join('')}
+            </tbody>
+          </table>
+        `}
+
+        <div class="form-section-title">Termo de Quitação</div>
+        <div class="form-hint" style="margin:-4px 0 14px;">Gera um termo declarando que ${escapeHtml(empresa.name)} está em dia com os honorários das competências pagas dentro do período escolhido.</div>
+        <div class="form-row">
+          <div class="field"><label>Competência inicial</label><input type="month" id="quitCompetenciaInicio" value="${state.quitacaoCompetenciaInicio}"/></div>
+          <div class="field"><label>Competência final</label><input type="month" id="quitCompetenciaFim" value="${state.quitacaoCompetenciaFim}"/></div>
+        </div>
+        <div class="form-hint" style="margin-bottom:10px;">${pagos.length} pagamento(s) registrado(s) no total para esta empresa (antes de filtrar pelo período acima).</div>
+        <button type="button" class="btn-detail" id="gerarTermoQuitacaoBtn">Gerar Termo de Quitação (PDF)</button>
+      `}
+    `;
+  }
+
+  function empresaContabilSelectorHtmlHonorario(){
+    const clientesOrdenados = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return `
+      <div class="field" style="max-width:360px; margin-bottom:16px;">
+        <label>Empresa</label>
+        <select id="honorarioEmpresaSelect" class="filter-select" style="width:100%;">
+          <option value="">— Selecione uma empresa —</option>
+          ${clientesOrdenados.map(c=>`<option value="${c.id}" ${state.honorarioEmpresaAtiva===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  }
+
+  function honorarioModalHtml(){
+    const d = state.honorarioModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar honorário' : 'Novo lançamento de honorário'}</h3>
+          <form id="honorarioForm">
+            <div class="field"><label>Tipo de serviço</label>
+              <select id="honTipoServico">${TIPOS_SERVICO_SUGERIDOS.map(t=>`<option value="${t}" ${d.tipoServico===t?'selected':''}>${t}</option>`).join('')}</select>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Tipo de cobrança</label>
+                <select id="honTipoCobranca">${FORMAS_COBRANCA.map(t=>`<option value="${t}" ${d.tipoCobranca===t?'selected':''}>${t}</option>`).join('')}</select>
+              </div>
+              <div class="field"><label>Dia do vencimento</label><input type="number" min="1" max="31" id="honDiaVencimento" value="${d.diaVencimento||10}"/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Competência</label><input type="month" id="honCompetencia" value="${d.competencia||state.competenciaAtiva}"/></div>
+              <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0" id="honValor" value="${d.valor||''}"/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Data de pagamento (deixe em branco se ainda não pagou)</label><input type="date" id="honDataPagamento" value="${d.dataPagamento||''}"/></div>
+              <div class="field"><label>Forma de pagamento</label>
+                <select id="honFormaPagamento">
+                  <option value="">— Selecione —</option>
+                  ${FORMAS_COBRANCA.map(t=>`<option value="${t}" ${d.formaPagamento===t?'selected':''}>${t}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div class="field"><label>Observações</label><input type="text" id="honObs" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="honCancel">Cancelar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
+            </div>
+          </form>
+        </div>
       </div>
     `;
   }
@@ -3335,6 +3513,66 @@
     await loadPropostas(); render();
   }
 
+  // Controle de Honorários — por cliente: tipo de serviço, forma de cobrança, vencimento,
+  // competência, pagamento. Base para o Termo de Quitação.
+  async function loadHonorarios(){
+    state.honorarios = [];
+    try{
+      const keys = await Store.list('honorarios:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.honorarios.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.honorarios.sort((a,b)=> (b.competencia||'').localeCompare(a.competencia||''));
+  }
+  async function saveHonorarioItem(h){
+    if(!h.id) h.id = uid();
+    await Store.set('honorarios:'+h.id, JSON.stringify(h), true);
+    await loadHonorarios(); render();
+  }
+  async function deleteHonorarioItem(id){
+    await Store.delete('honorarios:'+id, true);
+    await loadHonorarios(); render();
+  }
+
+  // Contratos de Serviços — um ou mais PDFs de contrato guardados por cliente, no Setor Jurídico.
+  async function loadContratos(){
+    state.contratos = [];
+    try{
+      const keys = await Store.list('contratos:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.contratos.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.contratos.sort((a,b)=> (b.dataAssinatura||'').localeCompare(a.dataAssinatura||''));
+  }
+  async function saveContratoItem(c){
+    if(!c.id) c.id = uid();
+    await Store.set('contratos:'+c.id, JSON.stringify(c), true);
+    await loadContratos(); render();
+  }
+  async function deleteContratoItem(id){
+    await Store.delete('contratos:'+id, true);
+    await loadContratos(); render();
+  }
+
+  function honorarioVencimento(h){
+    if(!h.competencia || !h.diaVencimento) return null;
+    const [ano, mes] = h.competencia.split('-').map(Number);
+    const dia = Math.min(Number(h.diaVencimento)||1, new Date(ano, mes, 0).getDate());
+    return ano + '-' + String(mes).padStart(2,'0') + '-' + String(dia).padStart(2,'0');
+  }
+  function honorarioStatus(h){
+    if(h.dataPagamento) return 'Pago';
+    const venc = honorarioVencimento(h);
+    if(venc && venc < todayStr()) return 'Vencido';
+    return 'Pendente';
+  }
+
   async function migrarContabilParaEmpresaUnica(){
     const marker = await Store.get('contabil_migracao_empresa_unica_v1', true).catch(()=>null);
     if(marker) return;
@@ -3771,6 +4009,8 @@
     await dedupHistoricos();
     await migrarContabilParaEmpresaUnica();
     await loadPropostas();
+    await loadHonorarios();
+    await loadContratos();
   }
 
   async function exportAllData(){
@@ -3795,6 +4035,8 @@
       lancamentosContabeis: state.lancamentosContabeis,
       planoContasReferencial: state.planoContasReferencial,
       propostas: state.propostas,
+      honorarios: state.honorarios,
+      contratos: state.contratos,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -3847,6 +4089,8 @@
       {key:'lancamentosContabeis', prefix:'lancamentoscontabeis:', idField:'id'},
       {key:'planoContasReferencial', prefix:'planocontasref:', idField:'id'},
       {key:'propostas', prefix:'propostas:', idField:'id'},
+      {key:'honorarios', prefix:'honorarios:', idField:'id'},
+      {key:'contratos', prefix:'contratos:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -6064,11 +6308,38 @@
     `;
   }
 
+  function notasFiscaisResumoHtml(notas){
+    const ativos = notas.filter(n=>n.status !== 'Cancelada');
+    const totalVendas = ativos.filter(n=>n.tipoOperacao==='Saída').reduce((s,n)=>s+(Number(n.valor)||0),0);
+    const totalCompras = ativos.filter(n=>n.tipoOperacao==='Entrada').reduce((s,n)=>s+(Number(n.valor)||0),0);
+    const totalServicos = ativos.filter(n=>n.tipoOperacao==='Serviços').reduce((s,n)=>s+(Number(n.valor)||0),0);
+    const qtdVendas = ativos.filter(n=>n.tipoOperacao==='Saída').length;
+    const qtdCompras = ativos.filter(n=>n.tipoOperacao==='Entrada').length;
+    const qtdServicos = ativos.filter(n=>n.tipoOperacao==='Serviços').length;
+    return `
+      <div class="nf-resumo-row">
+        <div class="nf-resumo-card">
+          <div class="nf-resumo-label">Vendas (Saída) — ${qtdVendas} nota(s)</div>
+          <div class="nf-resumo-valor" style="color:#2F7A52;">${fmtBRL(totalVendas)}</div>
+        </div>
+        <div class="nf-resumo-card">
+          <div class="nf-resumo-label">Compras (Entrada) — ${qtdCompras} nota(s)</div>
+          <div class="nf-resumo-valor" style="color:#B23B3B;">${fmtBRL(totalCompras)}</div>
+        </div>
+        <div class="nf-resumo-card">
+          <div class="nf-resumo-label">Serviços — ${qtdServicos} nota(s)</div>
+          <div class="nf-resumo-valor" style="color:#B8860B;">${fmtBRL(totalServicos)}</div>
+        </div>
+      </div>
+    `;
+  }
+
   function notasFiscaisTableHtml(clientFilter){
     let notas = state.notasFiscais.slice();
     if(clientFilter && clientFilter!=='all') notas = notas.filter(n=>n.clientId===clientFilter);
     if(!notas.length) return `<div class="empty">${clientFilter && clientFilter!=='all' ? 'Nenhuma nota registrada para este cliente.' : 'Nenhuma nota fiscal registrada ainda.'}</div>`;
     return `
+      ${notasFiscaisResumoHtml(notas)}
       <table>
         <thead><tr><th>Cliente</th><th>Operação</th><th>Tipo</th><th>Nº / Série</th><th>Emissão</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead>
         <tbody>
@@ -6772,13 +7043,112 @@
     `;
   }
 
+  const TIPOS_CONTRATO_SUGERIDOS = ['Contrato de Prestação de Serviços Contábeis', 'Aditivo Contratual', 'Distrato/Rescisão', 'Procuração', 'Termo de Responsabilidade Técnica', 'Outro'];
+
+  function contratoStatusClass(status){
+    if(status==='Ativo') return 'sit-ativa';
+    if(status==='Rescindido' || status==='Encerrado') return 'sit-baixada';
+    return 'sit-pendente';
+  }
+
+  function empresaSelectorHtmlContrato(){
+    const clientesOrdenados = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return `
+      <div class="field" style="max-width:360px; margin-bottom:16px;">
+        <label>Empresa</label>
+        <select id="contratoEmpresaSelect" class="filter-select" style="width:100%;">
+          <option value="">— Selecione uma empresa —</option>
+          ${clientesOrdenados.map(c=>`<option value="${c.id}" ${state.contratoEmpresaAtiva===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  }
+
+  function renderLegalExtras(){
+    const empresa = state.clients.find(c=>c.id===state.contratoEmpresaAtiva);
+    const contratosCliente = state.contratos.filter(c=>c.clientId===state.contratoEmpresaAtiva).sort((a,b)=>(b.dataAssinatura||'').localeCompare(a.dataAssinatura||''));
+    return `
+      <div class="panel">
+        <div class="panel-head"><h3>Contratos de Serviços</h3></div>
+        <div class="form-hint" style="margin:-4px 0 14px;">Guarde aqui os contratos (PDF) de cada cliente — assinados, aditivos ou distratos — separados por empresa.</div>
+        ${empresaSelectorHtmlContrato()}
+        ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou anexar contratos dela.</div>` : `
+          <button type="button" class="btn-add" id="novoContratoBtn" style="margin-bottom:14px;">+ Novo contrato</button>
+          ${!contratosCliente.length ? `<div class="empty">Nenhum contrato cadastrado para ${escapeHtml(empresa.name)} ainda.</div>` : `
+            <div class="cc-list">
+              ${contratosCliente.map(c=>`
+                <div class="cc-row" style="align-items:flex-start;">
+                  <div class="cr-main">
+                    <div class="cr-title">${escapeHtml(c.nomeContrato || c.tipoContrato || 'Contrato')} <span class="tag ${contratoStatusClass(c.status)}" style="margin-left:6px;">${escapeHtml(c.status||'Ativo')}</span></div>
+                    <div class="cr-meta">${escapeHtml(c.tipoContrato||'')}${c.dataAssinatura?' · Assinado em '+fmtDate(c.dataAssinatura):''}${c.dataInicio?' · Início '+fmtDate(c.dataInicio):''}${c.dataFim?' · Vigência até '+fmtDate(c.dataFim):' · Prazo indeterminado'}</div>
+                    ${c.observacoes ? `<div class="cr-meta">${escapeHtml(c.observacoes)}</div>` : ''}
+                    ${c.arquivoNome ? `<div class="cr-meta">📎 ${escapeHtml(c.arquivoNome)}</div>` : `<div class="cr-meta" style="color:var(--ink-soft);">Sem arquivo PDF anexado</div>`}
+                  </div>
+                  <div style="display:flex; gap:6px; flex-shrink:0;">
+                    ${c.arquivoBase64 ? `<button type="button" class="btn-detail" data-baixar-contrato="${c.id}">Baixar PDF</button>` : ''}
+                    <button type="button" class="btn-detail" data-edit-contrato="${c.id}">Editar</button>
+                    <button type="button" class="btn-sm danger" data-del-contrato="${c.id}">Excluir</button>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        `}
+      </div>
+    `;
+  }
+
+  function contratoModalHtml(){
+    const d = state.contratoModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar contrato' : 'Novo contrato'}</h3>
+          <form id="contratoForm">
+            <div class="field"><label>Tipo de contrato</label>
+              <select id="ctrTipoContrato">${TIPOS_CONTRATO_SUGERIDOS.map(t=>`<option value="${t}" ${d.tipoContrato===t?'selected':''}>${t}</option>`).join('')}</select>
+            </div>
+            <div class="field"><label>Nome/identificação do contrato</label><input type="text" id="ctrNome" value="${escapeHtml(d.nomeContrato||'')}" placeholder="Ex: Contrato de Honorários 2026"/></div>
+            <div class="form-row">
+              <div class="field"><label>Data de assinatura</label><input type="date" id="ctrDataAssinatura" value="${d.dataAssinatura||''}"/></div>
+              <div class="field"><label>Status</label>
+                <select id="ctrStatus">
+                  <option value="Ativo" ${d.status==='Ativo'?'selected':''}>Ativo</option>
+                  <option value="Encerrado" ${d.status==='Encerrado'?'selected':''}>Encerrado</option>
+                  <option value="Rescindido" ${d.status==='Rescindido'?'selected':''}>Rescindido</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Início da vigência</label><input type="date" id="ctrDataInicio" value="${d.dataInicio||''}"/></div>
+              <div class="field"><label>Fim da vigência (deixe em branco se indeterminado)</label><input type="date" id="ctrDataFim" value="${d.dataFim||''}"/></div>
+            </div>
+            <div class="field"><label>Observações</label><input type="text" id="ctrObs" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="attach-box">
+              <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo do contrato (PDF)</label>
+              <input type="file" id="ctrArquivoInput" accept=".pdf"/>
+              ${d.arquivoNome ? `<div class="form-hint" style="margin-top:8px;">Arquivo atual: ${escapeHtml(d.arquivoNome)} — selecionar um novo substitui este.</div>` : ''}
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="ctrCancel">Cancelar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+
   function renderDeptPage(dept){
     return `
       ${deptClientSelectorHtml(dept)}
       ${dept==='Fiscal' ? renderFiscalExtras() : ''}
       ${dept==='Departamento Pessoal' ? renderPessoalExtras() : ''}
       ${dept==='Contábil' ? renderContabilExtras() : ''}
-      ${(dept!=='Fiscal' && dept!=='Departamento Pessoal' && dept!=='Contábil') ? `<div class="panel"><div class="empty">Este departamento ainda não tem um painel dedicado além da seleção de cliente acima. Fale com o desenvolvedor para adicionar ferramentas específicas aqui.</div></div>` : ''}
+      ${dept==='Legal' ? renderLegalExtras() : ''}
+      ${(dept!=='Fiscal' && dept!=='Departamento Pessoal' && dept!=='Contábil' && dept!=='Legal') ? `<div class="panel"><div class="empty">Este departamento ainda não tem um painel dedicado além da seleção de cliente acima. Fale com o desenvolvedor para adicionar ferramentas específicas aqui.</div></div>` : ''}
     `;
   }
 
@@ -7124,6 +7494,8 @@
       ${state.modal==='parc' ? parcModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
+      ${state.modal==='honorario' ? honorarioModalHtml() : ''}
+      ${state.modal==='contrato' ? contratoModalHtml() : ''}
       ${state.modal==='lancContabil' ? lancContabilModalHtml() : ''}
       ${state.modal==='obrigacao' ? obrigacaoModalHtml() : ''}
       ${state.modal==='aviso' ? avisoModalHtml() : ''}
@@ -8119,6 +8491,136 @@
     root.querySelectorAll('[data-del-proposta]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir esta proposta salva?')) deletePropostaItem(el.getAttribute('data-del-proposta')); };
     });
+
+    // ===== Controle de Honorários =====
+    const honorarioEmpresaSelect = document.getElementById('honorarioEmpresaSelect');
+    if(honorarioEmpresaSelect){
+      honorarioEmpresaSelect.onchange = (e)=>{ state.honorarioEmpresaAtiva = e.target.value; render(); };
+    }
+    const novoHonorarioBtn = document.getElementById('novoHonorarioBtn');
+    if(novoHonorarioBtn){
+      novoHonorarioBtn.onclick = ()=>{
+        state.honorarioModalData = { clientId: state.honorarioEmpresaAtiva, competencia: state.competenciaAtiva, diaVencimento: 10 };
+        state.modal = 'honorario'; render();
+      };
+    }
+    root.querySelectorAll('[data-edit-honorario]').forEach(el=>{
+      el.onclick = ()=>{
+        const h = state.honorarios.find(x=>x.id===el.getAttribute('data-edit-honorario'));
+        if(!h) return;
+        state.honorarioModalData = Object.assign({}, h);
+        state.modal = 'honorario'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-honorario]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este lançamento de honorário?')) deleteHonorarioItem(el.getAttribute('data-del-honorario')); };
+    });
+    const honCancel = document.getElementById('honCancel');
+    if(honCancel) honCancel.onclick = ()=>{ state.modal=null; state.honorarioModalData=null; render(); };
+    const honorarioForm = document.getElementById('honorarioForm');
+    if(honorarioForm){
+      honorarioForm.onsubmit = (e)=>{
+        e.preventDefault();
+        const clientId = state.honorarioModalData ? state.honorarioModalData.clientId : state.honorarioEmpresaAtiva;
+        if(!clientId){ alert('Selecione uma empresa antes de cadastrar um honorário.'); return; }
+        const h = {
+          id: (state.honorarioModalData && state.honorarioModalData.id) || undefined,
+          clientId,
+          tipoServico: document.getElementById('honTipoServico').value,
+          tipoCobranca: document.getElementById('honTipoCobranca').value,
+          diaVencimento: document.getElementById('honDiaVencimento').value,
+          competencia: document.getElementById('honCompetencia').value,
+          valor: document.getElementById('honValor').value,
+          dataPagamento: document.getElementById('honDataPagamento').value,
+          formaPagamento: document.getElementById('honFormaPagamento').value,
+          observacoes: document.getElementById('honObs').value,
+        };
+        state.modal=null; state.honorarioModalData=null;
+        render();
+        saveHonorarioItem(h);
+      };
+    }
+    const quitCompetenciaInicio = document.getElementById('quitCompetenciaInicio');
+    if(quitCompetenciaInicio) quitCompetenciaInicio.onchange = (e)=>{ state.quitacaoCompetenciaInicio = e.target.value; };
+    const quitCompetenciaFim = document.getElementById('quitCompetenciaFim');
+    if(quitCompetenciaFim) quitCompetenciaFim.onchange = (e)=>{ state.quitacaoCompetenciaFim = e.target.value; };
+    const gerarTermoQuitacaoBtn = document.getElementById('gerarTermoQuitacaoBtn');
+    if(gerarTermoQuitacaoBtn){
+      gerarTermoQuitacaoBtn.onclick = ()=>{
+        if(!state.honorarioEmpresaAtiva){ alert('Selecione uma empresa.'); return; }
+        gerarPdfTermoQuitacao(state.honorarioEmpresaAtiva, state.quitacaoCompetenciaInicio, state.quitacaoCompetenciaFim);
+      };
+    }
+
+    // ===== Setor Jurídico — Contratos de Serviços =====
+    const contratoEmpresaSelect = document.getElementById('contratoEmpresaSelect');
+    if(contratoEmpresaSelect){
+      contratoEmpresaSelect.onchange = (e)=>{ state.contratoEmpresaAtiva = e.target.value; render(); };
+    }
+    const novoContratoBtn = document.getElementById('novoContratoBtn');
+    if(novoContratoBtn){
+      novoContratoBtn.onclick = ()=>{
+        state.contratoModalData = { clientId: state.contratoEmpresaAtiva, status: 'Ativo', dataAssinatura: todayStr() };
+        state.modal = 'contrato'; render();
+      };
+    }
+    root.querySelectorAll('[data-edit-contrato]').forEach(el=>{
+      el.onclick = ()=>{
+        const c = state.contratos.find(x=>x.id===el.getAttribute('data-edit-contrato'));
+        if(!c) return;
+        state.contratoModalData = Object.assign({}, c);
+        state.modal = 'contrato'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-contrato]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este contrato?')) deleteContratoItem(el.getAttribute('data-del-contrato')); };
+    });
+    root.querySelectorAll('[data-baixar-contrato]').forEach(el=>{
+      el.onclick = ()=>{
+        const c = state.contratos.find(x=>x.id===el.getAttribute('data-baixar-contrato'));
+        if(c && c.arquivoBase64) baixarArquivoBase64(c.arquivoBase64, c.arquivoNome||'contrato.pdf');
+      };
+    });
+    const ctrCancel = document.getElementById('ctrCancel');
+    if(ctrCancel) ctrCancel.onclick = ()=>{ state.modal=null; state.contratoModalData=null; render(); };
+    const contratoForm = document.getElementById('contratoForm');
+    if(contratoForm){
+      contratoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const clientId = state.contratoModalData ? state.contratoModalData.clientId : state.contratoEmpresaAtiva;
+        if(!clientId){ alert('Selecione uma empresa antes de cadastrar um contrato.'); return; }
+        const fileInput = document.getElementById('ctrArquivoInput');
+        const file = fileInput && fileInput.files && fileInput.files[0];
+        let arquivoBase64 = state.contratoModalData ? state.contratoModalData.arquivoBase64 : null;
+        let arquivoNome = state.contratoModalData ? state.contratoModalData.arquivoNome : null;
+        if(file){
+          if(file.size > 4*1024*1024){ alert('O PDF é maior que 4MB — escolha um arquivo menor.'); return; }
+          try{
+            const buf = await file.arrayBuffer();
+            let binary = '';
+            const bytes = new Uint8Array(buf);
+            for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+            arquivoBase64 = btoa(binary);
+            arquivoNome = file.name;
+          }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); return; }
+        }
+        const c = {
+          id: (state.contratoModalData && state.contratoModalData.id) || undefined,
+          clientId,
+          tipoContrato: document.getElementById('ctrTipoContrato').value,
+          nomeContrato: document.getElementById('ctrNome').value,
+          dataAssinatura: document.getElementById('ctrDataAssinatura').value,
+          status: document.getElementById('ctrStatus').value,
+          dataInicio: document.getElementById('ctrDataInicio').value,
+          dataFim: document.getElementById('ctrDataFim').value,
+          observacoes: document.getElementById('ctrObs').value,
+          arquivoBase64, arquivoNome,
+        };
+        state.modal=null; state.contratoModalData=null;
+        render();
+        saveContratoItem(c);
+      };
+    }
 
     const criarPlanoContasPadraoBtn = document.getElementById('criarPlanoContasPadraoBtn');
     if(criarPlanoContasPadraoBtn){
