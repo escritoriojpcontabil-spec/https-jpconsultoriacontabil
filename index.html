@@ -617,6 +617,8 @@
     orientacaoModalData: null,
     servicosEsporadicos: [],
     servicoEsporadicoModalData: null,
+    exportNfTipoOperacao: 'Todos',
+    exportNfOrdenacao: 'numero',
     faturamentoRelClienteId: 'all',
     faturamentoRelTipo: 'ambos',
     faturamentoRelMesInicio: (()=>{ const d=new Date(); d.setMonth(d.getMonth()-5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })(),
@@ -1583,6 +1585,93 @@
   // o departamento de origem, e assinatura/rubrica do contador responsável (CRC).
   // Recibo de Prestação de Serviços Contábeis — para clientes esporádicos (não cadastrados no
   // Cadastro de Clientes). Mesmo padrão visual dos demais recibos: logo, CRC, assinatura.
+  // Nome da "contraparte" da nota (quem forneceu, no caso de Entrada; ou o cliente que
+  // comprou/contratou, no caso de Saída/Serviços) — usado para organizar por fornecedor.
+  function contraparteNota(nf){
+    if(nf.tipoOperacao === 'Entrada') return nf.emitNome || '—';
+    return nf.destNome || nf.emitNome || '—';
+  }
+
+  // Gera a representação em PDF de uma nota fiscal (retorna o objeto jsPDF, sem salvar —
+  // quem chama decide se baixa individualmente ou inclui num ZIP em lote).
+  function gerarDocNotaFiscalIndividual(nf, clienteNome){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    let y = pdfHeader(doc, 'Representação Simplificada da Nota Fiscal', clienteNome || '—');
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
+    doc.text('Tipo: ' + (nf.tipo||'—') + '   ·   Operação: ' + (nf.tipoOperacao||'—') + '   ·   Status: ' + (nf.status||'—'), 14, y); y += 7;
+    doc.text('Número: ' + (nf.numero||'—') + '   ·   Série: ' + (nf.serie||'—') + '   ·   Emissão: ' + (nf.dataEmissao?fmtDate(nf.dataEmissao):'—'), 14, y); y += 7;
+    if(nf.chaveAcesso){ doc.text('Chave de Acesso: ' + nf.chaveAcesso, 14, y); y += 7; }
+    y += 3;
+    doc.setFont('helvetica','bold'); doc.text('Emitente', 14, y); y += 6;
+    doc.setFont('helvetica','normal');
+    doc.text((nf.emitNome||'—') + (nf.emitDoc ? ' — ' + nf.emitDoc : ''), 14, y); y += 9;
+    doc.setFont('helvetica','bold'); doc.text('Destinatário', 14, y); y += 6;
+    doc.setFont('helvetica','normal');
+    doc.text((nf.destNome||'—') + (nf.destDoc ? ' — ' + nf.destDoc : ''), 14, y); y += 9;
+    doc.setFont('helvetica','bold'); doc.setFontSize(12);
+    doc.text('Valor total: ' + fmtBRLorDash(nf.valor), 14, y); y += 12;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(140,150,160);
+    const aviso = doc.splitTextToSize('Esta é uma representação simplificada montada a partir dos dados do XML importado — não é o layout oficial do DANFE (com código de barras/QR Code) definido pela Receita Federal/Sefaz. Para o DANFE oficial, use o emissor de notas fiscais ou o portal da Sefaz.', 180);
+    doc.text(aviso, 14, y);
+    return doc;
+  }
+
+  function sanitizarNomeArquivo(nome){
+    return (nome||'sem-nome').replace(/[\\\/:*?"<>|]/g, '-').trim();
+  }
+
+  function gerarPdfNotaFiscalIndividual(notaFiscalId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const nf = state.notasFiscais.find(x=>x.id===notaFiscalId);
+    if(!nf) return;
+    const doc = gerarDocNotaFiscalIndividual(nf, clientName(nf.clientId));
+    doc.save('nota-fiscal-' + sanitizarNomeArquivo(nf.numero||'sem-numero') + '-' + sanitizarNomeArquivo(nf.serie||'0') + '.pdf');
+  }
+
+  // Gera um .zip com um PDF por nota fiscal, organizado em pastas conforme o critério
+  // escolhido (fornecedor, competência de emissão, ou plano por número). O navegador não
+  // consegue criar pastas direto no computador nem subir arquivo direto pro OneDrive — o .zip
+  // baixado precisa ser extraído manualmente para dentro da pasta local do OneDrive, que aí
+  // sincroniza sozinho pra nuvem (do jeito que o OneDrive já faz normalmente).
+  async function gerarZipNotasFiscais(clientId, tipoOperacaoFiltro, ordenacao){
+    if(!window.JSZip){ alert('A biblioteca de compactação ainda está carregando. Tente novamente.'); return; }
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    let notas = state.notasFiscais.filter(n=>n.clientId===clientId);
+    if(tipoOperacaoFiltro && tipoOperacaoFiltro!=='Todos') notas = notas.filter(n=>n.tipoOperacao===tipoOperacaoFiltro);
+    if(!notas.length){ alert('Nenhuma nota fiscal encontrada para os filtros escolhidos.'); return; }
+
+    if(ordenacao==='numero') notas = notas.slice().sort((a,b)=> String(a.numero||'').localeCompare(String(b.numero||''), undefined, {numeric:true}));
+    else if(ordenacao==='fornecedor') notas = notas.slice().sort((a,b)=> contraparteNota(a).localeCompare(contraparteNota(b)));
+    else if(ordenacao==='data') notas = notas.slice().sort((a,b)=> (a.dataEmissao||'').localeCompare(b.dataEmissao||''));
+
+    const cliente = state.clients.find(c=>c.id===clientId);
+    const zip = new window.JSZip();
+    for(const nf of notas){
+      const doc = gerarDocNotaFiscalIndividual(nf, cliente?cliente.name:'');
+      const blob = doc.output('blob');
+      const numPadded = String(nf.numero||'0').padStart(6,'0');
+      let pasta = '', nomeArquivo = '';
+      if(ordenacao==='fornecedor'){
+        pasta = sanitizarNomeArquivo(contraparteNota(nf)) + '/';
+        nomeArquivo = numPadded + ' - NF ' + sanitizarNomeArquivo(nf.numero||'sem-numero') + '.pdf';
+      } else if(ordenacao==='data'){
+        pasta = ((nf.dataEmissao||'').slice(0,7) || 'sem-data') + '/';
+        nomeArquivo = (nf.dataEmissao||'0000-00-00') + ' - NF ' + sanitizarNomeArquivo(nf.numero||'sem-numero') + '.pdf';
+      } else {
+        nomeArquivo = numPadded + ' - NF ' + sanitizarNomeArquivo(nf.numero||'sem-numero') + '.pdf';
+      }
+      zip.file(pasta + nomeArquivo, blob);
+    }
+    const zipBlob = await zip.generateAsync({type:'blob'});
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'notas-fiscais-' + sanitizarNomeArquivo(cliente?cliente.name:'empresa').toLowerCase() + '-' + todayStr() + '.zip';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   function gerarPdfReciboServicoEsporadico(servicoId){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const s = state.servicosEsporadicos.find(x=>x.id===servicoId);
@@ -3472,11 +3561,12 @@
       const infProt = doc.getElementsByTagName('infProt')[0];
       const cStat = getTagText(infProt, 'cStat');
       const status = (cStat === '101' || cStat === '151' || cStat === '135') ? 'Cancelada' : 'Emitida';
+      const chaveAcesso = (infNFe.getAttribute('Id')||'').replace(/^NFe/i,'');
       return {
         ok:true,
         tipo: mod === '65' ? 'NFC-e (Consumidor)' : 'NF-e (Produto)',
         numero: nNF, serie, dataEmissao: dhEmi ? dhEmi.slice(0,10) : '',
-        valor: vNF, status,
+        valor: vNF, status, chaveAcesso,
         emitDoc: emitCNPJ, emitNome, destDoc: destCNPJ, destNome,
       };
     }
@@ -7047,7 +7137,7 @@
               <td>${n.dataEmissao?fmtDate(n.dataEmissao):'—'}</td>
               <td style="text-align:right" class="mono">${fmtBRLorDash(n.valor)}</td>
               <td><span class="tag ${nfStatusClass(n.status)}">${escapeHtml(n.status||'Emitida')}</span></td>
-              <td><button class="btn-sm danger" data-del-nf="${n.id}">Excluir</button></td>
+              <td style="display:flex; gap:6px;"><button class="btn-detail" data-pdf-nf="${n.id}">PDF</button><button class="btn-sm danger" data-del-nf="${n.id}">Excluir</button></td>
             </tr>
           `).join('')}
         </tbody>
@@ -7064,6 +7154,9 @@
   function wireNfDeleteButtons(){
     document.querySelectorAll('[data-del-nf]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir o registro desta nota fiscal?')) deleteNotaFiscal(el.getAttribute('data-del-nf')); };
+    });
+    document.querySelectorAll('[data-pdf-nf]').forEach(el=>{
+      el.onclick = ()=> gerarPdfNotaFiscalIndividual(el.getAttribute('data-pdf-nf'));
     });
   }
 
@@ -7161,6 +7254,30 @@
         </select>
       </div>
       <div id="nfTableContainer">${notasFiscaisTableHtml(state.nfClientFilter)}</div>
+
+      <div class="form-section-title">Exportação em Lote (PDF organizado em pastas)</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Gera um PDF de cada nota fiscal (Entrada, Saída ou Serviços) desta empresa e agrupa tudo num único arquivo .zip, já organizado em pastas por fornecedor, competência ou número — pronto para extrair no seu computador ou dentro da pasta local do OneDrive (que sincroniza sozinho pra nuvem).</div>
+      ${state.nfClientFilter==='all' ? `<div class="empty">Selecione uma empresa específica no filtro "Filtrar por cliente" acima para exportar (a exportação é feita empresa por empresa).</div>` : `
+        <div class="form-row">
+          <div class="field"><label>Tipo de operação</label>
+            <select id="exportNfTipoOperacao">
+              <option value="Todos" ${state.exportNfTipoOperacao==='Todos'?'selected':''}>Todos (Entrada + Saída + Serviços)</option>
+              <option value="Entrada" ${state.exportNfTipoOperacao==='Entrada'?'selected':''}>Só Entrada</option>
+              <option value="Saída" ${state.exportNfTipoOperacao==='Saída'?'selected':''}>Só Saída</option>
+              <option value="Serviços" ${state.exportNfTipoOperacao==='Serviços'?'selected':''}>Só Serviços</option>
+            </select>
+          </div>
+          <div class="field"><label>Organizar por</label>
+            <select id="exportNfOrdenacao">
+              <option value="numero" ${state.exportNfOrdenacao==='numero'?'selected':''}>Ordem numérica (sem pastas)</option>
+              <option value="fornecedor" ${state.exportNfOrdenacao==='fornecedor'?'selected':''}>Pasta por fornecedor/cliente</option>
+              <option value="data" ${state.exportNfOrdenacao==='data'?'selected':''}>Pasta por competência (mês de emissão)</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" class="btn-add" id="gerarZipNfBtn">Gerar PDFs e Baixar ZIP Organizado</button>
+        <div class="legis-note">O navegador não consegue criar pastas direto no seu computador nem enviar arquivo direto pra nuvem do OneDrive (isso é bloqueado por segurança em qualquer site). O .zip baixado já vem organizado — é só extrair dentro da pasta do OneDrive no seu computador, que ele sincroniza sozinho.</div>
+      `}
       ${faturamentoRelatorioHtml()}
     `;
   }
@@ -8891,7 +9008,7 @@
           }
           const result = parseNotaFiscalXml(text);
           if(!result.ok){ showMsg(result.error, 'error'); return; }
-          state.nfModalData = Object.assign({}, state.nfModalData, {xmlHash});
+          state.nfModalData = Object.assign({}, state.nfModalData, {xmlHash, xmlOriginal: text, chaveAcesso: result.chaveAcesso || '', emitNome: result.emitNome||'', emitDoc: result.emitDoc||'', destNome: result.destNome||'', destDoc: result.destDoc||''});
 
           document.getElementById('nfTipo').value = result.tipo;
           if(result.numero) document.getElementById('nfNumero').value = result.numero;
@@ -8952,6 +9069,10 @@
             dataEmissao: result.dataEmissao,
             valor: result.valor,
             status: result.status,
+            chaveAcesso: result.chaveAcesso || '',
+            emitNome: result.emitNome || '', emitDoc: result.emitDoc || '',
+            destNome: result.destNome || '', destDoc: result.destDoc || '',
+            xmlOriginal: text,
             anexoNome: file.name,
             xmlHash,
             observacoes: 'Importado em lote via XML (' + file.name + ')',
@@ -8983,6 +9104,12 @@
           valor: document.getElementById('nfValor').value,
           anexoNome: document.getElementById('nfAnexoNome').value,
           xmlHash: state.nfModalData ? state.nfModalData.xmlHash : undefined,
+          xmlOriginal: state.nfModalData ? state.nfModalData.xmlOriginal : undefined,
+          chaveAcesso: state.nfModalData ? state.nfModalData.chaveAcesso : undefined,
+          emitNome: state.nfModalData ? state.nfModalData.emitNome : undefined,
+          emitDoc: state.nfModalData ? state.nfModalData.emitDoc : undefined,
+          destNome: state.nfModalData ? state.nfModalData.destNome : undefined,
+          destDoc: state.nfModalData ? state.nfModalData.destDoc : undefined,
           observacoes: document.getElementById('nfObs').value,
         };
         const editandoId = state.nfModalData && state.nfModalData.id;
@@ -8995,8 +9122,26 @@
       };
     }
     const nfClientSelect = document.getElementById('nfClientSelect');
-    if(nfClientSelect) nfClientSelect.onchange = ()=> updateNfResults();
+    if(nfClientSelect) nfClientSelect.onchange = (e)=>{ state.nfClientFilter = e.target.value; render(); };
     wireNfDeleteButtons();
+
+    const exportNfTipoOperacao = document.getElementById('exportNfTipoOperacao');
+    if(exportNfTipoOperacao) exportNfTipoOperacao.onchange = (e)=>{ state.exportNfTipoOperacao = e.target.value; };
+    const exportNfOrdenacao = document.getElementById('exportNfOrdenacao');
+    if(exportNfOrdenacao) exportNfOrdenacao.onchange = (e)=>{ state.exportNfOrdenacao = e.target.value; };
+    const gerarZipNfBtn = document.getElementById('gerarZipNfBtn');
+    if(gerarZipNfBtn){
+      gerarZipNfBtn.onclick = async ()=>{
+        if(state.nfClientFilter==='all'){ alert('Selecione uma empresa específica primeiro.'); return; }
+        gerarZipNfBtn.disabled = true; gerarZipNfBtn.textContent = 'Gerando PDFs...';
+        try{
+          await gerarZipNotasFiscais(state.nfClientFilter, state.exportNfTipoOperacao, state.exportNfOrdenacao);
+        }catch(err){
+          alert('Não foi possível gerar o arquivo. Tente novamente.');
+        }
+        gerarZipNfBtn.disabled = false; gerarZipNfBtn.textContent = 'Gerar PDFs e Baixar ZIP Organizado';
+      };
+    }
 
     // Relatório de Faturamento Mensal
     const fatRelCliente = document.getElementById('fatRelCliente');
