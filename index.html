@@ -1779,14 +1779,14 @@
 
     // Posições das colunas — espaçadas com folga (paisagem dá ~270mm úteis) para não sobrepor,
     // mesmo com nomes longos de forma de pagamento (ex: "Transferência (TED/DOC)").
-    const colMes = 14, colVencto = 46, colHist = 76, colAReceber = 158, colRecebido = 183, colSaldo = 208, colDataRec = 216, colFormaRec = pageW-14;
+    const colMes = 14, colVencto = 46, colHist = 76, colAReceber = 158, colRecebido = 183, colSaldo = 208, colDataRec = 216, colFormaRec = pageW-8;
     const fillAReceberX = 140, fillAReceberW = 21, fillRecebidoX = 165, fillRecebidoW = 21;
 
     doc.setFillColor(183,210,237); doc.rect(fillAReceberX, y-4.5, fillAReceberW, 6, 'F');
     doc.setFillColor(191,224,184); doc.rect(fillRecebidoX, y-4.5, fillRecebidoW, 6, 'F');
     doc.setFontSize(8.5); doc.setFont('helvetica','bold');
     doc.setFillColor(240,242,245); doc.rect(14, y-4.5, fillAReceberX-14, 6, 'F');
-    doc.setFillColor(240,242,245); doc.rect(fillRecebidoX+fillRecebidoW, y-4.5, (pageW-14)-(fillRecebidoX+fillRecebidoW), 6, 'F');
+    doc.setFillColor(240,242,245); doc.rect(fillRecebidoX+fillRecebidoW, y-4.5, (pageW-8)-(fillRecebidoX+fillRecebidoW), 6, 'F');
     doc.text('Meses/Servicos', colMes, y);
     doc.text('Vencto', colVencto, y);
     doc.text('Historico', colHist, y);
@@ -1803,13 +1803,13 @@
       if(l.ehSaldoAnterior) doc.setFont('helvetica','bold'); else doc.setFont('helvetica','normal');
       doc.text(l.mes, colMes, y);
       doc.text(l.vencimento ? fmtDate(l.vencimento) : '-', colVencto, y);
-      doc.text((l.historico||'').slice(0,26), colHist, y);
+      doc.text((l.historico||'').slice(0,38), colHist, y);
       doc.text(fmtBRL(l.aReceber), colAReceber, y, {align:'right'});
       doc.text(fmtBRL(l.recebido), colRecebido, y, {align:'right'});
       doc.text(fmtBRL(l.saldoFinal), colSaldo, y, {align:'right'});
       doc.text(l.dataRec ? fmtDate(l.dataRec) : '-', colDataRec, y);
-      doc.setFontSize(7.3);
-      doc.text((l.formaRec||'-').slice(0,20), colFormaRec, y, {align:'right'});
+      doc.setFontSize(6.8);
+      doc.text((l.formaRec||'-').slice(0,38), colFormaRec, y, {align:'right'});
       doc.setFontSize(8.5);
       y += 6.2;
     });
