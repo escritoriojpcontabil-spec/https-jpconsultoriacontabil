@@ -1475,7 +1475,7 @@
   }
 
   function pendenciasHonorariosCliente(clientId){
-    return state.honorarios.filter(h=>h.clientId===clientId).filter(h=>{ const s = honorarioStatus(h); return s==='Pendente' || s==='Vencido'; }).sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
+    return state.honorarios.filter(h=>h.clientId===clientId).filter(h=>{ const s = honorarioStatus(h); return s==='A Vencer' || s==='Vencido'; }).sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
   }
   // Extrato completo — todos os honorários do cliente, pagos e não pagos, para envio.
   function extratoHonorariosCliente(clientId){
@@ -3700,7 +3700,7 @@
     if(h.dataPagamento) return 'Pago';
     const venc = honorarioVencimento(h);
     if(venc && venc < todayStr()) return 'Vencido';
-    return 'Pendente';
+    return 'A Vencer';
   }
 
   async function migrarContabilParaEmpresaUnica(){
