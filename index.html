@@ -603,6 +603,7 @@
     honorarioModalData: null,
     quitacaoCompetenciaInicio: '',
     quitacaoCompetenciaFim: '',
+    extratoAnualAno: new Date().getFullYear(),
     contratos: [],
     contratoEmpresaAtiva: '',
     contratoModalData: null,
@@ -1476,41 +1477,86 @@
   function pendenciasHonorariosCliente(clientId){
     return state.honorarios.filter(h=>h.clientId===clientId).filter(h=>{ const s = honorarioStatus(h); return s==='Pendente' || s==='Vencido'; }).sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
   }
+  // Extrato completo — todos os honorários do cliente, pagos e não pagos, para envio.
+  function extratoHonorariosCliente(clientId){
+    return state.honorarios.filter(h=>h.clientId===clientId).sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
+  }
 
-  function gerarPdfPendenciasHonorarios(clientId){
+  // Extrato anual de cobranças — replica o modelo de planilha do escritório: Saldo Anterior +
+  // um lançamento por mês (Jan-Dez) + Saldo Final acumulado mês a mês. Cobre qualquer forma de
+  // recebimento (boleto, Pix, dinheiro, etc.) já que usa o mesmo campo "formaPagamento".
+  function extratoAnualCliente(clientId, ano){
+    const todosCliente = state.honorarios.filter(h=>h.clientId===clientId);
+    const anoStr = String(ano);
+    const saldoAnterior = todosCliente
+      .filter(h=>(h.competencia||'') < anoStr+'-01')
+      .reduce((s,h)=> s + (Number(h.valor)||0) - (h.dataPagamento ? (Number(h.valor)||0) : 0), 0);
+
+    const linhas = [];
+    let saldoAcumulado = saldoAnterior;
+    linhas.push({ mes:'-', vencimento:null, historico:'SALDO ANTERIOR', aReceber:0, recebido:0, saldoFinal:saldoAcumulado, dataRec:null, formaRec:'', ehSaldoAnterior:true });
+
+    for(let m=1; m<=12; m++){
+      const competencia = anoStr + '-' + String(m).padStart(2,'0');
+      const doMes = todosCliente.filter(h=>h.competencia===competencia);
+      if(!doMes.length){
+        linhas.push({ mes: MESES_PT[m-1], vencimento:null, historico:'HONORÁRIOS CONTÁBEIS', aReceber:0, recebido:0, saldoFinal:saldoAcumulado, dataRec:null, formaRec:'' });
+      } else {
+        doMes.forEach(h=>{
+          const valor = Number(h.valor)||0;
+          const recebido = h.dataPagamento ? valor : 0;
+          saldoAcumulado += valor - recebido;
+          linhas.push({
+            mes: MESES_PT[m-1], vencimento: honorarioVencimento(h), historico: h.tipoServico || 'HONORÁRIOS CONTÁBEIS',
+            aReceber: valor, recebido, saldoFinal: saldoAcumulado,
+            dataRec: h.dataPagamento || null, formaRec: h.formaPagamento || '',
+          });
+        });
+      }
+    }
+    const totalAReceber = linhas.reduce((s,l)=>s+l.aReceber,0);
+    const totalRecebido = linhas.reduce((s,l)=>s+l.recebido,0);
+    return { linhas, saldoAnterior, totalAReceber, totalRecebido, saldoFinalAno: saldoAcumulado };
+  }
+
+  function gerarPdfPendenciasHonorarios(clientId, ano){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const cliente = state.clients.find(c=>c.id===clientId);
-    const pendentes = pendenciasHonorariosCliente(clientId);
-    if(!pendentes.length){ alert('Nenhuma pendência de honorário para esta empresa.'); return; }
+    const ex = extratoAnualCliente(clientId, ano);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Pendências de Honorários', cliente ? cliente.name : '—');
+    let y = pdfHeader(doc, 'Cobrancas Mensais - Ano ' + ano, cliente ? cliente.name : '\u2014');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-    if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 8; }
+    if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 6; }
+    if(cliente && cliente.contractStart){ doc.text('Inicio contratual: ' + fmtDate(cliente.contractStart), 14, y); y += 6; }
+    y += 3;
 
-    doc.setFontSize(8.5); doc.setFont('helvetica','bold');
-    doc.setFillColor(240,242,245); doc.rect(14, y-4.5, pageW-28, 6, 'F');
-    doc.text('Competência', 16, y); doc.text('Serviço', 60, y); doc.text('Vencimento', 130, y); doc.text('Status', 160, y); doc.text('Valor', pageW-16, y, {align:'right'});
-    y += 6.5; doc.setFont('helvetica','normal');
-    let total = 0;
-    pendentes.forEach(h=>{
+    doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+    doc.setFillColor(240,242,245); doc.rect(14, y-4, pageW-28, 5.5, 'F');
+    doc.text('Meses/Servicos', 16, y); doc.text('Vencto', 62, y); doc.text('Historico', 82, y); doc.text('A Receber', 125, y, {align:'right'}); doc.text('Recebido', 148, y, {align:'right'}); doc.text('Saldo', 168, y, {align:'right'}); doc.text('Data Rec.', 185, y); doc.text('Forma Rec.', pageW-16, y, {align:'right'});
+    y += 5.5; doc.setFont('helvetica','normal');
+    ex.linhas.forEach(l=>{
       if(y > 275){ doc.addPage(); y = 20; }
-      const venc = honorarioVencimento(h);
-      doc.text(monthLabel(h.competencia)+'/'+(h.competencia||'').slice(0,4), 16, y);
-      doc.text((h.tipoServico||'—').slice(0,28), 60, y);
-      doc.text(venc?fmtDate(venc):'—', 130, y);
-      doc.text(honorarioStatus(h), 160, y);
-      doc.text(fmtBRL(h.valor), pageW-16, y, {align:'right'});
-      total += Number(h.valor)||0;
-      y += 5.5;
+      if(l.ehSaldoAnterior) doc.setFont('helvetica','bold'); else doc.setFont('helvetica','normal');
+      doc.text(l.mes, 16, y);
+      doc.text(l.vencimento ? fmtDate(l.vencimento) : '-', 62, y);
+      doc.text((l.historico||'').slice(0,20), 82, y);
+      doc.text(fmtBRL(l.aReceber), 125, y, {align:'right'});
+      doc.text(fmtBRL(l.recebido), 148, y, {align:'right'});
+      doc.text(fmtBRL(l.saldoFinal), 168, y, {align:'right'});
+      doc.text(l.dataRec ? fmtDate(l.dataRec) : '-', 185, y);
+      doc.setFontSize(6.8);
+      doc.text((l.formaRec||'-').slice(0,16), pageW-16, y, {align:'right'});
+      doc.setFontSize(7.5);
+      y += 5.2;
     });
     doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
-    doc.setFont('helvetica','bold');
-    doc.text('Total pendente', 16, y); doc.text(fmtBRL(total), pageW-16, y, {align:'right'});
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('Total a receber: ' + fmtBRL(ex.totalAReceber) + '   \u00b7   Total recebido: ' + fmtBRL(ex.totalRecebido), 16, y);
 
-    pdfFooterDisclaimer(doc, 'Relação de honorários pendentes de pagamento junto ao escritório, referente aos períodos e serviços listados acima.');
-    doc.save('pendencias-honorarios-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfFooterDisclaimer(doc, 'Extrato anual de cobrancas referente ao ano de ' + ano + ', incluindo o saldo anterior e o saldo acumulado mes a mes.');
+    doc.save('extrato-honorarios-' + ano + '-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function gerarPdfTermoQuitacao(clientId, mesInicio, mesFim){
@@ -2291,27 +2337,34 @@
           </table>
         `}
 
-        <div class="form-section-title">Pendências de Honorários</div>
-        <div class="form-hint" style="margin:-4px 0 14px;">Lista de cobranças em aberto (pendentes ou vencidas) de ${escapeHtml(empresa.name)}, pronta para conferir e enviar ao cliente.</div>
+        <div class="form-section-title">Extrato Anual de Cobranças</div>
+        <div class="form-hint" style="margin:-4px 0 14px;">Segue o modelo do escritório: saldo anterior + os 12 meses do ano, com saldo acumulado — cobre qualquer forma de recebimento (boleto, Pix, dinheiro, etc.), pronto para conferir e enviar ao cliente.</div>
+        <div class="field" style="max-width:160px; margin-bottom:14px;"><label>Ano</label><input type="number" id="extratoAnualAnoInput" value="${state.extratoAnualAno}" min="2000" max="2100"/></div>
+        ${empresa.contractStart ? `<div class="form-hint" style="margin:-10px 0 12px;">Início contratual: ${fmtDate(empresa.contractStart)}</div>` : ''}
         ${(()=>{
-          const pendentes = honorariosCliente.filter(h=>{ const s = honorarioStatus(h); return s==='Pendente' || s==='Vencido'; }).sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
-          const totalPendente = pendentes.reduce((s,h)=>s+(Number(h.valor)||0),0);
-          if(!pendentes.length) return `<div class="empty">Nenhuma pendência de honorário para ${escapeHtml(empresa.name)}. 🎉</div>`;
+          const ex = extratoAnualCliente(state.honorarioEmpresaAtiva, state.extratoAnualAno);
           return `
             <table>
-              <thead><tr><th>Competência</th><th>Serviço</th><th>Vencimento</th><th style="text-align:right">Valor</th><th>Status</th></tr></thead>
+              <thead><tr><th>Meses/Serviços</th><th>Vencimento</th><th>Histórico</th><th style="text-align:right">A Receber</th><th style="text-align:right">Recebidos</th><th style="text-align:right">Saldo Final</th><th>Data Rec.</th><th>Forma Rec.</th></tr></thead>
               <tbody>
-                ${pendentes.map(h=>{
-                  const venc = honorarioVencimento(h);
-                  const status = honorarioStatus(h);
-                  return `<tr><td>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)}</td><td>${escapeHtml(h.tipoServico||'—')}</td><td>${venc?fmtDate(venc):'—'}</td><td style="text-align:right" class="mono">${fmtBRLorDash(h.valor)}</td><td><span class="tag ${honorarioStatusClass(status)}">${status}</span></td></tr>`;
-                }).join('')}
-                <tr class="conta-sintetica"><td colspan="3">Total pendente</td><td style="text-align:right">${fmtBRL(totalPendente)}</td><td></td></tr>
+                ${ex.linhas.map(l=>`
+                  <tr class="${l.ehSaldoAnterior?'conta-sintetica':''}">
+                    <td>${escapeHtml(l.mes)}</td>
+                    <td>${l.vencimento ? fmtDate(l.vencimento) : '—'}</td>
+                    <td>${escapeHtml(l.historico)}</td>
+                    <td style="text-align:right" class="mono">${fmtBRL(l.aReceber)}</td>
+                    <td style="text-align:right" class="mono">${fmtBRL(l.recebido)}</td>
+                    <td style="text-align:right" class="mono">${fmtBRL(l.saldoFinal)}</td>
+                    <td>${l.dataRec ? fmtDate(l.dataRec) : '—'}</td>
+                    <td>${escapeHtml(l.formaRec||'—')}</td>
+                  </tr>
+                `).join('')}
+                <tr class="conta-sintetica"><td colspan="3">Totais do ano</td><td style="text-align:right">${fmtBRL(ex.totalAReceber)}</td><td style="text-align:right">${fmtBRL(ex.totalRecebido)}</td><td colspan="3"></td></tr>
               </tbody>
             </table>
             <div style="display:flex; gap:10px; margin-top:12px;">
               <button type="button" class="btn-detail" id="pdfPendenciasHonorariosBtn">Baixar PDF</button>
-              <button type="button" class="btn-add btn-send-system" id="enviarPendenciasHonorariosBtn">Enviar Pendências ao Cliente</button>
+              <button type="button" class="btn-add btn-send-system" id="enviarPendenciasHonorariosBtn">Enviar Extrato ao Cliente</button>
             </div>
           `;
         })()}
@@ -8628,29 +8681,29 @@
     if(quitCompetenciaInicio) quitCompetenciaInicio.onchange = (e)=>{ state.quitacaoCompetenciaInicio = e.target.value; };
     const quitCompetenciaFim = document.getElementById('quitCompetenciaFim');
     if(quitCompetenciaFim) quitCompetenciaFim.onchange = (e)=>{ state.quitacaoCompetenciaFim = e.target.value; };
+    const extratoAnualAnoInput = document.getElementById('extratoAnualAnoInput');
+    if(extratoAnualAnoInput) extratoAnualAnoInput.onchange = (e)=>{ state.extratoAnualAno = Number(e.target.value)||new Date().getFullYear(); render(); };
     const pdfPendenciasHonorariosBtn = document.getElementById('pdfPendenciasHonorariosBtn');
-    if(pdfPendenciasHonorariosBtn) pdfPendenciasHonorariosBtn.onclick = ()=> gerarPdfPendenciasHonorarios(state.honorarioEmpresaAtiva);
+    if(pdfPendenciasHonorariosBtn) pdfPendenciasHonorariosBtn.onclick = ()=> gerarPdfPendenciasHonorarios(state.honorarioEmpresaAtiva, state.extratoAnualAno);
     const enviarPendenciasHonorariosBtn = document.getElementById('enviarPendenciasHonorariosBtn');
     if(enviarPendenciasHonorariosBtn){
       enviarPendenciasHonorariosBtn.onclick = ()=>{
         const clientId = state.honorarioEmpresaAtiva;
         const cliente = state.clients.find(c=>c.id===clientId);
-        const pendentes = pendenciasHonorariosCliente(clientId);
-        if(!pendentes.length){ alert('Nenhuma pendência de honorário para esta empresa.'); return; }
-        const total = pendentes.reduce((s,h)=>s+(Number(h.valor)||0),0);
-        const linhas = pendentes.map(h=>{
-          const venc = honorarioVencimento(h);
-          return '• ' + monthLabel(h.competencia)+'/'+(h.competencia||'').slice(0,4) + ' — ' + (h.tipoServico||'Honorário') + (venc?' — venc. '+fmtDate(venc):'') + ' — ' + fmtBRL(h.valor);
+        const ano = state.extratoAnualAno;
+        const ex = extratoAnualCliente(clientId, ano);
+        const linhas = ex.linhas.filter(l=>!l.ehSaldoAnterior).map(l=>{
+          return '\u2022 ' + l.mes + ' \u2014 ' + l.historico + (l.vencimento?' \u2014 venc. '+fmtDate(l.vencimento):'') + ' \u2014 a receber: ' + fmtBRL(l.aReceber) + ' \u2014 recebido: ' + fmtBRL(l.recebido) + (l.formaRec?' ('+l.formaRec+')':'');
         }).join('\n');
-        gerarPdfPendenciasHonorarios(clientId);
+        gerarPdfPendenciasHonorarios(clientId, ano);
         state.comunicadoCanal = 'email';
         state.comunicadoDestino = 'individual';
         state.comunicadoClienteId = clientId;
-        state.comunicadoAssunto = 'Pendências de Honorários — ' + (cliente?cliente.name:'');
-        state.comunicadoCorpo = 'Olá, [NOME_CLIENTE]!\n\nSegue em anexo a relação de honorários pendentes junto ao nosso escritório:\n\n' + linhas + '\n\nTotal pendente: ' + fmtBRL(total) + '\n\nQualquer dúvida, estamos à disposição.\n\nAtenciosamente,\nJP Consultoria Contábil';
+        state.comunicadoAssunto = 'Extrato de Honor\u00e1rios ' + ano + ' \u2014 ' + (cliente?cliente.name:'');
+        state.comunicadoCorpo = 'Ol\u00e1, [NOME_CLIENTE]!\n\nSegue em anexo o extrato de honor\u00e1rios de ' + ano + ' junto ao nosso escrit\u00f3rio, com os itens j\u00e1 recebidos e os ainda pendentes:\n\nSaldo anterior: ' + fmtBRL(ex.saldoAnterior) + '\n' + linhas + '\n\nTotal a receber no ano: ' + fmtBRL(ex.totalAReceber) + '\nTotal recebido no ano: ' + fmtBRL(ex.totalRecebido) + '\n\nQualquer d\u00favida, estamos \u00e0 disposi\u00e7\u00e3o.\n\nAtenciosamente,\nJP Consultoria Cont\u00e1bil';
         state.view = 'dashboard';
         render();
-        alert('O PDF das pendências foi baixado agora para o seu computador. O email já foi preparado em "Comunicados aos Clientes" (Painel Geral) — clique em "Enviar Email" e anexe o arquivo baixado manualmente.');
+        alert('O PDF do extrato foi baixado agora para o seu computador. O email j\u00e1 foi preparado em "Comunicados aos Clientes" (Painel Geral) \u2014 clique em "Enviar Email" e anexe o arquivo baixado manualmente.');
       };
     }
     const gerarTermoQuitacaoBtn = document.getElementById('gerarTermoQuitacaoBtn');
