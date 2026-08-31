@@ -601,6 +601,7 @@
     honorarios: [],
     honorarioEmpresaAtiva: '',
     honorarioModalData: null,
+    pagamentoAvulsoModalData: null,
     quitacaoCompetenciaInicio: '',
     quitacaoCompetenciaFim: '',
     extratoAnualAno: new Date().getFullYear(),
@@ -2312,7 +2313,10 @@
       <div class="form-hint" style="margin:-4px 0 14px;">Cadastro de cobranças por cliente (mensalidade, serviços avulsos, etc.), com forma de cobrança, vencimento, competência e pagamento — cada empresa tem seu próprio controle, separado das demais.</div>
       ${empresaContabilSelectorHtmlHonorario()}
       ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar os honorários dela.</div>` : `
-        <button type="button" class="btn-add" id="novoHonorarioBtn" style="margin-bottom:14px;">+ Novo lançamento de honorário</button>
+        <div style="display:flex; gap:10px; margin-bottom:14px;">
+          <button type="button" class="btn-add" id="novoHonorarioBtn">+ Novo lançamento de honorário</button>
+          <button type="button" class="btn-detail" id="novoPagamentoAvulsoBtn">Registrar Pagamento Avulso</button>
+        </div>
         ${!honorariosCliente.length ? `<div class="empty">Nenhum honorário cadastrado para ${escapeHtml(empresa.name)} ainda.</div>` : `
           <table>
             <thead><tr><th>Competência</th><th>Serviço</th><th>Cobrança</th><th>Vencimento</th><th style="text-align:right">Valor</th><th>Pagamento</th><th>Forma Pgto</th><th>Status</th><th></th></tr></thead>
@@ -2392,6 +2396,90 @@
         </select>
       </div>
     `;
+  }
+
+  // Distribui um pagamento avulso (sem competência identificada, ex: transferência/Pix cobrindo
+  // atrasados) sobre os honorários em aberto do cliente, do mais antigo pro mais recente,
+  // aplicando integralmente enquanto o valor cobrir cada um.
+  function alocarPagamentoAvulso(clientId, valorPago){
+    const abertos = state.honorarios
+      .filter(h=>h.clientId===clientId && honorarioStatus(h)!=='Pago')
+      .sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
+    let restante = Number(valorPago)||0;
+    const aplicados = [];
+    for(const h of abertos){
+      const valor = Number(h.valor)||0;
+      if(valor > 0 && restante >= valor - 0.005){
+        aplicados.push(h);
+        restante -= valor;
+      } else {
+        break;
+      }
+    }
+    return { aplicados, restante: Math.max(0, round2(restante)) };
+  }
+
+  function pagamentoAvulsoPreviewHtml(d){
+    const valor = parseFloat(d.valor)||0;
+    if(!d.clientId) return `<div class="form-hint">Selecione a empresa e informe o valor para ver a prévia.</div>`;
+    if(!valor) return `<div class="form-hint">Informe o valor pago para ver a prévia.</div>`;
+    const preview = alocarPagamentoAvulso(d.clientId, valor);
+    if(!preview.aplicados.length){
+      return `<div class="form-hint" style="color:var(--red);">Esse valor não cobre nem a competência em aberto mais antiga (${empresaMenorHonorarioAberto(d.clientId)}) — confira o valor digitado ou os honorários cadastrados.</div>`;
+    }
+    return `
+      <div class="calc-result">
+        <div class="form-hint" style="margin:0 0 8px; text-transform:none; font-weight:700; color:var(--ink);">Este pagamento vai quitar ${preview.aplicados.length} competência(s):</div>
+        ${preview.aplicados.map(h=>`<div class="pr-line"><span>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)} — ${escapeHtml(h.tipoServico||'')}</span><span>${fmtBRL(h.valor)}</span></div>`).join('')}
+        ${preview.restante > 0 ? `<div class="pr-line total"><span>Sobra não aplicada (não cobre a próxima competência inteira)</span><span>${fmtBRL(preview.restante)}</span></div>` : ''}
+      </div>
+    `;
+  }
+
+  function pagamentoAvulsoModalHtml(){
+    const d = state.pagamentoAvulsoModalData;
+    if(!d) return '';
+    const cliente = state.clients.find(c=>c.id===d.clientId);
+    const valor = parseFloat(d.valor)||0;
+    const preview = (d.clientId && valor>0) ? alocarPagamentoAvulso(d.clientId, valor) : null;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Pagamento Avulso (sem competência identificada)</h3>
+          <div class="form-hint" style="margin:-4px 0 14px;">Use quando o cliente pagou/transferiu (Pix, dinheiro, etc.) um valor cobrindo atrasados, sem dizer quais meses. O sistema aplica o valor nos honorários em aberto mais antigos primeiro, até acabar.</div>
+          <form id="pagamentoAvulsoForm">
+            <div class="field"><label>Empresa</label>
+              <select id="pavEmpresa">
+                <option value="">— Selecione —</option>
+                ${state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>`<option value="${c.id}" ${d.clientId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Valor total pago (R$)</label><input type="number" step="0.01" min="0" id="pavValor" value="${d.valor||''}"/></div>
+              <div class="field"><label>Data do pagamento</label><input type="date" id="pavData" value="${d.dataPagamento||todayStr()}"/></div>
+            </div>
+            <div class="field"><label>Forma de pagamento</label>
+              <select id="pavForma">
+                <option value="">— Selecione —</option>
+                ${FORMAS_COBRANCA.map(t=>`<option value="${t}" ${d.formaPagamento===t?'selected':''}>${t}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>Observações</label><input type="text" id="pavObs" value="${escapeHtml(d.observacoes||'')}" placeholder="Ex: cliente pagou via Pix cobrindo atrasados"/></div>
+
+            <div id="pavPreviewContainer">${pagamentoAvulsoPreviewHtml(d)}</div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="pavCancel">Cancelar</button>
+              <button type="submit" class="btn-add" id="pavConfirmBtn" ${(!preview || !preview.aplicados.length) ? 'disabled' : ''}>Confirmar e Aplicar Pagamento</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+  function empresaMenorHonorarioAberto(clientId){
+    const abertos = state.honorarios.filter(h=>h.clientId===clientId && honorarioStatus(h)!=='Pago').sort((a,b)=>(Number(a.valor)||0)-(Number(b.valor)||0));
+    return abertos.length ? fmtBRL(abertos[0].valor) : '—';
   }
 
   function honorarioModalHtml(){
@@ -7625,6 +7713,7 @@
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
+      ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
       ${state.modal==='lancContabil' ? lancContabilModalHtml() : ''}
       ${state.modal==='obrigacao' ? obrigacaoModalHtml() : ''}
@@ -8632,6 +8721,61 @@
       novoHonorarioBtn.onclick = ()=>{
         state.honorarioModalData = { clientId: state.honorarioEmpresaAtiva, competencia: state.competenciaAtiva, dataVencimento: honorarioVencimentoSugerido(state.competenciaAtiva) };
         state.modal = 'honorario'; render();
+      };
+    }
+    const novoPagamentoAvulsoBtn = document.getElementById('novoPagamentoAvulsoBtn');
+    if(novoPagamentoAvulsoBtn){
+      novoPagamentoAvulsoBtn.onclick = ()=>{
+        state.pagamentoAvulsoModalData = { clientId: state.honorarioEmpresaAtiva, dataPagamento: todayStr() };
+        state.modal = 'pagamentoAvulso'; render();
+      };
+    }
+    const pavEmpresa = document.getElementById('pavEmpresa');
+    function atualizarPreviewPagamentoAvulso(){
+      const d = state.pagamentoAvulsoModalData;
+      const container = document.getElementById('pavPreviewContainer');
+      if(container) container.innerHTML = pagamentoAvulsoPreviewHtml(d);
+      const btn = document.getElementById('pavConfirmBtn');
+      if(btn){
+        const valor = parseFloat(d.valor)||0;
+        const preview = (d.clientId && valor>0) ? alocarPagamentoAvulso(d.clientId, valor) : null;
+        btn.disabled = !preview || !preview.aplicados.length;
+      }
+    }
+    if(pavEmpresa) pavEmpresa.onchange = (e)=>{ state.pagamentoAvulsoModalData.clientId = e.target.value; atualizarPreviewPagamentoAvulso(); };
+    const pavValor = document.getElementById('pavValor');
+    if(pavValor) pavValor.oninput = (e)=>{ state.pagamentoAvulsoModalData.valor = e.target.value; atualizarPreviewPagamentoAvulso(); };
+    const pavData = document.getElementById('pavData');
+    if(pavData) pavData.onchange = (e)=>{ state.pagamentoAvulsoModalData.dataPagamento = e.target.value; };
+    const pavForma = document.getElementById('pavForma');
+    if(pavForma) pavForma.onchange = (e)=>{ state.pagamentoAvulsoModalData.formaPagamento = e.target.value; };
+    const pavObs = document.getElementById('pavObs');
+    if(pavObs) pavObs.onchange = (e)=>{ state.pagamentoAvulsoModalData.observacoes = e.target.value; };
+    const pavCancel = document.getElementById('pavCancel');
+    if(pavCancel) pavCancel.onclick = ()=>{ state.modal=null; state.pagamentoAvulsoModalData=null; render(); };
+    const pagamentoAvulsoForm = document.getElementById('pagamentoAvulsoForm');
+    if(pagamentoAvulsoForm){
+      pagamentoAvulsoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const d = state.pagamentoAvulsoModalData;
+        if(!d.clientId){ alert('Selecione uma empresa.'); return; }
+        const valor = parseFloat(d.valor)||0;
+        if(!valor){ alert('Informe o valor pago.'); return; }
+        if(!d.formaPagamento){ alert('Selecione a forma de pagamento.'); return; }
+        const { aplicados, restante } = alocarPagamentoAvulso(d.clientId, valor);
+        if(!aplicados.length){ alert('Esse valor não cobre nenhuma competência em aberto integralmente.'); return; }
+        const dataPagamento = d.dataPagamento || todayStr();
+        const notaObs = 'Pago via pagamento avulso em ' + fmtDate(dataPagamento) + (d.observacoes ? ' — ' + d.observacoes : '');
+        for(const h of aplicados){
+          const atualizado = Object.assign({}, h, {
+            dataPagamento, formaPagamento: d.formaPagamento,
+            observacoes: h.observacoes ? h.observacoes + ' · ' + notaObs : notaObs,
+          });
+          await saveHonorarioItem(atualizado);
+        }
+        state.modal=null; state.pagamentoAvulsoModalData=null;
+        render();
+        alert(aplicados.length + ' competência(s) quitada(s) com sucesso.' + (restante>0 ? ' Sobraram ' + fmtBRL(restante) + ' não aplicados (não cobriam a próxima competência inteira) — considere registrar isso manualmente.' : ''));
       };
     }
     root.querySelectorAll('[data-edit-honorario]').forEach(el=>{
