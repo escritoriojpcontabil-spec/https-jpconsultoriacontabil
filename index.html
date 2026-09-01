@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -522,6 +523,10 @@
     if(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId){
       try{
         firebase.initializeApp(FIREBASE_CONFIG);
+        // Autentica (anonimamente) junto ao Firebase antes de usar o banco de dados — isso
+        // permite travar as regras de segurança do Firestore para exigir "request.auth != null",
+        // bloqueando acesso direto ao banco por quem não passar por essa autenticação.
+        await firebase.auth().signInAnonymously();
         FirebaseStore.db = firebase.firestore();
         // Sanity check the connection so we fall back gracefully if config is wrong.
         await FirebaseStore.db.collection(FIREBASE_COLLECTION).limit(1).get();
