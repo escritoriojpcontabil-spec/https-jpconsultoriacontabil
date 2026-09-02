@@ -625,6 +625,9 @@
     orientacaoModalData: null,
     servicosEsporadicos: [],
     servicoEsporadicoModalData: null,
+    certidoes: [],
+    certidaoEmpresaAtiva: '',
+    certidaoModalData: null,
     exportNfTipoOperacao: 'Todos',
     exportNfOrdenacao: 'numero',
     faturamentoRelClienteId: 'all',
@@ -4269,6 +4272,42 @@
     await loadServicosEsporadicos(); render();
   }
 
+  // Certidões Negativas de Débitos (CND) — Federal, Estadual, Municipal, por cliente.
+  async function loadCertidoes(){
+    state.certidoes = [];
+    try{
+      const keys = await Store.list('certidoes:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.certidoes.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.certidoes.sort((a,b)=> (b.dataValidade||'').localeCompare(a.dataValidade||''));
+  }
+  async function saveCertidaoItem(c){
+    if(!c.id) c.id = uid();
+    await Store.set('certidoes:'+c.id, JSON.stringify(c), true);
+    await loadCertidoes(); render();
+  }
+  async function deleteCertidaoItem(id){
+    await Store.delete('certidoes:'+id, true);
+    await loadCertidoes(); render();
+  }
+  function certidaoDiasParaVencer(c){
+    if(!c.dataValidade) return null;
+    const hoje = new Date(todayStr()+'T00:00:00');
+    const venc = new Date(c.dataValidade+'T00:00:00');
+    return Math.round((venc-hoje)/(1000*60*60*24));
+  }
+  function certidaoStatusVencimento(c){
+    const dias = certidaoDiasParaVencer(c);
+    if(dias===null) return 'sem-data';
+    if(dias < 0) return 'vencida';
+    if(dias <= 15) return 'vence-logo';
+    return 'valida';
+  }
+
   function honorarioVencimentoSugerido(competencia){
     if(!competencia) return '';
     const [ano, mes] = competencia.split('-').map(Number);
@@ -4743,6 +4782,7 @@
     await loadContratos();
     await loadOrientacoes();
     await loadServicosEsporadicos();
+    await loadCertidoes();
   }
 
   async function exportAllData(){
@@ -4771,6 +4811,7 @@
       contratos: state.contratos,
       orientacoes: state.orientacoes,
       servicosEsporadicos: state.servicosEsporadicos,
+      certidoes: state.certidoes,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -4827,6 +4868,7 @@
       {key:'contratos', prefix:'contratos:', idField:'id'},
       {key:'orientacoes', prefix:'orientacoes:', idField:'id'},
       {key:'servicosEsporadicos', prefix:'servicosesporadicos:', idField:'id'},
+      {key:'certidoes', prefix:'certidoes:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -6205,6 +6247,24 @@
         </select>
       </div>
       <div id="sitFiscalTableContainer">${situacaoFiscalTableHtml(state.sitFiscalClientFilter)}</div>
+
+      ${state.sitFiscalClientFilter && state.sitFiscalClientFilter!=='all' ? `
+        <div class="form-section-title">Demonstrativo de Pendências por Tipo de Imposto</div>
+        ${(()=>{
+          const demonstrativo = demonstrativoPendenciasPorImposto(state.sitFiscalClientFilter);
+          if(!demonstrativo.length) return `<div class="empty">Nenhuma pendência importada para este cliente.</div>`;
+          const totalGeral = demonstrativo.reduce((s,d)=>s+d.total,0);
+          return `
+            <table>
+              <thead><tr><th>Tipo de Imposto</th><th>Competência(s)</th><th style="text-align:right">Total</th></tr></thead>
+              <tbody>
+                ${demonstrativo.map(d=>`<tr><td>${escapeHtml(d.nome)}</td><td>${d.competencias.map(c=>escapeHtml(c)).join(', ')}</td><td style="text-align:right" class="mono">${fmtBRL(d.total)}</td></tr>`).join('')}
+                <tr class="conta-sintetica"><td colspan="2">Total geral</td><td style="text-align:right">${fmtBRL(totalGeral)}</td></tr>
+              </tbody>
+            </table>
+          `;
+        })()}
+      ` : ''}
     `;
   }
 
@@ -7773,10 +7833,117 @@
   function renderFiscalExtras(){
     return `
       <div class="panel">${situacaoFiscalPanelHtml()}</div>
+      <div class="panel">${certidoesPanelHtml()}</div>
       <div class="panel">${notasFiscaisPanelHtml()}</div>
       <div class="panel">${parcelamentosPanelHtml()}</div>
       <div class="panel">${calculadoraImpostosHtml()}</div>
       <div class="panel">${reformaTributariaPanelHtml()}</div>
+    `;
+  }
+
+  const ESFERAS_CERTIDAO = ['Federal', 'Estadual', 'Municipal'];
+  const STATUS_CERTIDAO = ['Negativa', 'Positiva com Efeito de Negativa', 'Positiva'];
+
+  function certidaoVencimentoClass(status){
+    if(status==='vencida') return 'sit-baixada';
+    if(status==='vence-logo') return 'sit-pendente';
+    if(status==='valida') return 'sit-ativa';
+    return 'sit-outra';
+  }
+  function certidaoVencimentoLabel(c){
+    const dias = certidaoDiasParaVencer(c);
+    const s = certidaoStatusVencimento(c);
+    if(s==='sem-data') return 'Sem validade informada';
+    if(s==='vencida') return 'Vencida há ' + Math.abs(dias) + ' dia(s)';
+    if(s==='vence-logo') return 'Vence em ' + dias + ' dia(s)';
+    return 'Válida (' + dias + ' dias restantes)';
+  }
+
+  function certidoesPanelHtml(){
+    const alertas = state.certidoes.filter(c=>{ const s = certidaoStatusVencimento(c); return s==='vencida' || s==='vence-logo'; })
+      .sort((a,b)=>(a.dataValidade||'').localeCompare(b.dataValidade||''));
+    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const certidoesCliente = state.certidoes.filter(c=>c.clientId===state.certidaoEmpresaAtiva).sort((a,b)=>(b.dataValidade||'').localeCompare(a.dataValidade||''));
+    const empresa = state.clients.find(c=>c.id===state.certidaoEmpresaAtiva);
+    return `
+      <div class="panel-head"><h3>Certidões Negativas de Débitos (CND)</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Controle de certidões Federal, Estadual e Municipal por cliente, com alerta de vencimento. Baixe a certidão no portal oficial e anexe aqui para guardar e acompanhar o prazo de validade.</div>
+
+      ${alertas.length ? `
+        <div class="calc-result" style="margin-bottom:18px;">
+          <div class="form-hint" style="margin:0 0 10px; text-transform:none; font-weight:700; color:var(--ink);">⚠️ ${alertas.length} certidão(ões) vencida(s) ou vencendo em até 15 dias, em todos os clientes:</div>
+          ${alertas.map(c=>`<div class="pr-line"><span>${escapeHtml(clientName(c.clientId))} — ${escapeHtml(c.esfera||'—')}</span><span class="tag ${certidaoVencimentoClass(certidaoStatusVencimento(c))}">${certidaoVencimentoLabel(c)}</span></div>`).join('')}
+        </div>
+      ` : ''}
+
+      <div class="field" style="max-width:360px; margin-bottom:16px;">
+        <label>Empresa</label>
+        <select id="certidaoEmpresaSelect" class="filter-select" style="width:100%;">
+          <option value="">— Selecione uma empresa —</option>
+          ${allClients.map(c=>`<option value="${c.id}" ${state.certidaoEmpresaAtiva===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar certidões dela.</div>` : `
+        <button type="button" class="btn-add" id="novaCertidaoBtn" style="margin-bottom:14px;">+ Nova certidão</button>
+        ${!certidoesCliente.length ? `<div class="empty">Nenhuma certidão cadastrada para ${escapeHtml(empresa.name)} ainda.</div>` : `
+          <table>
+            <thead><tr><th>Esfera</th><th>Status</th><th>Emissão</th><th>Validade</th><th>Vencimento</th><th></th></tr></thead>
+            <tbody>
+              ${certidoesCliente.map(c=>`
+                <tr>
+                  <td>${escapeHtml(c.esfera||'—')}</td>
+                  <td>${escapeHtml(c.status||'—')}</td>
+                  <td>${c.dataEmissao?fmtDate(c.dataEmissao):'—'}</td>
+                  <td>${c.dataValidade?fmtDate(c.dataValidade):'—'}</td>
+                  <td><span class="tag ${certidaoVencimentoClass(certidaoStatusVencimento(c))}">${certidaoVencimentoLabel(c)}</span></td>
+                  <td style="display:flex; gap:6px;">
+                    ${c.arquivoBase64 ? `<button type="button" class="btn-detail" data-baixar-certidao="${c.id}">Baixar PDF</button>` : ''}
+                    <button type="button" class="btn-detail" data-edit-certidao="${c.id}">Editar</button>
+                    <button type="button" class="btn-sm danger" data-del-certidao="${c.id}">Excluir</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `}
+      `}
+    `;
+  }
+
+  function certidaoModalHtml(){
+    const d = state.certidaoModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar certidão' : 'Nova certidão'}</h3>
+          <form id="certidaoForm">
+            <div class="form-row">
+              <div class="field"><label>Esfera</label>
+                <select id="certEsfera">${ESFERAS_CERTIDAO.map(e=>`<option value="${e}" ${d.esfera===e?'selected':''}>${e}</option>`).join('')}</select>
+              </div>
+              <div class="field"><label>Status</label>
+                <select id="certStatus">${STATUS_CERTIDAO.map(s=>`<option value="${s}" ${d.status===s?'selected':''}>${s}</option>`).join('')}</select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Data de emissão</label><input type="date" id="certDataEmissao" value="${d.dataEmissao||todayStr()}"/></div>
+              <div class="field"><label>Data de validade</label><input type="date" id="certDataValidade" value="${d.dataValidade||''}"/></div>
+            </div>
+            <div class="field"><label>Número de controle (opcional)</label><input type="text" id="certNumeroControle" value="${escapeHtml(d.numeroControle||'')}"/></div>
+            <div class="field"><label>Observações</label><input type="text" id="certObs" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="attach-box">
+              <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo da certidão (PDF)</label>
+              <input type="file" id="certArquivoInput" accept=".pdf"/>
+              ${d.arquivoNome ? `<div class="form-hint" style="margin-top:8px;">Arquivo atual: ${escapeHtml(d.arquivoNome)} — selecionar um novo substitui este.</div>` : ''}
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="certCancel">Cancelar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
     `;
   }
 
@@ -8262,6 +8429,7 @@
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
+      ${state.modal==='certidao' ? certidaoModalHtml() : ''}
       ${state.modal==='lancContabil' ? lancContabilModalHtml() : ''}
       ${state.modal==='obrigacao' ? obrigacaoModalHtml() : ''}
       ${state.modal==='aviso' ? avisoModalHtml() : ''}
@@ -9595,6 +9763,75 @@
         state.modal=null; state.servicoEsporadicoModalData=null;
         render();
         saveServicoEsporadicoItem(s);
+      };
+    }
+
+    // ===== Certidões Negativas de Débitos =====
+    const certidaoEmpresaSelect = document.getElementById('certidaoEmpresaSelect');
+    if(certidaoEmpresaSelect){
+      certidaoEmpresaSelect.onchange = (e)=>{ state.certidaoEmpresaAtiva = e.target.value; render(); };
+    }
+    const novaCertidaoBtn = document.getElementById('novaCertidaoBtn');
+    if(novaCertidaoBtn){
+      novaCertidaoBtn.onclick = ()=>{
+        state.certidaoModalData = { clientId: state.certidaoEmpresaAtiva, esfera: 'Federal', status: 'Negativa', dataEmissao: todayStr() };
+        state.modal = 'certidao'; render();
+      };
+    }
+    root.querySelectorAll('[data-edit-certidao]').forEach(el=>{
+      el.onclick = ()=>{
+        const c = state.certidoes.find(x=>x.id===el.getAttribute('data-edit-certidao'));
+        if(!c) return;
+        state.certidaoModalData = Object.assign({}, c);
+        state.modal = 'certidao'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-certidao]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta certidão?')) deleteCertidaoItem(el.getAttribute('data-del-certidao')); };
+    });
+    root.querySelectorAll('[data-baixar-certidao]').forEach(el=>{
+      el.onclick = ()=>{
+        const c = state.certidoes.find(x=>x.id===el.getAttribute('data-baixar-certidao'));
+        if(c && c.arquivoBase64) baixarArquivoBase64(c.arquivoBase64, c.arquivoNome||'certidao.pdf');
+      };
+    });
+    const certCancel = document.getElementById('certCancel');
+    if(certCancel) certCancel.onclick = ()=>{ state.modal=null; state.certidaoModalData=null; render(); };
+    const certidaoForm = document.getElementById('certidaoForm');
+    if(certidaoForm){
+      certidaoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const clientId = state.certidaoModalData ? state.certidaoModalData.clientId : state.certidaoEmpresaAtiva;
+        if(!clientId){ alert('Selecione uma empresa antes de cadastrar uma certidão.'); return; }
+        const fileInput = document.getElementById('certArquivoInput');
+        const file = fileInput && fileInput.files && fileInput.files[0];
+        let arquivoBase64 = state.certidaoModalData ? state.certidaoModalData.arquivoBase64 : null;
+        let arquivoNome = state.certidaoModalData ? state.certidaoModalData.arquivoNome : null;
+        if(file){
+          if(file.size > 4*1024*1024){ alert('O PDF é maior que 4MB — escolha um arquivo menor.'); return; }
+          try{
+            const buf = await file.arrayBuffer();
+            let binary = '';
+            const bytes = new Uint8Array(buf);
+            for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+            arquivoBase64 = btoa(binary);
+            arquivoNome = file.name;
+          }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); return; }
+        }
+        const c = {
+          id: (state.certidaoModalData && state.certidaoModalData.id) || undefined,
+          clientId,
+          esfera: document.getElementById('certEsfera').value,
+          status: document.getElementById('certStatus').value,
+          dataEmissao: document.getElementById('certDataEmissao').value,
+          dataValidade: document.getElementById('certDataValidade').value,
+          numeroControle: document.getElementById('certNumeroControle').value,
+          observacoes: document.getElementById('certObs').value,
+          arquivoBase64, arquivoNome,
+        };
+        state.modal=null; state.certidaoModalData=null;
+        render();
+        saveCertidaoItem(c);
       };
     }
 
