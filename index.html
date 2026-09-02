@@ -340,15 +340,16 @@
   .parc-progress{width:100%;height:6px;background:#E4E7EC;border-radius:3px;overflow:hidden;margin-top:4px;}
   .parc-progress-fill{height:100%;background:var(--gold);border-radius:3px;}
 
-  .sitfiscal-split{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px;}
+  .sitfiscal-split{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:18px;}
   .sitfiscal-card{background:#F8F9FB;border:1px solid var(--line);border-radius:10px;padding:16px 18px;}
   .sitfiscal-card h4{font-family:'Sora',sans-serif;font-size:13.5px;font-weight:700;margin:0 0 8px;display:flex;align-items:center;gap:7px;}
   .sitfiscal-card .sf-badge{width:8px;height:8px;border-radius:50%;display:inline-block;}
   .sitfiscal-card .sf-badge.federal{background:#1B6FA8;}
   .sitfiscal-card .sf-badge.estadual{background:#0E8A72;}
+  .sitfiscal-card .sf-badge.municipal{background:#9C6E19;}
   .sitfiscal-card p{font-size:12px;color:var(--ink-soft);line-height:1.5;margin:0 0 12px;}
   .sitfiscal-card .portal-links{margin-bottom:0;flex-direction:column;gap:8px;}
-  @media (max-width:700px){ .sitfiscal-split{grid-template-columns:1fr;} }
+  @media (max-width:900px){ .sitfiscal-split{grid-template-columns:1fr;} }
   .lookup-preview strong{color:var(--ink);}
   .tag.sit-ativa{background:var(--green-bg);color:var(--green);}
   .tag.sit-baixada{background:var(--red-bg);color:var(--red);}
@@ -613,6 +614,7 @@
     honorarios: [],
     honorarioEmpresaAtiva: '',
     honorarioModalData: null,
+    relatorioGeralHonorariosFiltro: 'pendentes',
     pagamentoAvulsoModalData: null,
     quitacaoCompetenciaInicio: '',
     quitacaoCompetenciaFim: '',
@@ -628,6 +630,8 @@
     certidoes: [],
     certidaoEmpresaAtiva: '',
     certidaoModalData: null,
+    certificadosDigitais: [],
+    certificadoDigitalModalData: null,
     exportNfTipoOperacao: 'Todos',
     exportNfOrdenacao: 'numero',
     faturamentoRelClienteId: 'all',
@@ -821,6 +825,7 @@
 
   const SIT_FISCAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação'];
   const SIT_ESTADUAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação', 'Dispensada (sem atividade de comércio)'];
+  const SIT_MUNICIPAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação', 'Dispensada'];
 
   // Inscrição Estadual só é obrigatória para empresas com atividade de comércio, indústria ou
   // transporte intermunicipal/interestadual (contribuintes de ICMS) — empresas puramente de
@@ -1454,6 +1459,7 @@
 
     sectionBlock('SITUAÇÃO FISCAL FEDERAL (Receita Federal / PGFN)', c.sitFedStatus, c.sitFedData, c.sitFedObs, [27,111,168]);
     sectionBlock('SITUAÇÃO FISCAL ESTADUAL (Sefaz)', c.sitEstStatus, c.sitEstData, c.sitEstObs, [14,138,114]);
+    sectionBlock('SITUAÇÃO FISCAL MUNICIPAL (Prefeitura)', c.sitMunStatus, c.sitMunData, c.sitMunObs, [156,110,25]);
 
     y += 4;
     doc.setDrawColor(240,219,168);
@@ -1851,6 +1857,80 @@
     doc.save('recibo-honorarios-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + dataPagamento + '.pdf');
   }
 
+  // Relatório de Certificados Digitais — formato compacto para caber numa única folha de
+  // ofício (216x330mm), no mesmo layout de colunas da planilha de controle do escritório.
+  function gerarPdfCertificadosDigitais(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const lista = state.certificadosDigitais.slice();
+    if(!lista.length){ alert('Nenhum certificado cadastrado ainda.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:[216,330]});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Controle de Certificados Digitais', 'Clientes cadastrados');
+
+    const colNome = 14, colCnpj = 92, colInicio = 138, colTermino = 165, colSenha = pageW-14;
+    doc.setFontSize(8.5); doc.setFont('helvetica','bold');
+    doc.setFillColor(240,242,245); doc.rect(14, y-4, pageW-28, 6, 'F');
+    doc.text('Cliente', colNome, y);
+    doc.text('CNPJ', colCnpj, y);
+    doc.text('Início', colInicio, y);
+    doc.text('Término', colTermino, y);
+    doc.text('Senha', colSenha, y, {align:'right'});
+    y += 6; doc.setFont('helvetica','normal');
+    lista.forEach(c=>{
+      if(y > 315){ doc.addPage([216,330]); y = 20; }
+      doc.text((c.nome||'—').slice(0,42), colNome, y);
+      doc.text(c.cnpj||'—', colCnpj, y);
+      doc.text(c.dataInicio?fmtDate(c.dataInicio):'—', colInicio, y);
+      doc.text(c.dataFim?fmtDate(c.dataFim):'—', colTermino, y);
+      doc.text(String(c.senha||'—'), colSenha, y, {align:'right'});
+      y += 5.2;
+    });
+
+    pdfFooterDisclaimer(doc, 'Relatório de uso interno do escritório — contém senhas de certificados digitais dos clientes. Mantenha este documento em local seguro.');
+    doc.save('certificados-digitais-' + todayStr() + '.pdf');
+  }
+
+  function gerarPdfRelatorioGeralHonorarios(filtroStatus){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const rel = relatorioGeralHonorarios(filtroStatus);
+    if(!rel.grupos.length){ alert('Nenhum lançamento encontrado para esse filtro.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const filtroLabel = filtroStatus==='pendentes' ? 'Cobranças Pendentes (Vencidas ou A Vencer)' : filtroStatus==='pagos' ? 'Cobranças Pagas' : 'Todas as Cobranças';
+    let y = pdfHeader(doc, 'Relatório Geral de Cobranças — ' + filtroLabel, 'Todas as empresas');
+    doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.text('Empresas com pendência: ' + rel.empresasComPendencia + '   ·   Total em aberto: ' + fmtBRL(rel.totalAbertoGeral), 14, y);
+    y += 10;
+
+    const colEmpresa = 14, colCompetencia = 110, colVencimento = 145, colValor = 195, colStatus = pageW-14;
+    rel.grupos.forEach(g=>{
+      if(y > 180){ doc.addPage(); y = 20; }
+      doc.setFillColor(240,242,245); doc.rect(14, y-4.5, pageW-28, 6.5, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+      doc.text(g.clienteNome, colEmpresa, y);
+      doc.text(g.totalAberto>0.005 ? 'Em aberto: '+fmtBRL(g.totalAberto) : 'Sem pendências no filtro', colStatus, y, {align:'right'});
+      y += 7;
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text('Competência', colCompetencia, y); doc.text('Vencimento', colVencimento, y); doc.text('Valor', colValor, y, {align:'right'}); doc.text('Status', colStatus, y, {align:'right'});
+      y += 5.5; doc.setFont('helvetica','normal');
+      g.itens.forEach(h=>{
+        if(y > 190){ doc.addPage(); y = 20; }
+        const venc = honorarioVencimento(h);
+        doc.text(monthLabel(h.competencia)+'/'+(h.competencia||'').slice(0,4), colCompetencia, y);
+        doc.text(venc?fmtDate(venc):'—', colVencimento, y);
+        doc.text(fmtBRL(h.valor), colValor, y, {align:'right'});
+        doc.text(honorarioStatus(h), colStatus, y, {align:'right'});
+        y += 5.5;
+      });
+      y += 4;
+    });
+
+    pdfFooterDisclaimer(doc, 'Relatório consolidado gerado em ' + fmtDate(todayStr()) + ', cruzando todas as empresas cadastradas com lançamentos de honorários.');
+    doc.save('relatorio-geral-honorarios-' + filtroStatus + '-' + todayStr() + '.pdf');
+  }
+
   function gerarPdfPendenciasHonorarios(clientId, ano){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const cliente = state.clients.find(c=>c.id===clientId);
@@ -2189,18 +2269,19 @@
   }
   function pdfFooterDisclaimer(doc, texto){
     const pageW = doc.internal.pageSize.getWidth();
-    const y = 260;
-    doc.setDrawColor(240,219,168);
-    doc.setFillColor(253,243,224);
+    const pageH = doc.internal.pageSize.getHeight();
     const lines = doc.splitTextToSize(texto, pageW-32);
     const h = lines.length*4.2 + 8;
+    const y = pageH - 37 - h;
+    doc.setDrawColor(240,219,168);
+    doc.setFillColor(253,243,224);
     doc.roundedRect(14, y, pageW-28, h, 2, 2, 'FD');
     doc.setFontSize(7.5);
     doc.setTextColor(90,105,120);
     doc.text(lines, 18, y+6);
     doc.setFontSize(8);
     doc.setTextColor(140,150,160);
-    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.email) : '—') + ' — JP Consultoria Contábil', 14, 287);
+    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.email) : '—') + ' — JP Consultoria Contábil', 14, pageH-10);
   }
 
   function generateParcelamentoPDF(parcId){
@@ -2604,12 +2685,76 @@
     return 'sit-pendente';
   }
 
+  // Relatório Geral de Cobranças — mês a mês, empresa por empresa, cruzando TODOS os clientes
+  // de uma vez (diferente do Extrato Anual, que é por empresa individualmente).
+  function relatorioGeralHonorarios(filtroStatus){
+    const porCliente = {};
+    state.honorarios.forEach(h=>{
+      const status = honorarioStatus(h);
+      if(filtroStatus==='pendentes' && status==='Pago') return;
+      if(filtroStatus==='pagos' && status!=='Pago') return;
+      if(!porCliente[h.clientId]) porCliente[h.clientId] = [];
+      porCliente[h.clientId].push(h);
+    });
+    const grupos = Object.keys(porCliente).map(clientId=>{
+      const cliente = state.clients.find(c=>c.id===clientId);
+      const itens = porCliente[clientId].slice().sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
+      const totalAberto = itens.filter(h=>honorarioStatus(h)!=='Pago').reduce((s,h)=>s+((Number(h.valor)||0)-honorarioValorRecebido(h)),0);
+      const totalGeral = itens.reduce((s,h)=>s+(Number(h.valor)||0),0);
+      return { clientId, clienteNome: cliente?cliente.name:'—', itens, totalAberto: round2(totalAberto), totalGeral: round2(totalGeral) };
+    }).filter(g=>g.itens.length);
+    grupos.sort((a,b)=> b.totalAberto - a.totalAberto || a.clienteNome.localeCompare(b.clienteNome));
+    const totalAbertoGeral = round2(grupos.reduce((s,g)=>s+g.totalAberto,0));
+    const empresasComPendencia = grupos.filter(g=>g.totalAberto > 0.005).length;
+    return { grupos, totalAbertoGeral, empresasComPendencia };
+  }
+
   function honorariosSectionHtml(){
     const empresa = state.clients.find(c=>c.id===state.honorarioEmpresaAtiva);
     const honorariosCliente = state.honorarios.filter(h=>h.clientId===state.honorarioEmpresaAtiva).sort((a,b)=> (b.competencia||'').localeCompare(a.competencia||''));
     const pagos = honorariosCliente.filter(h=>honorarioStatus(h)==='Pago');
     return `
-      <div class="form-section-title">Controle de Honorários</div>
+      <div class="form-section-title">Relatório Geral de Cobranças (todas as empresas)</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Mês a mês, empresa por empresa — mostra de uma vez só quem está com cobrança em aberto ou vencida, qual competência, qual valor e qual vencimento.</div>
+      <div class="field" style="max-width:280px; margin-bottom:14px;">
+        <label>Mostrar</label>
+        <select id="relatorioGeralHonorariosFiltroSelect" class="filter-select" style="width:100%;">
+          <option value="pendentes" ${state.relatorioGeralHonorariosFiltro==='pendentes'?'selected':''}>Só pendentes (vencidas ou a vencer)</option>
+          <option value="pagos" ${state.relatorioGeralHonorariosFiltro==='pagos'?'selected':''}>Só pagas</option>
+          <option value="todos" ${state.relatorioGeralHonorariosFiltro==='todos'?'selected':''}>Todas</option>
+        </select>
+      </div>
+      ${(()=>{
+        const rel = relatorioGeralHonorarios(state.relatorioGeralHonorariosFiltro);
+        if(!rel.grupos.length) return `<div class="empty">Nenhum lançamento encontrado para esse filtro.</div>`;
+        return `
+          <div class="calc-result" style="margin-bottom:16px;">
+            <div class="pr-line"><span>Empresas com pendência</span><span>${rel.empresasComPendencia}</span></div>
+            <div class="pr-line total"><span>Total em aberto (todas as empresas)</span><span>${fmtBRL(rel.totalAbertoGeral)}</span></div>
+          </div>
+          ${rel.grupos.map(g=>`
+            <div style="margin-bottom:18px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <div style="font-weight:700; font-size:13.5px; color:var(--ink);">${escapeHtml(g.clienteNome)}</div>
+                <div style="font-size:12.5px; color:${g.totalAberto>0.005?'var(--red)':'var(--ink-soft)'}; font-weight:600;">${g.totalAberto>0.005 ? 'Em aberto: '+fmtBRL(g.totalAberto) : 'Sem pendências no filtro'}</div>
+              </div>
+              <table>
+                <thead><tr><th>Competência</th><th>Vencimento</th><th style="text-align:right">Valor</th><th>Status</th></tr></thead>
+                <tbody>
+                  ${g.itens.map(h=>{
+                    const venc = honorarioVencimento(h);
+                    const status = honorarioStatus(h);
+                    return `<tr><td>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)}</td><td>${venc?fmtDate(venc):'—'}</td><td style="text-align:right" class="mono">${fmtBRLorDash(h.valor)}</td><td><span class="tag ${honorarioStatusClass(status)}">${status}</span></td></tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          `).join('')}
+          <button type="button" class="btn-detail" id="pdfRelatorioGeralHonorariosBtn">Baixar PDF</button>
+        `;
+      })()}
+
+      <div class="form-section-title">Controle de Honorários (por empresa)</div>
       <div class="form-hint" style="margin:-4px 0 14px;">Cadastro de cobranças por cliente (mensalidade, serviços avulsos, etc.), com forma de cobrança, vencimento, competência e pagamento — cada empresa tem seu próprio controle, separado das demais.</div>
       ${empresaContabilSelectorHtmlHonorario()}
       ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar os honorários dela.</div>` : `
@@ -4293,6 +4438,59 @@
   async function deleteCertidaoItem(id){
     await Store.delete('certidoes:'+id, true);
     await loadCertidoes(); render();
+
+  // Certificados Digitais — nome/CNPJ, validade e senha, no mesmo modelo da planilha de
+  // controle do escritório. Como envolve senha de certificado (dado bem sensível), fica
+  // protegido pelas mesmas regras de autenticação do Firestore já configuradas no sistema.
+  async function loadCertificadosDigitais(){
+    state.certificadosDigitais = [];
+    try{
+      const keys = await Store.list('certificadosdigitais:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.certificadosDigitais.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.certificadosDigitais.sort((a,b)=> (a.nome||'').localeCompare(b.nome||''));
+  }
+  async function saveCertificadoDigitalItem(c){
+    if(!c.id) c.id = uid();
+    await Store.set('certificadosdigitais:'+c.id, JSON.stringify(c), true);
+    await loadCertificadosDigitais(); render();
+  }
+  async function deleteCertificadoDigitalItem(id){
+    await Store.delete('certificadosdigitais:'+id, true);
+    await loadCertificadosDigitais(); render();
+  }
+  function certificadoDiasParaVencer(c){
+    if(!c.dataFim) return null;
+    const hoje = new Date(todayStr()+'T00:00:00');
+    const venc = new Date(c.dataFim+'T00:00:00');
+    return Math.round((venc-hoje)/(1000*60*60*24));
+  }
+  function certificadoStatusVencimento(c){
+    const dias = certificadoDiasParaVencer(c);
+    if(dias===null) return 'sem-data';
+    if(dias < 0) return 'vencido';
+    if(dias <= 30) return 'vence-logo';
+    return 'valido';
+  }
+  function certificadoVencimentoClass(status){
+    if(status==='vencido') return 'sit-baixada';
+    if(status==='vence-logo') return 'sit-pendente';
+    if(status==='valido') return 'sit-ativa';
+    return 'sit-outra';
+  }
+  function certificadoVencimentoLabel(c){
+    const dias = certificadoDiasParaVencer(c);
+    const s = certificadoStatusVencimento(c);
+    if(s==='sem-data') return 'Sem data informada';
+    if(s==='vencido') return 'Vencido há ' + Math.abs(dias) + ' dia(s)';
+    if(s==='vence-logo') return 'Vence em ' + dias + ' dia(s)';
+    return 'Válido (' + dias + ' dias restantes)';
+  }
+
   }
   function certidaoDiasParaVencer(c){
     if(!c.dataValidade) return null;
@@ -4783,6 +4981,7 @@
     await loadOrientacoes();
     await loadServicosEsporadicos();
     await loadCertidoes();
+    await loadCertificadosDigitais();
   }
 
   async function exportAllData(){
@@ -4812,6 +5011,7 @@
       orientacoes: state.orientacoes,
       servicosEsporadicos: state.servicosEsporadicos,
       certidoes: state.certidoes,
+      certificadosDigitais: state.certificadosDigitais,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -4869,6 +5069,7 @@
       {key:'orientacoes', prefix:'orientacoes:', idField:'id'},
       {key:'servicosEsporadicos', prefix:'servicosesporadicos:', idField:'id'},
       {key:'certidoes', prefix:'certidoes:', idField:'id'},
+      {key:'certificadosDigitais', prefix:'certificadosdigitais:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -6051,6 +6252,7 @@
           <div class="detail-grid">
             <div class="detail-item"><div class="dl">Federal</div><div class="dv">${c.sitFedStatus ? `<span class="tag ${sitFiscalClass(c.sitFedStatus)}">${escapeHtml(c.sitFedStatus)}</span>` : '<span class="tag sit-outra">Não verificado</span>'}</div></div>
             <div class="detail-item"><div class="dl">Estadual</div><div class="dv">${c.sitEstStatus ? `<span class="tag ${sitFiscalClass(c.sitEstStatus)}">${escapeHtml(c.sitEstStatus)}</span>` : '<span class="tag sit-outra">Não verificado</span>'}</div></div>
+            <div class="detail-item"><div class="dl">Municipal</div><div class="dv">${c.sitMunStatus ? `<span class="tag ${sitFiscalClass(c.sitMunStatus)}">${escapeHtml(c.sitMunStatus)}</span>` : '<span class="tag sit-outra">Não verificado</span>'}</div></div>
           </div>
           <div class="modal-actions">
             <button type="button" class="btn-sm" id="clDetailClose">Fechar</button>
@@ -6167,16 +6369,17 @@
     if(!clients.length) return `<div class="empty">${clientFilter && clientFilter!=='all' ? 'Cliente não encontrado.' : 'Nenhum cliente cadastrado ainda em Cadastro de Clientes.'}</div>`;
     return `
       <table>
-        <thead><tr><th>Cliente</th><th>Situação Federal</th><th>Situação Estadual</th><th>Última verificação</th><th></th></tr></thead>
+        <thead><tr><th>Cliente</th><th>Situação Federal</th><th>Situação Estadual</th><th>Situação Municipal</th><th>Última verificação</th><th></th></tr></thead>
         <tbody>
           ${clients.map(c=>{
-            const lastDate = [c.sitFedData, c.sitEstData].filter(Boolean).sort().pop();
+            const lastDate = [c.sitFedData, c.sitEstData, c.sitMunData].filter(Boolean).sort().pop();
             const relatoriosCount = state.relatoriosFiscais.filter(r=>r.clientId===c.id).length;
             return `
             <tr>
               <td>${escapeHtml(c.name)}</td>
               <td>${c.sitFedStatus ? `<span class="tag ${sitFiscalClass(c.sitFedStatus)}">${escapeHtml(c.sitFedStatus)}</span>` : '<span class="tag sit-outra">Não verificado</span>'}</td>
               <td>${c.sitEstStatus ? `<span class="tag ${sitFiscalClass(c.sitEstStatus)}">${escapeHtml(c.sitEstStatus)}</span>` : '<span class="tag sit-outra">Não verificado</span>'}</td>
+              <td>${c.sitMunStatus ? `<span class="tag ${sitFiscalClass(c.sitMunStatus)}">${escapeHtml(c.sitMunStatus)}</span>` : '<span class="tag sit-outra">Não verificado</span>'}</td>
               <td>${lastDate ? fmtDate(lastDate) : '—'}</td>
               <td><div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn-detail" data-edit-sitfiscal="${c.id}">Atualizar</button><button class="btn-detail" data-pdf-sitfiscal="${c.id}">PDF</button>${relatoriosCount ? `<button class="btn-detail" data-view-relatorios="${c.id}">Ver relatórios (${relatoriosCount})</button>` : ''}</div></td>
             </tr>
@@ -6231,6 +6434,10 @@
           <div class="portal-links">
             <a class="rf-link" href="https://efisco.sefaz.pe.gov.br" target="_blank" rel="noopener">Abrir ARE Virtual — e-Fisco (Sefaz-PE) ↗</a>
           </div>
+        </div>
+        <div class="sitfiscal-card">
+          <h4><span class="sf-badge municipal"></span>Situação Fiscal Municipal</h4>
+          <p>Prefeitura do município do cliente — ISS, taxas municipais e regularização de débitos. O portal varia de acordo com a prefeitura de cada cliente — pesquise "prefeitura de [cidade] emissão de certidão/ISS" para achar o portal correto.</p>
         </div>
       </div>
       <div class="attach-box" style="margin-bottom:16px;">
@@ -6373,6 +6580,16 @@
             </div>
             ${!temAtividadeComercio(c) ? `<button type="button" class="btn-sm" id="sfEstDispensadaBtn" style="margin-bottom:10px;">Marcar como Dispensada (sem atividade de comércio)</button>` : ''}
             <div class="field"><label>Observações (estadual)</label><input type="text" id="sfEstObs" value="${escapeHtml(c.sitEstObs||'')}"/></div>
+
+            <div class="form-section-title">Municipal (Prefeitura)</div>
+            <div class="form-hint" style="margin:-4px 0 8px;">O formato do relatório varia bastante de prefeitura para prefeitura — a verificação aqui costuma ser manual, sem importação automática de PDF.</div>
+            <div class="form-row">
+              <div class="field"><label>Status</label>
+                <select id="sfMunStatus">${optHtml(SIT_MUNICIPAL_STATUS, c.sitMunStatus)}</select>
+              </div>
+              <div class="field"><label>Data da verificação</label><input type="date" id="sfMunData" value="${c.sitMunData||todayStr()}"/></div>
+            </div>
+            <div class="field"><label>Observações (municipal)</label><input type="text" id="sfMunObs" value="${escapeHtml(c.sitMunObs||'')}"/></div>
 
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="sfCancel">Cancelar</button>
@@ -7834,6 +8051,7 @@
     return `
       <div class="panel">${situacaoFiscalPanelHtml()}</div>
       <div class="panel">${certidoesPanelHtml()}</div>
+      <div class="panel">${certificadosDigitaisPanelHtml()}</div>
       <div class="panel">${notasFiscaisPanelHtml()}</div>
       <div class="panel">${parcelamentosPanelHtml()}</div>
       <div class="panel">${calculadoraImpostosHtml()}</div>
@@ -7939,6 +8157,75 @@
             </div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="certCancel">Cancelar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function certificadosDigitaisPanelHtml(){
+    const alertas = state.certificadosDigitais.filter(c=>{ const s = certificadoStatusVencimento(c); return s==='vencido' || s==='vence-logo'; })
+      .sort((a,b)=>(a.dataFim||'').localeCompare(b.dataFim||''));
+    const lista = state.certificadosDigitais.slice();
+    return `
+      <div class="panel-head"><h3>Controle de Certificados Digitais</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Nome, CNPJ, validade e senha do certificado digital (e-CNPJ/e-CPF) de cada cliente — mesmo modelo da planilha de controle do escritório, com alerta de vencimento. Como envolve senhas, esses dados ficam protegidos pela mesma autenticação já configurada no banco de dados.</div>
+
+      ${alertas.length ? `
+        <div class="calc-result" style="margin-bottom:18px;">
+          <div class="form-hint" style="margin:0 0 10px; text-transform:none; font-weight:700; color:var(--ink);">⚠️ ${alertas.length} certificado(s) vencido(s) ou vencendo em até 30 dias:</div>
+          ${alertas.map(c=>`<div class="pr-line"><span>${escapeHtml(c.nome||'—')}</span><span class="tag ${certificadoVencimentoClass(certificadoStatusVencimento(c))}">${certificadoVencimentoLabel(c)}</span></div>`).join('')}
+        </div>
+      ` : ''}
+
+      <div style="display:flex; gap:10px; margin-bottom:14px;">
+        <button type="button" class="btn-add" id="novoCertificadoDigitalBtn">+ Novo certificado digital</button>
+        ${lista.length ? `<button type="button" class="btn-detail" id="pdfCertificadosDigitaisBtn">Baixar PDF (folha de ofício)</button>` : ''}
+      </div>
+      ${!lista.length ? `<div class="empty">Nenhum certificado cadastrado ainda.</div>` : `
+        <table>
+          <thead><tr><th>Cliente</th><th>CNPJ</th><th>Início Validade</th><th>Término Validade</th><th>Senha</th><th>Vencimento</th><th></th></tr></thead>
+          <tbody>
+            ${lista.map(c=>`
+              <tr>
+                <td>${escapeHtml(c.nome||'—')}</td>
+                <td>${escapeHtml(c.cnpj||'—')}</td>
+                <td>${c.dataInicio?fmtDate(c.dataInicio):'—'}</td>
+                <td>${c.dataFim?fmtDate(c.dataFim):'—'}</td>
+                <td class="mono">${escapeHtml(c.senha||'—')}</td>
+                <td><span class="tag ${certificadoVencimentoClass(certificadoStatusVencimento(c))}">${certificadoVencimentoLabel(c)}</span></td>
+                <td style="display:flex; gap:6px;">
+                  <button type="button" class="btn-detail" data-edit-certificado="${c.id}">Editar</button>
+                  <button type="button" class="btn-sm danger" data-del-certificado="${c.id}">Excluir</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `}
+    `;
+  }
+
+  function certificadoDigitalModalHtml(){
+    const d = state.certificadoDigitalModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar certificado digital' : 'Novo certificado digital'}</h3>
+          <form id="certificadoDigitalForm">
+            <div class="field"><label>Cliente</label><input type="text" id="cdNome" value="${escapeHtml(d.nome||'')}" placeholder="Nome do cliente/empresa" required/></div>
+            <div class="field"><label>CNPJ ou CPF</label><input type="text" id="cdCnpj" value="${escapeHtml(d.cnpj||'')}" placeholder="00.000.000/0000-00"/></div>
+            <div class="form-row">
+              <div class="field"><label>Início da validade</label><input type="date" id="cdDataInicio" value="${d.dataInicio||''}"/></div>
+              <div class="field"><label>Término da validade</label><input type="date" id="cdDataFim" value="${d.dataFim||''}"/></div>
+            </div>
+            <div class="field"><label>Senha do certificado</label><input type="text" id="cdSenha" value="${escapeHtml(d.senha||'')}"/></div>
+            <div class="field"><label>Observações</label><input type="text" id="cdObs" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="cdCancel">Cancelar</button>
               <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
             </div>
           </form>
@@ -8430,6 +8717,7 @@
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
       ${state.modal==='certidao' ? certidaoModalHtml() : ''}
+      ${state.modal==='certificadoDigital' ? certificadoDigitalModalHtml() : ''}
       ${state.modal==='lancContabil' ? lancContabilModalHtml() : ''}
       ${state.modal==='obrigacao' ? obrigacaoModalHtml() : ''}
       ${state.modal==='aviso' ? avisoModalHtml() : ''}
@@ -8986,6 +9274,9 @@
           sitEstStatus: document.getElementById('sfEstStatus').value,
           sitEstData: document.getElementById('sfEstData').value,
           sitEstObs: document.getElementById('sfEstObs').value,
+          sitMunStatus: document.getElementById('sfMunStatus').value,
+          sitMunData: document.getElementById('sfMunData').value,
+          sitMunObs: document.getElementById('sfMunObs').value,
         });
         state.modal=null; state.sitFiscalModalData=null;
         render();
@@ -9446,6 +9737,14 @@
     if(honorarioEmpresaSelect){
       honorarioEmpresaSelect.onchange = (e)=>{ state.honorarioEmpresaAtiva = e.target.value; render(); };
     }
+    const relatorioGeralHonorariosFiltroSelect = document.getElementById('relatorioGeralHonorariosFiltroSelect');
+    if(relatorioGeralHonorariosFiltroSelect){
+      relatorioGeralHonorariosFiltroSelect.onchange = (e)=>{ state.relatorioGeralHonorariosFiltro = e.target.value; render(); };
+    }
+    const pdfRelatorioGeralHonorariosBtn = document.getElementById('pdfRelatorioGeralHonorariosBtn');
+    if(pdfRelatorioGeralHonorariosBtn){
+      pdfRelatorioGeralHonorariosBtn.onclick = ()=> gerarPdfRelatorioGeralHonorarios(state.relatorioGeralHonorariosFiltro);
+    }
     const novoHonorarioBtn = document.getElementById('novoHonorarioBtn');
     if(novoHonorarioBtn){
       novoHonorarioBtn.onclick = ()=>{
@@ -9832,6 +10131,51 @@
         state.modal=null; state.certidaoModalData=null;
         render();
         saveCertidaoItem(c);
+      };
+    }
+
+    // ===== Certificados Digitais =====
+    const novoCertificadoDigitalBtn = document.getElementById('novoCertificadoDigitalBtn');
+    if(novoCertificadoDigitalBtn){
+      novoCertificadoDigitalBtn.onclick = ()=>{
+        state.certificadoDigitalModalData = { dataInicio: todayStr() };
+        state.modal = 'certificadoDigital'; render();
+      };
+    }
+    const pdfCertificadosDigitaisBtn = document.getElementById('pdfCertificadosDigitaisBtn');
+    if(pdfCertificadosDigitaisBtn){
+      pdfCertificadosDigitaisBtn.onclick = ()=> gerarPdfCertificadosDigitais();
+    }
+    root.querySelectorAll('[data-edit-certificado]').forEach(el=>{
+      el.onclick = ()=>{
+        const c = state.certificadosDigitais.find(x=>x.id===el.getAttribute('data-edit-certificado'));
+        if(!c) return;
+        state.certificadoDigitalModalData = Object.assign({}, c);
+        state.modal = 'certificadoDigital'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-certificado]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este certificado digital?')) deleteCertificadoDigitalItem(el.getAttribute('data-del-certificado')); };
+    });
+    const cdCancel = document.getElementById('cdCancel');
+    if(cdCancel) cdCancel.onclick = ()=>{ state.modal=null; state.certificadoDigitalModalData=null; render(); };
+    const certificadoDigitalForm = document.getElementById('certificadoDigitalForm');
+    if(certificadoDigitalForm){
+      certificadoDigitalForm.onsubmit = (e)=>{
+        e.preventDefault();
+        const c = {
+          id: (state.certificadoDigitalModalData && state.certificadoDigitalModalData.id) || undefined,
+          nome: document.getElementById('cdNome').value,
+          cnpj: document.getElementById('cdCnpj').value,
+          dataInicio: document.getElementById('cdDataInicio').value,
+          dataFim: document.getElementById('cdDataFim').value,
+          senha: document.getElementById('cdSenha').value,
+          observacoes: document.getElementById('cdObs').value,
+        };
+        if(!c.nome){ alert('Informe o nome do cliente.'); return; }
+        state.modal=null; state.certificadoDigitalModalData=null;
+        render();
+        saveCertificadoDigitalItem(c);
       };
     }
 
