@@ -607,6 +607,7 @@
     propostaRegime: 'Simples Nacional',
     propostaQtdFuncionarios: 0,
     propostaIncluirBalanco: false,
+    propostaIncluirHonorarioMensal: false,
     propostaPendenciasSelecionadas: [],
     propostaItensExtras: [],
     propostaObservacoes: '',
@@ -1480,9 +1481,11 @@
   }
 
   function montarPropostaSnapshot(){
+    const incluirHonorarioMensal = state.propostaIncluirHonorarioMensal;
     const fat = parseFloat(state.propostaFaturamento) || 0;
-    const { valor: honorarioBase, aCombinar, faixa } = calcHonorarioBase(fat, state.propostaRegime);
-    const valorFuncionarios = (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS;
+    const { valor: honorarioBaseCalc, aCombinar, faixa } = calcHonorarioBase(fat, state.propostaRegime);
+    const honorarioBase = incluirHonorarioMensal ? honorarioBaseCalc : 0;
+    const valorFuncionarios = incluirHonorarioMensal ? (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS : 0;
     const totalExtras = state.propostaItensExtras.reduce((s,i)=>s+(Number(i.valor)||0),0);
     const totalMensal = (honorarioBase||0) + valorFuncionarios + totalExtras;
     return {
@@ -1490,8 +1493,9 @@
       clienteNome: state.propostaNomeAvulso,
       clienteDoc: state.propostaDocAvulso,
       regime: state.propostaRegime, faturamento: fat,
-      honorarioBase, aCombinar, faixaTexto: faixa ? (fmtBRL(faixa.min)+' até '+(faixa.max===Infinity?'—':fmtBRL(faixa.max))) : '',
-      qtdFuncionarios: Number(state.propostaQtdFuncionarios)||0, valorFuncionarios,
+      incluirHonorarioMensal,
+      honorarioBase, aCombinar, faixaTexto: (incluirHonorarioMensal && faixa) ? (fmtBRL(faixa.min)+' até '+(faixa.max===Infinity?'—':fmtBRL(faixa.max))) : '',
+      qtdFuncionarios: incluirHonorarioMensal ? (Number(state.propostaQtdFuncionarios)||0) : 0, valorFuncionarios,
       pendencias: [],
       itensExtras: state.propostaItensExtras.slice(),
       incluirBalanco: state.propostaIncluirBalanco,
@@ -2151,8 +2155,10 @@
       y += 6;
     }
     y += 2;
-    linha('Honorário base (Tabela de Honorários)' + (p.faixaTexto?' — '+p.faixaTexto:''), p.honorarioBase||0, true);
-    if(p.qtdFuncionarios>0) linha('Funcionários registrados (' + p.qtdFuncionarios + ' × ' + fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS) + ')', p.valorFuncionarios);
+    if(p.incluirHonorarioMensal){
+      linha('Honorário base (Tabela de Honorários)' + (p.faixaTexto?' — '+p.faixaTexto:''), p.honorarioBase||0, true);
+      if(p.qtdFuncionarios>0) linha('Funcionários registrados (' + p.qtdFuncionarios + ' × ' + fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS) + ')', p.valorFuncionarios);
+    }
     p.itensExtras.forEach(it=> linha(it.descricao, it.valor));
     doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
     linha('TOTAL MENSAL ESTIMADO', p.totalMensal, true);
@@ -2587,7 +2593,7 @@
     }
     const valorFuncionarios = (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS;
     const totalExtras = state.propostaItensExtras.reduce((s,i)=>s+(Number(i.valor)||0), 0);
-    const totalMensal = (honorarioBase||0) + valorFuncionarios + totalExtras;
+    const totalMensal = (state.propostaIncluirHonorarioMensal ? ((honorarioBase||0) + valorFuncionarios) : 0) + totalExtras;
 
     return `
       <div class="panel">
@@ -2610,30 +2616,35 @@
           <div class="field"><label>Quantidade de funcionários</label><input type="number" min="0" step="1" id="propQtdFunc" value="${state.propostaQtdFuncionarios}"/></div>
         </div>
 
-        <div class="form-section-title">Honorário base (Tabela de Honorários Mensais)</div>
-        <div class="payroll-result">
-          ${fat > 0 ? (aCombinar ? `
-            <div class="pr-line total"><span>Faturamento acima de R$ 100.000,00 — valor a combinar</span><span>—</span></div>
-          ` : faixaInfo ? `
-            <div class="pr-line"><span>Faixa: ${fmtBRL(faixaInfo.min)} até ${faixaInfo.max===Infinity?'—':fmtBRL(faixaInfo.max)}</span><span>${escapeHtml(state.propostaRegime)}</span></div>
-            <div class="pr-line total"><span>Honorário base mensal</span><span>${fmtBRL(honorarioBase)}</span></div>
-          ` : `<div class="pr-line"><span>Informe o faturamento para calcular a faixa</span><span>—</span></div>`) : `<div class="pr-line"><span>Informe o faturamento mensal acima</span><span>—</span></div>`}
-          <div class="pr-line"><span>Funcionários (${state.propostaQtdFuncionarios} × ${fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS)})</span><span>${fmtBRL(valorFuncionarios)}</span></div>
-        </div>
-        <div class="legis-note">Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (${fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026)}, valor 2026) para faturamento de até R$ 50.000,00/mês. Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
+        <div class="form-section-title">Honorário Mensal Fixo (opcional)</div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-soft); cursor:pointer; margin-bottom:10px;">
+          <input type="checkbox" id="propIncluirHonorarioMensal" ${state.propostaIncluirHonorarioMensal?'checked':''}/> Incluir Honorários Contábeis Mensais (calculado pela Tabela de Honorários, com base no faturamento)
+        </label>
+        ${state.propostaIncluirHonorarioMensal ? `
+          <div class="payroll-result">
+            ${fat > 0 ? (aCombinar ? `
+              <div class="pr-line total"><span>Faturamento acima de R$ 100.000,00 — valor a combinar</span><span>—</span></div>
+            ` : faixaInfo ? `
+              <div class="pr-line"><span>Faixa: ${fmtBRL(faixaInfo.min)} até ${faixaInfo.max===Infinity?'—':fmtBRL(faixaInfo.max)}</span><span>${escapeHtml(state.propostaRegime)}</span></div>
+              <div class="pr-line total"><span>Honorário base mensal</span><span>${fmtBRL(honorarioBase)}</span></div>
+            ` : `<div class="pr-line"><span>Informe o faturamento para calcular a faixa</span><span>—</span></div>`) : `<div class="pr-line"><span>Informe o faturamento mensal acima</span><span>—</span></div>`}
+            <div class="pr-line"><span>Funcionários (${state.propostaQtdFuncionarios} × ${fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS)})</span><span>${fmtBRL(valorFuncionarios)}</span></div>
+          </div>
+          <div class="legis-note">Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (${fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026)}, valor 2026) para faturamento de até R$ 50.000,00/mês. Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
+        ` : `<div class="form-hint" style="margin:-4px 0 4px;">Não incluído — a proposta vai considerar só os serviços descritos abaixo, com seus próprios valores.</div>`}
 
-
-                <div class="form-section-title">Itens extras (opcional)</div>
+        <div class="form-section-title">Serviços a Prestar e Valores</div>
+        <div class="form-hint" style="margin:-4px 0 12px;">Descreva cada serviço (tipo de trabalho) e o valor correspondente. Pode adicionar quantos precisar.</div>
         <div id="propItensExtrasContainer">
           ${state.propostaItensExtras.map((it,idx)=>`
             <div class="form-row" style="align-items:flex-end;">
-              <div class="field"><label>Descrição</label><input type="text" class="prop-extra-desc" data-idx="${idx}" value="${escapeHtml(it.descricao)}"/></div>
+              <div class="field"><label>Tipo de serviço</label><input type="text" class="prop-extra-desc" data-idx="${idx}" value="${escapeHtml(it.descricao)}" placeholder="Ex: Abertura de empresa, Declaração de IR, Consultoria..."/></div>
               <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0" class="prop-extra-valor" data-idx="${idx}" value="${it.valor}"/></div>
               <button type="button" class="btn-sm danger" data-del-extra="${idx}" style="margin-bottom:14px;">Remover</button>
             </div>
           `).join('')}
         </div>
-        <button type="button" class="btn-sm" id="propAddExtraBtn">+ Adicionar item extra</button>
+        <button type="button" class="btn-sm" id="propAddExtraBtn">+ Adicionar serviço</button>
 
         <div class="form-section-title">Balanço Anual</div>
         <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-soft); cursor:pointer;">
@@ -4438,7 +4449,6 @@
   async function deleteCertidaoItem(id){
     await Store.delete('certidoes:'+id, true);
     await loadCertidoes(); render();
-  }
 
   // Certificados Digitais — nome/CNPJ, validade e senha, no mesmo modelo da planilha de
   // controle do escritório. Como envolve senha de certificado (dado bem sensível), fica
@@ -4492,6 +4502,7 @@
     return 'Válido (' + dias + ' dias restantes)';
   }
 
+  }
   function certidaoDiasParaVencer(c){
     if(!c.dataValidade) return null;
     const hoje = new Date(todayStr()+'T00:00:00');
@@ -9711,6 +9722,8 @@
     });
     const propIncluirBalanco = document.getElementById('propIncluirBalanco');
     if(propIncluirBalanco) propIncluirBalanco.onchange = (e)=>{ state.propostaIncluirBalanco = e.target.checked; };
+    const propIncluirHonorarioMensal = document.getElementById('propIncluirHonorarioMensal');
+    if(propIncluirHonorarioMensal) propIncluirHonorarioMensal.onchange = (e)=>{ state.propostaIncluirHonorarioMensal = e.target.checked; render(); };
     const propObservacoes = document.getElementById('propObservacoes');
     if(propObservacoes) propObservacoes.onchange = (e)=>{ state.propostaObservacoes = e.target.value; };
     const propGerarPdfBtn = document.getElementById('propGerarPdfBtn');
