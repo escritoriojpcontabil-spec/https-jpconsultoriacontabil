@@ -633,6 +633,12 @@
     certidaoModalData: null,
     certificadosDigitais: [],
     certificadoDigitalModalData: null,
+    documentosSocietarios: [],
+    documentoSocietarioEmpresaAtiva: '',
+    documentoSocietarioModalData: null,
+    inscricoes: [],
+    inscricaoEmpresaAtiva: '',
+    inscricaoModalData: null,
     exportNfTipoOperacao: 'Todos',
     exportNfOrdenacao: 'numero',
     faturamentoRelClienteId: 'all',
@@ -1863,6 +1869,41 @@
 
   // Relatório de Certificados Digitais — formato compacto para caber numa única folha de
   // ofício (216x330mm), no mesmo layout de colunas da planilha de controle do escritório.
+  // PDF de Consulta consolidado — reúne todas as inscrições cadastradas (CNPJ, Estadual,
+  // Municipal, IPTU) de um cliente num único documento, no mesmo padrão visual do sistema.
+  function gerarPdfInscricoesCliente(clientId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const cliente = state.clients.find(c=>c.id===clientId);
+    const inscricoes = state.inscricoes.filter(i=>i.clientId===clientId).sort((a,b)=>(a.tipo||'').localeCompare(b.tipo||''));
+    if(!inscricoes.length){ alert('Nenhuma inscrição cadastrada para esta empresa.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Consulta de Inscrições e Registros', cliente ? cliente.name : '—');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 8; }
+
+    inscricoes.forEach(i=>{
+      if(y > 260){ doc.addPage(); y = 20; }
+      doc.setFillColor(240,242,245); doc.rect(14, y-5, pageW-28, 8, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(11);
+      doc.text(i.tipo||'Inscrição', 16, y);
+      y += 9;
+      doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+      doc.text('Número: ' + (i.numero||'—'), 16, y); y += 6;
+      if(i.orgaoEmissor){ doc.text('Órgão emissor: ' + i.orgaoEmissor, 16, y); y += 6; }
+      if(i.dataEmissao){ doc.text('Emitida/consultada em: ' + fmtDate(i.dataEmissao), 16, y); y += 6; }
+      if(i.observacoes){
+        const linhasObs = doc.splitTextToSize('Observações: ' + i.observacoes, pageW-32);
+        doc.text(linhasObs, 16, y); y += linhasObs.length*5.5;
+      }
+      y += 6;
+    });
+
+    pdfFooterDisclaimer(doc, 'Consulta consolidada gerada a partir dos cadastros do escritório — não substitui a consulta oficial nos órgãos emissores (Receita Federal, Sefaz, Prefeitura).');
+    doc.save('consulta-inscricoes-' + sanitizarNomeArquivo(cliente?cliente.name:'cliente').toLowerCase() + '.pdf');
+  }
+
   function gerarPdfCertificadosDigitais(){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const lista = state.certificadosDigitais.slice();
@@ -4380,6 +4421,54 @@
     await loadContratos(); render();
   }
 
+  // Documentos Societários dos clientes — Contrato Social/Constituição, Alteração Contratual,
+  // Distrato/Baixa. Diferente de "Contratos de Serviços" (que é o contrato do ESCRITÓRIO com
+  // o cliente): aqui são os documentos legais da PRÓPRIA empresa do cliente, aceitando PDF e Word.
+  async function loadDocumentosSocietarios(){
+    state.documentosSocietarios = [];
+    try{
+      const keys = await Store.list('documentossocietarios:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.documentosSocietarios.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.documentosSocietarios.sort((a,b)=> (b.dataAto||'').localeCompare(a.dataAto||''));
+  }
+  async function saveDocumentoSocietarioItem(d){
+    if(!d.id) d.id = uid();
+    await Store.set('documentossocietarios:'+d.id, JSON.stringify(d), true);
+    await loadDocumentosSocietarios(); render();
+  }
+  async function deleteDocumentoSocietarioItem(id){
+    await Store.delete('documentossocietarios:'+id, true);
+    await loadDocumentosSocietarios(); render();
+  }
+
+  // Inscrições e Registros dos clientes — CNPJ, Inscrição Estadual, Inscrição Municipal, IPTU.
+  async function loadInscricoes(){
+    state.inscricoes = [];
+    try{
+      const keys = await Store.list('inscricoes:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.inscricoes.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.inscricoes.sort((a,b)=> (a.tipo||'').localeCompare(b.tipo||''));
+  }
+  async function saveInscricaoItem(i){
+    if(!i.id) i.id = uid();
+    await Store.set('inscricoes:'+i.id, JSON.stringify(i), true);
+    await loadInscricoes(); render();
+  }
+  async function deleteInscricaoItem(id){
+    await Store.delete('inscricoes:'+id, true);
+    await loadInscricoes(); render();
+  }
+
   // Orientações Técnicas Contábeis — comunicações formais ao cliente, marcadas por
   // departamento de origem (Pessoal/Fiscal/Contábil/Legal), com logomarca e assinatura do contador.
   async function loadOrientacoes(){
@@ -4449,7 +4538,6 @@
   async function deleteCertidaoItem(id){
     await Store.delete('certidoes:'+id, true);
     await loadCertidoes(); render();
-  }
 
   // Certificados Digitais — nome/CNPJ, validade e senha, no mesmo modelo da planilha de
   // controle do escritório. Como envolve senha de certificado (dado bem sensível), fica
@@ -4503,6 +4591,7 @@
     return 'Válido (' + dias + ' dias restantes)';
   }
 
+  }
   function certidaoDiasParaVencer(c){
     if(!c.dataValidade) return null;
     const hoje = new Date(todayStr()+'T00:00:00');
@@ -4993,6 +5082,8 @@
     await loadServicosEsporadicos();
     await loadCertidoes();
     await loadCertificadosDigitais();
+    await loadDocumentosSocietarios();
+    await loadInscricoes();
   }
 
   async function exportAllData(){
@@ -5023,6 +5114,8 @@
       servicosEsporadicos: state.servicosEsporadicos,
       certidoes: state.certidoes,
       certificadosDigitais: state.certificadosDigitais,
+      documentosSocietarios: state.documentosSocietarios,
+      inscricoes: state.inscricoes,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -5081,6 +5174,8 @@
       {key:'servicosEsporadicos', prefix:'servicosesporadicos:', idField:'id'},
       {key:'certidoes', prefix:'certidoes:', idField:'id'},
       {key:'certificadosDigitais', prefix:'certificadosdigitais:', idField:'id'},
+      {key:'documentosSocietarios', prefix:'documentossocietarios:', idField:'id'},
+      {key:'inscricoes', prefix:'inscricoes:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -8323,6 +8418,8 @@
           `}
         `}
       </div>
+      <div class="panel">${documentosSocietariosPanelHtml()}</div>
+      <div class="panel">${inscricoesPanelHtml()}</div>
     `;
   }
 
@@ -8360,6 +8457,179 @@
             </div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="ctrCancel">Cancelar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  const TIPOS_DOCUMENTO_SOCIETARIO = ['Constituição (Contrato Social)', 'Alteração Contratual', 'Baixa (Distrato Social)'];
+
+  function documentoSocietarioStatusClass(tipo){
+    if(tipo==='Constituição (Contrato Social)') return 'sit-ativa';
+    if(tipo==='Baixa (Distrato Social)') return 'sit-baixada';
+    return 'sit-pendente';
+  }
+
+  function empresaSelectorHtmlDocumentoSocietario(){
+    const clientesOrdenados = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return `
+      <div class="field" style="max-width:360px; margin-bottom:16px;">
+        <label>Empresa</label>
+        <select id="documentoSocietarioEmpresaSelect" class="filter-select" style="width:100%;">
+          <option value="">— Selecione uma empresa —</option>
+          ${clientesOrdenados.map(c=>`<option value="${c.id}" ${state.documentoSocietarioEmpresaAtiva===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  }
+
+  function documentosSocietariosPanelHtml(){
+    const empresa = state.clients.find(c=>c.id===state.documentoSocietarioEmpresaAtiva);
+    const documentosCliente = state.documentosSocietarios.filter(d=>d.clientId===state.documentoSocietarioEmpresaAtiva).sort((a,b)=>(b.dataAto||'').localeCompare(a.dataAto||''));
+    return `
+      <div class="panel-head"><h3>Documentos Societários (Constituição, Alteração e Baixa)</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Documentos legais da própria empresa do cliente — Contrato Social/Constituição, Alterações Contratuais e Distrato/Baixa — separados por empresa. Aceita arquivos em PDF ou Word; ao anexar um arquivo novo em cima de um já existente, o antigo é substituído (útil para registrar futuras alterações).</div>
+      ${empresaSelectorHtmlDocumentoSocietario()}
+      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou anexar documentos societários dela.</div>` : `
+        <button type="button" class="btn-add" id="novoDocumentoSocietarioBtn" style="margin-bottom:14px;">+ Novo documento societário</button>
+        ${!documentosCliente.length ? `<div class="empty">Nenhum documento societário cadastrado para ${escapeHtml(empresa.name)} ainda.</div>` : `
+          <div class="cc-list">
+            ${documentosCliente.map(d=>`
+              <div class="cc-row" style="align-items:flex-start;">
+                <div class="cr-main">
+                  <div class="cr-title">${escapeHtml(d.tipo||'Documento')} <span class="tag ${documentoSocietarioStatusClass(d.tipo)}" style="margin-left:6px;">${escapeHtml(d.tipo||'')}</span></div>
+                  <div class="cr-meta">${d.dataAto?'Data do ato: '+fmtDate(d.dataAto):''}${d.numeroRegistro?' · Registro na Junta: '+escapeHtml(d.numeroRegistro):''}</div>
+                  ${d.observacoes ? `<div class="cr-meta">${escapeHtml(d.observacoes)}</div>` : ''}
+                  ${d.arquivoNome ? `<div class="cr-meta">📎 ${escapeHtml(d.arquivoNome)}</div>` : `<div class="cr-meta" style="color:var(--ink-soft);">Sem arquivo anexado</div>`}
+                </div>
+                <div style="display:flex; gap:6px; flex-shrink:0;">
+                  ${d.arquivoBase64 ? `<button type="button" class="btn-detail" data-baixar-documento-societario="${d.id}">Baixar arquivo</button>` : ''}
+                  <button type="button" class="btn-detail" data-edit-documento-societario="${d.id}">Editar</button>
+                  <button type="button" class="btn-sm danger" data-del-documento-societario="${d.id}">Excluir</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      `}
+    `;
+  }
+
+  function documentoSocietarioModalHtml(){
+    const d = state.documentoSocietarioModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar documento societário' : 'Novo documento societário'}</h3>
+          <form id="documentoSocietarioForm">
+            <div class="field"><label>Tipo de documento</label>
+              <select id="dsTipo">${TIPOS_DOCUMENTO_SOCIETARIO.map(t=>`<option value="${t}" ${d.tipo===t?'selected':''}>${t}</option>`).join('')}</select>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Data do ato</label><input type="date" id="dsDataAto" value="${d.dataAto||todayStr()}"/></div>
+              <div class="field"><label>Número de registro na Junta Comercial (opcional)</label><input type="text" id="dsNumeroRegistro" value="${escapeHtml(d.numeroRegistro||'')}"/></div>
+            </div>
+            <div class="field"><label>Observações</label><input type="text" id="dsObs" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="attach-box">
+              <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo do documento (PDF ou Word)</label>
+              <input type="file" id="dsArquivoInput" accept=".pdf,.doc,.docx"/>
+              ${d.arquivoNome ? `<div class="form-hint" style="margin-top:8px;">Arquivo atual: ${escapeHtml(d.arquivoNome)} — selecionar um novo substitui este (útil ao registrar uma alteração futura).</div>` : ''}
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="dsCancel">Cancelar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  const TIPOS_INSCRICAO = ['CNPJ', 'Inscrição Estadual', 'Inscrição Municipal', 'IPTU'];
+
+  function inscricaoTipoClass(tipo){
+    if(tipo==='CNPJ') return 'sit-ativa';
+    if(tipo==='Inscrição Estadual') return 'sit-outra';
+    if(tipo==='Inscrição Municipal') return 'sit-pendente';
+    return 'dept-fiscal';
+  }
+
+  function empresaSelectorHtmlInscricao(){
+    const clientesOrdenados = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return `
+      <div class="field" style="max-width:360px; margin-bottom:16px;">
+        <label>Empresa</label>
+        <select id="inscricaoEmpresaSelect" class="filter-select" style="width:100%;">
+          <option value="">— Selecione uma empresa —</option>
+          ${clientesOrdenados.map(c=>`<option value="${c.id}" ${state.inscricaoEmpresaAtiva===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  }
+
+  function inscricoesPanelHtml(){
+    const empresa = state.clients.find(c=>c.id===state.inscricaoEmpresaAtiva);
+    const inscricoesCliente = state.inscricoes.filter(i=>i.clientId===state.inscricaoEmpresaAtiva).sort((a,b)=>(a.tipo||'').localeCompare(b.tipo||''));
+    return `
+      <div class="panel-head"><h3>Inscrições e Registros (CNPJ, Estadual, Municipal, IPTU)</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Cadastro dos números de inscrição do cliente, com o comprovante oficial anexado em PDF, e um PDF de consulta consolidado gerado pelo próprio sistema — separado por empresa.</div>
+      ${empresaSelectorHtmlInscricao()}
+      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar inscrições dela.</div>` : `
+        <div style="display:flex; gap:10px; margin-bottom:14px;">
+          <button type="button" class="btn-add" id="novaInscricaoBtn">+ Nova inscrição</button>
+          ${inscricoesCliente.length ? `<button type="button" class="btn-detail" id="pdfInscricoesBtn">Gerar PDF de Consulta</button>` : ''}
+        </div>
+        ${!inscricoesCliente.length ? `<div class="empty">Nenhuma inscrição cadastrada para ${escapeHtml(empresa.name)} ainda.</div>` : `
+          <div class="cc-list">
+            ${inscricoesCliente.map(i=>`
+              <div class="cc-row" style="align-items:flex-start;">
+                <div class="cr-main">
+                  <div class="cr-title">${escapeHtml(i.tipo||'Inscrição')} <span class="tag ${inscricaoTipoClass(i.tipo)}" style="margin-left:6px;">${escapeHtml(i.numero||'—')}</span></div>
+                  <div class="cr-meta">${i.orgaoEmissor?'Órgão: '+escapeHtml(i.orgaoEmissor):''}${i.dataEmissao?' · Emitida/consultada em '+fmtDate(i.dataEmissao):''}</div>
+                  ${i.observacoes ? `<div class="cr-meta">${escapeHtml(i.observacoes)}</div>` : ''}
+                  ${i.arquivoNome ? `<div class="cr-meta">📎 ${escapeHtml(i.arquivoNome)}</div>` : `<div class="cr-meta" style="color:var(--ink-soft);">Sem comprovante anexado</div>`}
+                </div>
+                <div style="display:flex; gap:6px; flex-shrink:0;">
+                  ${i.arquivoBase64 ? `<button type="button" class="btn-detail" data-baixar-inscricao="${i.id}">Baixar PDF</button>` : ''}
+                  <button type="button" class="btn-detail" data-edit-inscricao="${i.id}">Editar</button>
+                  <button type="button" class="btn-sm danger" data-del-inscricao="${i.id}">Excluir</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      `}
+    `;
+  }
+
+  function inscricaoModalHtml(){
+    const d = state.inscricaoModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar inscrição' : 'Nova inscrição'}</h3>
+          <form id="inscricaoForm">
+            <div class="field"><label>Tipo de inscrição</label>
+              <select id="inTipo">${TIPOS_INSCRICAO.map(t=>`<option value="${t}" ${d.tipo===t?'selected':''}>${t}</option>`).join('')}</select>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Número da inscrição</label><input type="text" id="inNumero" value="${escapeHtml(d.numero||'')}"/></div>
+              <div class="field"><label>Órgão emissor (opcional)</label><input type="text" id="inOrgaoEmissor" value="${escapeHtml(d.orgaoEmissor||'')}" placeholder="Ex: Prefeitura de Paulista"/></div>
+            </div>
+            <div class="field"><label>Data de emissão/consulta</label><input type="date" id="inDataEmissao" value="${d.dataEmissao||todayStr()}"/></div>
+            <div class="field"><label>Observações</label><input type="text" id="inObs" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="attach-box">
+              <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Comprovante (PDF)</label>
+              <input type="file" id="inArquivoInput" accept=".pdf"/>
+              ${d.arquivoNome ? `<div class="form-hint" style="margin-top:8px;">Arquivo atual: ${escapeHtml(d.arquivoNome)} — selecionar um novo substitui este.</div>` : ''}
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="inCancel">Cancelar</button>
               <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
             </div>
           </form>
@@ -8725,6 +8995,8 @@
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
+      ${state.modal==='documentoSocietario' ? documentoSocietarioModalHtml() : ''}
+      ${state.modal==='inscricao' ? inscricaoModalHtml() : ''}
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
       ${state.modal==='certidao' ? certidaoModalHtml() : ''}
@@ -9980,6 +10252,145 @@
         state.modal=null; state.contratoModalData=null;
         render();
         saveContratoItem(c);
+      };
+    }
+
+    // ===== Documentos Societários (Constituição, Alteração, Baixa) =====
+    const documentoSocietarioEmpresaSelect = document.getElementById('documentoSocietarioEmpresaSelect');
+    if(documentoSocietarioEmpresaSelect){
+      documentoSocietarioEmpresaSelect.onchange = (e)=>{ state.documentoSocietarioEmpresaAtiva = e.target.value; render(); };
+    }
+    const novoDocumentoSocietarioBtn = document.getElementById('novoDocumentoSocietarioBtn');
+    if(novoDocumentoSocietarioBtn){
+      novoDocumentoSocietarioBtn.onclick = ()=>{
+        state.documentoSocietarioModalData = { clientId: state.documentoSocietarioEmpresaAtiva, tipo: 'Constituição (Contrato Social)', dataAto: todayStr() };
+        state.modal = 'documentoSocietario'; render();
+      };
+    }
+    root.querySelectorAll('[data-edit-documento-societario]').forEach(el=>{
+      el.onclick = ()=>{
+        const d = state.documentosSocietarios.find(x=>x.id===el.getAttribute('data-edit-documento-societario'));
+        if(!d) return;
+        state.documentoSocietarioModalData = Object.assign({}, d);
+        state.modal = 'documentoSocietario'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-documento-societario]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este documento societário?')) deleteDocumentoSocietarioItem(el.getAttribute('data-del-documento-societario')); };
+    });
+    root.querySelectorAll('[data-baixar-documento-societario]').forEach(el=>{
+      el.onclick = ()=>{
+        const d = state.documentosSocietarios.find(x=>x.id===el.getAttribute('data-baixar-documento-societario'));
+        if(d && d.arquivoBase64) baixarArquivoBase64(d.arquivoBase64, d.arquivoNome||'documento');
+      };
+    });
+    const dsCancel = document.getElementById('dsCancel');
+    if(dsCancel) dsCancel.onclick = ()=>{ state.modal=null; state.documentoSocietarioModalData=null; render(); };
+    const documentoSocietarioForm = document.getElementById('documentoSocietarioForm');
+    if(documentoSocietarioForm){
+      documentoSocietarioForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const clientId = state.documentoSocietarioModalData ? state.documentoSocietarioModalData.clientId : state.documentoSocietarioEmpresaAtiva;
+        if(!clientId){ alert('Selecione uma empresa antes de cadastrar um documento societário.'); return; }
+        const fileInput = document.getElementById('dsArquivoInput');
+        const file = fileInput && fileInput.files && fileInput.files[0];
+        let arquivoBase64 = state.documentoSocietarioModalData ? state.documentoSocietarioModalData.arquivoBase64 : null;
+        let arquivoNome = state.documentoSocietarioModalData ? state.documentoSocietarioModalData.arquivoNome : null;
+        if(file){
+          if(file.size > 4*1024*1024){ alert('O arquivo é maior que 4MB — escolha um arquivo menor.'); return; }
+          try{
+            const buf = await file.arrayBuffer();
+            let binary = '';
+            const bytes = new Uint8Array(buf);
+            for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+            arquivoBase64 = btoa(binary);
+            arquivoNome = file.name;
+          }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); return; }
+        }
+        const d = {
+          id: (state.documentoSocietarioModalData && state.documentoSocietarioModalData.id) || undefined,
+          clientId,
+          tipo: document.getElementById('dsTipo').value,
+          dataAto: document.getElementById('dsDataAto').value,
+          numeroRegistro: document.getElementById('dsNumeroRegistro').value,
+          observacoes: document.getElementById('dsObs').value,
+          arquivoBase64, arquivoNome,
+        };
+        state.modal=null; state.documentoSocietarioModalData=null;
+        render();
+        saveDocumentoSocietarioItem(d);
+      };
+    }
+
+    // ===== Inscrições e Registros =====
+    const inscricaoEmpresaSelect = document.getElementById('inscricaoEmpresaSelect');
+    if(inscricaoEmpresaSelect){
+      inscricaoEmpresaSelect.onchange = (e)=>{ state.inscricaoEmpresaAtiva = e.target.value; render(); };
+    }
+    const novaInscricaoBtn = document.getElementById('novaInscricaoBtn');
+    if(novaInscricaoBtn){
+      novaInscricaoBtn.onclick = ()=>{
+        state.inscricaoModalData = { clientId: state.inscricaoEmpresaAtiva, tipo: 'CNPJ', dataEmissao: todayStr() };
+        state.modal = 'inscricao'; render();
+      };
+    }
+    const pdfInscricoesBtn = document.getElementById('pdfInscricoesBtn');
+    if(pdfInscricoesBtn){
+      pdfInscricoesBtn.onclick = ()=> gerarPdfInscricoesCliente(state.inscricaoEmpresaAtiva);
+    }
+    root.querySelectorAll('[data-edit-inscricao]').forEach(el=>{
+      el.onclick = ()=>{
+        const i = state.inscricoes.find(x=>x.id===el.getAttribute('data-edit-inscricao'));
+        if(!i) return;
+        state.inscricaoModalData = Object.assign({}, i);
+        state.modal = 'inscricao'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-inscricao]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta inscrição?')) deleteInscricaoItem(el.getAttribute('data-del-inscricao')); };
+    });
+    root.querySelectorAll('[data-baixar-inscricao]').forEach(el=>{
+      el.onclick = ()=>{
+        const i = state.inscricoes.find(x=>x.id===el.getAttribute('data-baixar-inscricao'));
+        if(i && i.arquivoBase64) baixarArquivoBase64(i.arquivoBase64, i.arquivoNome||'inscricao.pdf');
+      };
+    });
+    const inCancel = document.getElementById('inCancel');
+    if(inCancel) inCancel.onclick = ()=>{ state.modal=null; state.inscricaoModalData=null; render(); };
+    const inscricaoForm = document.getElementById('inscricaoForm');
+    if(inscricaoForm){
+      inscricaoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const clientId = state.inscricaoModalData ? state.inscricaoModalData.clientId : state.inscricaoEmpresaAtiva;
+        if(!clientId){ alert('Selecione uma empresa antes de cadastrar uma inscrição.'); return; }
+        const fileInput = document.getElementById('inArquivoInput');
+        const file = fileInput && fileInput.files && fileInput.files[0];
+        let arquivoBase64 = state.inscricaoModalData ? state.inscricaoModalData.arquivoBase64 : null;
+        let arquivoNome = state.inscricaoModalData ? state.inscricaoModalData.arquivoNome : null;
+        if(file){
+          if(file.size > 4*1024*1024){ alert('O PDF é maior que 4MB — escolha um arquivo menor.'); return; }
+          try{
+            const buf = await file.arrayBuffer();
+            let binary = '';
+            const bytes = new Uint8Array(buf);
+            for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+            arquivoBase64 = btoa(binary);
+            arquivoNome = file.name;
+          }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); return; }
+        }
+        const i = {
+          id: (state.inscricaoModalData && state.inscricaoModalData.id) || undefined,
+          clientId,
+          tipo: document.getElementById('inTipo').value,
+          numero: document.getElementById('inNumero').value,
+          orgaoEmissor: document.getElementById('inOrgaoEmissor').value,
+          dataEmissao: document.getElementById('inDataEmissao').value,
+          observacoes: document.getElementById('inObs').value,
+          arquivoBase64, arquivoNome,
+        };
+        state.modal=null; state.inscricaoModalData=null;
+        render();
+        saveInscricaoItem(i);
       };
     }
 
