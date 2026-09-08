@@ -4555,6 +4555,7 @@
   async function deleteCertidaoItem(id){
     await Store.delete('certidoes:'+id, true);
     await loadCertidoes(); render();
+  }
 
   // Certificados Digitais — nome/CNPJ, validade e senha, no mesmo modelo da planilha de
   // controle do escritório. Como envolve senha de certificado (dado bem sensível), fica
@@ -4608,7 +4609,6 @@
     return 'Válido (' + dias + ' dias restantes)';
   }
 
-  }
   function certidaoDiasParaVencer(c){
     if(!c.dataValidade) return null;
     const hoje = new Date(todayStr()+'T00:00:00');
