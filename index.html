@@ -1341,6 +1341,23 @@
     URL.revokeObjectURL(url);
   }
 
+  // Abre o arquivo numa aba nova para visualização (em vez de forçar o download) — útil para
+  // conferir rapidamente um PDF anexado sem precisar salvar no computador antes.
+  function visualizarArquivoBase64(base64, filename, mimeType){
+    mimeType = mimeType || 'application/pdf';
+    const byteChars = atob(base64);
+    const byteNumbers = new Array(byteChars.length);
+    for(let i=0; i<byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], {type: mimeType});
+    const url = URL.createObjectURL(blob);
+    const janela = window.open(url, '_blank');
+    if(!janela){
+      alert('O navegador bloqueou a abertura da aba de visualização (pop-up). Permita pop-ups para este site, ou use o botão "Baixar" para salvar o arquivo.');
+    }
+    setTimeout(()=> URL.revokeObjectURL(url), 60000);
+  }
+
   function generateRelatorioFiscalPDF(relatorioId){
     const r = state.relatoriosFiscais.find(x=>x.id===relatorioId);
     if(!r) return;
@@ -4538,7 +4555,6 @@
   async function deleteCertidaoItem(id){
     await Store.delete('certidoes:'+id, true);
     await loadCertidoes(); render();
-  }
 
   // Certificados Digitais — nome/CNPJ, validade e senha, no mesmo modelo da planilha de
   // controle do escritório. Como envolve senha de certificado (dado bem sensível), fica
@@ -4592,6 +4608,7 @@
     return 'Válido (' + dias + ' dias restantes)';
   }
 
+  }
   function certidaoDiasParaVencer(c){
     if(!c.dataValidade) return null;
     const hoje = new Date(todayStr()+'T00:00:00');
@@ -8594,7 +8611,7 @@
                   ${i.arquivoNome ? `<div class="cr-meta">📎 ${escapeHtml(i.arquivoNome)}</div>` : `<div class="cr-meta" style="color:var(--ink-soft);">Sem comprovante anexado</div>`}
                 </div>
                 <div style="display:flex; gap:6px; flex-shrink:0;">
-                  ${i.arquivoBase64 ? `<button type="button" class="btn-detail" data-baixar-inscricao="${i.id}">Baixar PDF</button>` : ''}
+                  ${i.arquivoBase64 ? `<button type="button" class="btn-detail" data-visualizar-inscricao="${i.id}">Visualizar</button><button type="button" class="btn-detail" data-baixar-inscricao="${i.id}">Baixar PDF</button>` : ''}
                   <button type="button" class="btn-detail" data-edit-inscricao="${i.id}">Editar</button>
                   <button type="button" class="btn-sm danger" data-del-inscricao="${i.id}">Excluir</button>
                 </div>
@@ -10348,6 +10365,12 @@
     });
     root.querySelectorAll('[data-del-inscricao]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir esta inscrição?')) deleteInscricaoItem(el.getAttribute('data-del-inscricao')); };
+    });
+    root.querySelectorAll('[data-visualizar-inscricao]').forEach(el=>{
+      el.onclick = ()=>{
+        const i = state.inscricoes.find(x=>x.id===el.getAttribute('data-visualizar-inscricao'));
+        if(i && i.arquivoBase64) visualizarArquivoBase64(i.arquivoBase64, i.arquivoNome||'inscricao.pdf');
+      };
     });
     root.querySelectorAll('[data-baixar-inscricao]').forEach(el=>{
       el.onclick = ()=>{
