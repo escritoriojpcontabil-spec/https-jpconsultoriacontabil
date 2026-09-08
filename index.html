@@ -5275,10 +5275,10 @@
     const legacyKey = String(rawInput||'').trim().toLowerCase(); // contas antigas criadas por email, antes da troca para usuário
     if(!username || !password){ state.authError = 'Preencha usuário e senha.'; render(); return; }
     try{
-      let rec = await Store.get('users:'+username, true);
+      let rec = await Store.get('users:'+username, true).catch(()=>null);
       let migratedFromLegacy = false;
       if(!rec && legacyKey && legacyKey !== username){
-        rec = await Store.get('users:'+legacyKey, true);
+        rec = await Store.get('users:'+legacyKey, true).catch(()=>null);
         migratedFromLegacy = !!rec;
       }
       if(!rec){ state.authError = 'Usuário não encontrado. Cadastre-se abaixo.'; render(); return; }
