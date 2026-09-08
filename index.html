@@ -5269,18 +5269,34 @@
     render();
   }
 
-  async function handleLogin(username, password){
+  async function handleLogin(rawInput, password){
     state.authError = '';
-    username = slugifyUsername(username);
+    const username = slugifyUsername(rawInput);
+    const legacyKey = String(rawInput||'').trim().toLowerCase(); // contas antigas criadas por email, antes da troca para usuário
     if(!username || !password){ state.authError = 'Preencha usuário e senha.'; render(); return; }
     try{
-      const rec = await Store.get('users:'+username, true);
+      let rec = await Store.get('users:'+username, true);
+      let migratedFromLegacy = false;
+      if(!rec && legacyKey && legacyKey !== username){
+        rec = await Store.get('users:'+legacyKey, true);
+        migratedFromLegacy = !!rec;
+      }
       if(!rec){ state.authError = 'Usuário não encontrado. Cadastre-se abaixo.'; render(); return; }
       const u = JSON.parse(rec.value);
       const hash = await sha256(password);
       if(u.passwordHash !== hash){ state.authError = 'Senha incorreta.'; render(); return; }
+      let loginKey = username;
+      if(migratedFromLegacy){
+        // Conta antiga (login por email) — migra para o novo formato por usuário, mantendo a mesma senha.
+        const novoUsername = slugifyUsername(u.name) || username;
+        u.username = novoUsername;
+        delete u.email;
+        await Store.set('users:'+novoUsername, JSON.stringify(u), true);
+        await Store.delete('users:'+legacyKey, true).catch(()=>{});
+        loginKey = novoUsername;
+      }
       state.user = u;
-      await SessionStore.set('session:username', username);
+      await SessionStore.set('session:username', loginKey);
       await loadAll();
       await loadCentroControleData();
       if(state.user.role==='admin') await loadUsers();
