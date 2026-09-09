@@ -1533,12 +1533,14 @@
   function montarPropostaSnapshot(){
     const incluirHonorarioMensal = state.propostaIncluirHonorarioMensal;
     const fat = parseFloat(state.propostaFaturamento) || 0;
-    const { valor: honorarioBaseCalc, aCombinar, faixa } = calcHonorarioBase(fat, state.propostaRegime);
+    const { valor: honorarioBaseCalc, aCombinar: aCombinarCalc, faixa } = calcHonorarioBase(fat, state.propostaRegime);
+    const aCombinar = incluirHonorarioMensal ? aCombinarCalc : false; // "A combinar" só faz sentido quando a Tabela de Honorários está em uso
     const honorarioBase = incluirHonorarioMensal ? honorarioBaseCalc : 0;
     const valorFuncionarios = incluirHonorarioMensal ? (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS : 0;
     const totalExtras = state.propostaItensExtras.reduce((s,i)=>s+(Number(i.valor)||0),0);
     const servicosSaoOpcoes = state.propostaServicosSaoOpcoes;
     const totalMensal = (honorarioBase||0) + valorFuncionarios + (servicosSaoOpcoes ? 0 : totalExtras);
+    const itensExtrasValidos = state.propostaItensExtras.filter(it=> (it.descricao||'').trim() || Number(it.valor)>0);
     return {
       avulso: true,
       clienteNome: state.propostaNomeAvulso,
@@ -1548,7 +1550,7 @@
       honorarioBase, aCombinar, faixaTexto: (incluirHonorarioMensal && faixa) ? (fmtBRL(faixa.min)+' até '+(faixa.max===Infinity?'—':fmtBRL(faixa.max))) : '',
       qtdFuncionarios: incluirHonorarioMensal ? (Number(state.propostaQtdFuncionarios)||0) : 0, valorFuncionarios,
       pendencias: [],
-      itensExtras: state.propostaItensExtras.slice(),
+      itensExtras: itensExtrasValidos,
       servicosSaoOpcoes,
       incluirBalanco: state.propostaIncluirBalanco,
       observacoes: state.propostaObservacoes,
