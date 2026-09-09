@@ -733,6 +733,26 @@
   }
   function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
+  // Login por nome de usuário (sem email) — sugere um "usuário" a partir do nome digitado
+  // (minúsculo, sem acentos, espaços viram ponto) e gera senhas provisórias aleatórias.
+  function slugifyUsername(name){
+    return String(name||'')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s.]/g,'')
+      .replace(/\s+/g,'.')
+      .replace(/\.+/g,'.')
+      .replace(/^\.|\.$/g,'');
+  }
+  function gerarSenhaAleatoria(tamanho){
+    tamanho = tamanho || 8;
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    let out = '';
+    for(let i=0;i<tamanho;i++) out += chars[Math.floor(Math.random()*chars.length)];
+    return out;
+  }
+
   function onlyDigits(s){ return String(s||'').replace(/\D/g,''); }
   function maskCnpjCpf(raw){
     const d = onlyDigits(raw).slice(0,14);
@@ -1503,7 +1523,7 @@
 
     doc.setFontSize(8);
     doc.setTextColor(140,150,160);
-    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.email) : '—') + ' — JP Consultoria Contábil', 14, 287);
+    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil', 14, 287);
 
     const safeName = (c.name||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
     doc.save('situacao-fiscal-' + safeName + '.pdf');
@@ -2357,7 +2377,7 @@
     doc.text(lines, 18, y+6);
     doc.setFontSize(8);
     doc.setTextColor(140,150,160);
-    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.email) : '—') + ' — JP Consultoria Contábil', 14, pageH-10);
+    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil', 14, pageH-10);
   }
 
   function generateParcelamentoPDF(parcId){
@@ -5264,7 +5284,7 @@
       return;
     }
     const collections = [
-      {key:'users', prefix:'users:', idField:'email'},
+      {key:'users', prefix:'users:', idField:'username'},
       {key:'clients', prefix:'clients:', idField:'id'},
       {key:'transactions', prefix:'transactions:', idField:'id'},
       {key:'obrigacoes', prefix:'obrigacoes:', idField:'id'},
@@ -5318,7 +5338,7 @@
 
   async function trySession(){
     try{
-      const r = await SessionStore.get('session:email');
+      const r = await SessionStore.get('session:username');
       if(r && r.value){
         const u = await Store.get('users:'+r.value, true);
         if(u){ state.user = JSON.parse(u.value); }
@@ -5331,18 +5351,34 @@
     render();
   }
 
-  async function handleLogin(email, password){
+  async function handleLogin(rawInput, password){
     state.authError = '';
-    email = email.trim().toLowerCase();
-    if(!email || !password){ state.authError = 'Preencha email e senha.'; render(); return; }
+    const username = slugifyUsername(rawInput);
+    const legacyKey = String(rawInput||'').trim().toLowerCase(); // contas antigas criadas por email, antes da troca para usuário
+    if(!username || !password){ state.authError = 'Preencha usuário e senha.'; render(); return; }
     try{
-      const rec = await Store.get('users:'+email, true);
+      let rec = await Store.get('users:'+username, true).catch(()=>null);
+      let migratedFromLegacy = false;
+      if(!rec && legacyKey && legacyKey !== username){
+        rec = await Store.get('users:'+legacyKey, true).catch(()=>null);
+        migratedFromLegacy = !!rec;
+      }
       if(!rec){ state.authError = 'Usuário não encontrado. Cadastre-se abaixo.'; render(); return; }
       const u = JSON.parse(rec.value);
       const hash = await sha256(password);
       if(u.passwordHash !== hash){ state.authError = 'Senha incorreta.'; render(); return; }
+      let loginKey = username;
+      if(migratedFromLegacy){
+        // Conta antiga (login por email) — migra para o novo formato por usuário, mantendo a mesma senha.
+        const novoUsername = slugifyUsername(u.name) || username;
+        u.username = novoUsername;
+        delete u.email;
+        await Store.set('users:'+novoUsername, JSON.stringify(u), true);
+        await Store.delete('users:'+legacyKey, true).catch(()=>{});
+        loginKey = novoUsername;
+      }
       state.user = u;
-      await SessionStore.set('session:email', email);
+      await SessionStore.set('session:username', loginKey);
       await loadAll();
       await loadCentroControleData();
       if(state.user.role==='admin') await loadUsers();
@@ -5351,25 +5387,25 @@
     }catch(e){ console.error('Erro no login:', e); state.authError = 'Não foi possível entrar agora (' + (e && e.message ? e.message : 'erro desconhecido') + ').'; render(); }
   }
 
-  async function handleRegister(name, email, password, password2){
+  async function handleRegister(name, username, password, password2){
     state.authError = '';
-    email = email.trim().toLowerCase();
-    if(!name || !email || !password){ state.authError='Preencha todos os campos.'; render(); return; }
+    username = slugifyUsername(username || name);
+    if(!name || !username || !password){ state.authError='Preencha todos os campos.'; render(); return; }
     if(password.length < 4){ state.authError='A senha deve ter ao menos 4 caracteres.'; render(); return; }
     if(password !== password2){ state.authError='As senhas não coincidem.'; render(); return; }
     try{
-      const existing = await Store.get('users:'+email, true).catch(()=>null);
-      if(existing){ state.authError='Já existe uma conta com este email.'; render(); return; }
+      const existing = await Store.get('users:'+username, true).catch(()=>null);
+      if(existing){ state.authError='Já existe uma conta com este nome de usuário. Escolha outro.'; render(); return; }
       let isFirst = false;
       try{
         const uKeys = await Store.list('users:', true);
         isFirst = !uKeys || !uKeys.keys || uKeys.keys.length===0;
       }catch(e){ isFirst = true; }
       const hash = await sha256(password);
-      const user = { email, name, passwordHash: hash, role: isFirst ? 'admin' : 'user', departments: isFirst ? DEPARTMENTS.slice() : [], createdAt: new Date().toISOString() };
-      await Store.set('users:'+email, JSON.stringify(user), true);
+      const user = { username, name, passwordHash: hash, role: isFirst ? 'admin' : 'user', departments: isFirst ? DEPARTMENTS.slice() : [], createdAt: new Date().toISOString() };
+      await Store.set('users:'+username, JSON.stringify(user), true);
       state.user = user;
-      await SessionStore.set('session:email', email);
+      await SessionStore.set('session:username', username);
       await loadAll();
       await loadCentroControleData();
       if(state.user.role==='admin') await loadUsers();
@@ -5378,47 +5414,48 @@
     }catch(e){ console.error('Erro no cadastro:', e); state.authError='Não foi possível cadastrar agora (' + (e && e.message ? e.message : 'erro desconhecido') + ').'; render(); }
   }
 
-  async function toggleUserRole(email){
-    if(email === state.user.email){ alert('Você não pode alterar seu próprio nível de acesso.'); return; }
-    const u = state.users.find(u=>u.email===email);
+  async function toggleUserRole(username){
+    if(username === state.user.username){ alert('Você não pode alterar seu próprio nível de acesso.'); return; }
+    const u = state.users.find(u=>u.username===username);
     if(!u) return;
     u.role = u.role==='admin' ? 'user' : 'admin';
-    await Store.set('users:'+email, JSON.stringify(u), true);
+    await Store.set('users:'+username, JSON.stringify(u), true);
     await loadUsers(); render();
   }
 
-  async function updateUserAccess(email, role, departments){
-    if(email === state.user.email && role !== 'admin' && state.user.role==='admin'){
+  async function updateUserAccess(username, role, departments){
+    if(username === state.user.username && role !== 'admin' && state.user.role==='admin'){
       alert('Você não pode remover o próprio nível de administrador enquanto estiver conectado.');
       return;
     }
-    const u = state.users.find(u=>u.email===email);
+    const u = state.users.find(u=>u.username===username);
     if(!u) return;
     u.role = role;
     u.departments = departments;
-    await Store.set('users:'+email, JSON.stringify(u), true);
+    await Store.set('users:'+username, JSON.stringify(u), true);
     await loadUsers(); render();
   }
 
-  async function adminCreateUser(name, email, password, role, departments){
-    email = email.trim().toLowerCase();
-    const existing = await Store.get('users:'+email, true).catch(()=>null);
-    if(existing){ return { ok:false, error:'Já existe uma conta com este email.' }; }
+  async function adminCreateUser(name, username, password, role, departments){
+    username = slugifyUsername(username || name);
+    if(!username){ return { ok:false, error:'Informe um nome de usuário válido.' }; }
+    const existing = await Store.get('users:'+username, true).catch(()=>null);
+    if(existing){ return { ok:false, error:'Já existe uma conta com este nome de usuário.' }; }
     const hash = await sha256(password);
-    const user = { email, name, passwordHash: hash, role, departments: role==='admin' ? DEPARTMENTS.slice() : departments, createdAt: new Date().toISOString() };
-    await Store.set('users:'+email, JSON.stringify(user), true);
+    const user = { username, name, passwordHash: hash, role, departments: role==='admin' ? DEPARTMENTS.slice() : departments, createdAt: new Date().toISOString() };
+    await Store.set('users:'+username, JSON.stringify(user), true);
     await loadUsers();
-    return { ok:true };
+    return { ok:true, username };
   }
 
-  async function deleteUser(email){
-    if(email === state.user.email){ alert('Você não pode excluir a própria conta enquanto estiver conectado.'); return; }
-    await Store.delete('users:'+email, true);
+  async function deleteUser(username){
+    if(username === state.user.username){ alert('Você não pode excluir a própria conta enquanto estiver conectado.'); return; }
+    await Store.delete('users:'+username, true);
     await loadUsers(); render();
   }
 
   async function handleLogout(){
-    try{ await SessionStore.delete('session:email'); }catch(e){}
+    try{ await SessionStore.delete('session:username'); }catch(e){}
     state.user = null;
     state.view = 'dashboard';
     render();
@@ -5470,7 +5507,7 @@
             </div>
             <div class="auth-hero">
               <h1>Gestão contábil<br/>clara e sob controle.</h1>
-              <p>Lançamentos, clientes e relatórios financeiros em um só lugar, com acesso protegido por email e senha.</p>
+              <p>Lançamentos, clientes e relatórios financeiros em um só lugar, com acesso protegido por usuário e senha.</p>
             </div>
             ${ascendGraphic()}
           </div>
@@ -5493,7 +5530,7 @@
               <p class="sub">Acesse sua conta para continuar.</p>
               <div class="auth-error ${state.authError?'show':''}">${escapeHtml(state.authError)}</div>
               <form id="loginForm">
-                <div class="field"><label>Email</label><input type="email" id="loginEmail" autocomplete="username" required/></div>
+                <div class="field"><label>Usuário</label><input type="text" id="loginEmail" autocomplete="username" required/></div>
                 <div class="field"><label>Senha</label><input type="password" id="loginPassword" autocomplete="current-password" required/></div>
                 <button type="submit" class="btn-primary btn-gold">Entrar</button>
               </form>
@@ -5504,7 +5541,7 @@
               <div class="auth-error ${state.authError?'show':''}">${escapeHtml(state.authError)}</div>
               <form id="registerForm">
                 <div class="field"><label>Nome</label><input type="text" id="regName" required/></div>
-                <div class="field"><label>Email</label><input type="email" id="regEmail" autocomplete="username" required/></div>
+                <div class="field"><label>Usuário (login)</label><input type="text" id="regEmail" autocomplete="username" placeholder="Ex: joao.silva" required/></div>
                 <div class="field"><label>Senha</label><input type="password" id="regPassword" autocomplete="new-password" required/></div>
                 <div class="field"><label>Confirmar senha</label><input type="password" id="regPassword2" autocomplete="new-password" required/></div>
                 <button type="submit" class="btn-primary btn-gold">Criar conta</button>
@@ -5597,7 +5634,7 @@
             <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;"></span>
             ${STORAGE_MODE==='firebase' ? 'Dados compartilhados (Firebase)' : (STORAGE_MODE==='claude' ? 'Dados compartilhados (Claude)' : 'Dados locais neste navegador')}
           </div>
-          <div class="sb-user">${escapeHtml(state.user.name || state.user.email)}<br/><span class="tag ${state.user.role==='admin'?'role-admin':'role-user'}" style="margin-top:4px;display:inline-block;">${state.user.role==='admin'?'Administrador':'Usuário'}</span></div>
+          <div class="sb-user">${escapeHtml(state.user.name || state.user.username)}<br/><span class="tag ${state.user.role==='admin'?'role-admin':'role-user'}" style="margin-top:4px;display:inline-block;">${state.user.role==='admin'?'Administrador':'Usuário'}</span></div>
           <button class="sb-logout" id="logoutBtn">Sair</button>
         </div>
       </div>
@@ -6399,13 +6436,13 @@
   function userAccessModalHtml(){
     const d = state.userAccessModalData;
     if(!d) return '';
-    const u = state.users.find(x=>x.email===d.email);
+    const u = state.users.find(x=>x.username===d.username);
     if(!u) return '';
     const depts = Array.isArray(u.departments) ? u.departments : [];
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>Editar acesso — ${escapeHtml(u.name||u.email)}</h3>
+          <h3>Editar acesso — ${escapeHtml(u.name||u.username)}</h3>
           <form id="userAccessForm">
             <div class="field"><label>Nível</label>
               <select id="uaRole">
@@ -8967,13 +9004,13 @@
           ${state.users.map(u=>`
             <tr>
               <td>${escapeHtml(u.name||'—')}</td>
-              <td>${escapeHtml(u.email)}</td>
+              <td>${escapeHtml(u.username||'')}</td>
               <td><span class="tag ${u.role==='admin'?'role-admin':'role-user'}">${u.role==='admin'?'Administrador':'Usuário'}</span></td>
               <td>${userDeptBadgesHtml(u)}</td>
               <td>${u.createdAt ? new Date(u.createdAt).toLocaleDateString('pt-BR') : '—'}</td>
               <td style="display:flex;gap:8px;flex-wrap:wrap;">
-                <button class="btn-sm" data-edit-access="${u.email}">Editar acesso</button>
-                <button class="btn-sm danger" data-del-user="${u.email}">Excluir</button>
+                <button class="btn-sm" data-edit-access="${u.username}">Editar acesso</button>
+                <button class="btn-sm danger" data-del-user="${u.username}">Excluir</button>
               </td>
             </tr>
           `).join('')}
@@ -8984,7 +9021,7 @@
   function wireUsersTableButtons(container){
     container.querySelectorAll('[data-edit-access]').forEach(el=>{
       el.onclick = ()=>{
-        state.userAccessModalData = { email: el.getAttribute('data-edit-access') };
+        state.userAccessModalData = { username: el.getAttribute('data-edit-access') };
         state.modal='userAccess'; render();
       };
     });
@@ -9011,10 +9048,16 @@
         <form id="newUserForm">
           <div class="form-row">
             <div class="field"><label>Nome</label><input type="text" id="nuName" required/></div>
-            <div class="field"><label>Email</label><input type="email" id="nuEmail" required/></div>
+            <div class="field"><label>Usuário (login)</label><input type="text" id="nuEmail" placeholder="Ex: joao.silva" required/></div>
           </div>
           <div class="form-row">
-            <div class="field"><label>Senha provisória</label><input type="password" id="nuPassword" required minlength="4"/></div>
+            <div class="field">
+              <label>Senha provisória</label>
+              <div style="display:flex; gap:8px;">
+                <input type="text" id="nuPassword" required minlength="4" style="flex:1;"/>
+                <button type="button" class="btn-sm" id="nuGerarSenha">Gerar senha</button>
+              </div>
+            </div>
             <div class="field"><label>Nível</label>
               <select id="nuRole">
                 <option value="user">Usuário</option>
@@ -9620,7 +9663,7 @@
         assunto: subject,
         attachments: attachments,
         sentAt: new Date().toISOString(),
-        sentBy: state.user ? state.user.email : '',
+        sentBy: state.user ? state.user.username : '',
       });
 
       if(tpl.canal==='whatsapp'){
@@ -9677,7 +9720,7 @@
         if(state.comunicadoCanal==='whatsapp'){
           if(!client.phone){ alert('Este cliente não tem telefone cadastrado.'); return; }
         } else if(!client.email){ alert('Este cliente não tem email cadastrado.'); return; }
-        await saveEnvio({ clientId: client.id, canal: state.comunicadoCanal, texto, assunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.email:'' });
+        await saveEnvio({ clientId: client.id, canal: state.comunicadoCanal, texto, assunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.username:'' });
         if(state.comunicadoCanal==='whatsapp'){
           window.open('https://wa.me/'+waPhoneDigits(client.phone)+'?text='+encodeURIComponent(texto), '_blank');
         } else {
@@ -9692,7 +9735,7 @@
         const elegiveis = state.clients.filter(c=>!!c.email);
         if(!elegiveis.length){ alert('Nenhum cliente com email cadastrado.'); return; }
         for(const client of elegiveis){
-          await saveEnvio({ clientId: client.id, canal:'email', texto: comunicadoRenderTexto(state.comunicadoCorpo, client), assunto: state.comunicadoAssunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.email:'' });
+          await saveEnvio({ clientId: client.id, canal:'email', texto: comunicadoRenderTexto(state.comunicadoCorpo, client), assunto: state.comunicadoAssunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.username:'' });
         }
         const bcc = elegiveis.map(c=>c.email).join(',');
         window.location.href = 'mailto:?bcc='+encodeURIComponent(bcc)+'&subject='+encodeURIComponent(state.comunicadoAssunto)+'&body='+encodeURIComponent(state.comunicadoCorpo);
@@ -9705,7 +9748,7 @@
         const client = state.clients.find(c=>c.id===clientId);
         if(!client || !client.phone) return;
         const texto = comunicadoRenderTexto(state.comunicadoCorpo, client);
-        await saveEnvio({ clientId: client.id, canal:'whatsapp', texto, assunto:'', isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.email:'' });
+        await saveEnvio({ clientId: client.id, canal:'whatsapp', texto, assunto:'', isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.username:'' });
         window.open('https://wa.me/'+waPhoneDigits(client.phone)+'?text='+encodeURIComponent(texto), '_blank');
         if(!state.comunicadoFilaEnviados.includes(clientId)) state.comunicadoFilaEnviados.push(clientId);
         render();
@@ -11603,10 +11646,25 @@
         e.preventDefault();
         const role = document.getElementById('uaRole').value;
         const departments = Array.from(document.querySelectorAll('.ua-dept-check:checked')).map(el=>el.value);
-        const email = state.userAccessModalData.email;
+        const username = state.userAccessModalData.username;
         state.modal=null; state.userAccessModalData=null;
         render();
-        updateUserAccess(email, role, departments);
+        updateUserAccess(username, role, departments);
+      };
+    }
+    const nuNameInput = document.getElementById('nuName');
+    const nuUsernameInput = document.getElementById('nuEmail');
+    if(nuNameInput && nuUsernameInput){
+      nuNameInput.addEventListener('input', ()=>{
+        if(!nuUsernameInput.dataset.touched) nuUsernameInput.value = slugifyUsername(nuNameInput.value);
+      });
+      nuUsernameInput.addEventListener('input', ()=>{ nuUsernameInput.dataset.touched = '1'; });
+    }
+    const nuGerarSenhaBtn = document.getElementById('nuGerarSenha');
+    if(nuGerarSenhaBtn){
+      nuGerarSenhaBtn.onclick = ()=>{
+        const nuPasswordInput = document.getElementById('nuPassword');
+        if(nuPasswordInput) nuPasswordInput.value = gerarSenhaAleatoria(8);
       };
     }
     const newUserForm = document.getElementById('newUserForm');
@@ -11615,7 +11673,7 @@
         e.preventDefault();
         const msgEl = document.getElementById('newUserMsg');
         const name = document.getElementById('nuName').value;
-        const email = document.getElementById('nuEmail').value;
+        const username = document.getElementById('nuEmail').value;
         const password = document.getElementById('nuPassword').value;
         const role = document.getElementById('nuRole').value;
         const departments = Array.from(document.querySelectorAll('.nu-dept-check:checked')).map(el=>el.value);
@@ -11623,13 +11681,15 @@
           msgEl.textContent = 'A senha deve ter ao menos 4 caracteres.'; msgEl.className='lookup-msg error'; msgEl.style.display='block';
           return;
         }
-        const result = await adminCreateUser(name, email, password, role, departments);
+        const result = await adminCreateUser(name, username, password, role, departments);
         if(!result.ok){
           msgEl.textContent = result.error; msgEl.className='lookup-msg error'; msgEl.style.display='block';
           return;
         }
+        const senhaCriada = password;
+        const usuarioCriado = result.username;
         newUserForm.reset();
-        msgEl.textContent = 'Usuário criado com sucesso. Compartilhe o email e a senha provisória com a pessoa.';
+        msgEl.textContent = 'Usuário criado: "' + usuarioCriado + '" / senha: "' + senhaCriada + '" — anote e entregue essas duas informações à pessoa antes de sair desta tela.';
         msgEl.className = 'lookup-msg success'; msgEl.style.display='block';
         await refreshUsersTable();
       };
