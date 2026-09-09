@@ -2465,7 +2465,7 @@
 
     if(cliente){
       doc.setFontSize(9);
-      const declaracaoLines = doc.splitTextToSize('A JP CONSULTORIA CONTÁBIL declara, para os devidos fins, que a empresa abaixo citada obteve seus faturamentos acumuladamente nos últimos meses conforme descrito abaixo:', pageW-28);
+      const declaracaoLines = doc.splitTextToSize('A JP CONSULTORIA CONTÁBIL declara, para os devidos fins, que a empresa citada obteve seus faturamentos acumuladamente nos últimos meses conforme descrito abaixo:', pageW-28);
       doc.text(declaracaoLines, 14, y);
       y += declaracaoLines.length*4.6 + 6;
       doc.setFontSize(9.5);
