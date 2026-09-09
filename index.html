@@ -2463,6 +2463,14 @@
     doc.text('Período: ' + monthLabel(mesInicio) + '/' + mesInicio.slice(0,4) + ' a ' + monthLabel(mesFim) + '/' + mesFim.slice(0,4) + '   ·   Tipo: ' + (tipo==='ambos'?'Vendas + Serviços':(tipo==='vendas'?'Só Vendas':'Só Serviços')), 14, y);
     y += 10;
 
+    if(cliente){
+      doc.setFontSize(9);
+      const declaracaoLines = doc.splitTextToSize('A JP CONSULTORIA CONTÁBIL declara, para os devidos fins, que a empresa abaixo citada obteve seus faturamentos acumuladamente nos últimos meses conforme descrito abaixo:', pageW-28);
+      doc.text(declaracaoLines, 14, y);
+      y += declaracaoLines.length*4.6 + 6;
+      doc.setFontSize(9.5);
+    }
+
     doc.setFontSize(8.5); doc.setFont('helvetica','bold');
     doc.setFillColor(240,242,245); doc.rect(14, y-4.5, pageW-28, 6, 'F');
     let colX = 16;
@@ -2514,6 +2522,23 @@
     doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
     doc.setFont('helvetica','bold');
     doc.text('Total geral', colX, y); doc.text(fmtBRL(totalGeral), pageW-16, y, {align:'right'});
+    y += 6;
+
+    if(cliente){
+      y += 16;
+      if(y > 245){ doc.addPage(); y = 20; }
+      doc.setDrawColor(140,150,160);
+      doc.line(14, y, 95, y);
+      doc.line(115, y, pageW-14, y);
+      y += 5;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+      doc.text('Assinatura do Contador', 14, y);
+      doc.text('Assinatura do Empresário', 115, y);
+      y += 4.5;
+      doc.text('JP Consultoria Contábil', 14, y);
+      doc.text(cliente.name || '', 115, y);
+      doc.setTextColor(20,25,30);
+    }
 
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir das Notas Fiscais de Saída (vendas) e Serviços cadastradas no sistema — notas de Entrada (compras) não entram nesta soma. Depende de todas as notas do período estarem corretamente registradas.');
     doc.save('faturamento-mensal-' + (cliente?cliente.name:'todos-clientes').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
