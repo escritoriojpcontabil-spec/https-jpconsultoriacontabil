@@ -608,6 +608,7 @@
     propostaQtdFuncionarios: 0,
     propostaIncluirBalanco: false,
     propostaIncluirHonorarioMensal: false,
+    propostaServicosSaoOpcoes: false,
     propostaPendenciasSelecionadas: [],
     propostaItensExtras: [],
     propostaObservacoes: '',
@@ -1536,7 +1537,8 @@
     const honorarioBase = incluirHonorarioMensal ? honorarioBaseCalc : 0;
     const valorFuncionarios = incluirHonorarioMensal ? (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS : 0;
     const totalExtras = state.propostaItensExtras.reduce((s,i)=>s+(Number(i.valor)||0),0);
-    const totalMensal = (honorarioBase||0) + valorFuncionarios + totalExtras;
+    const servicosSaoOpcoes = state.propostaServicosSaoOpcoes;
+    const totalMensal = (honorarioBase||0) + valorFuncionarios + (servicosSaoOpcoes ? 0 : totalExtras);
     return {
       avulso: true,
       clienteNome: state.propostaNomeAvulso,
@@ -1547,6 +1549,7 @@
       qtdFuncionarios: incluirHonorarioMensal ? (Number(state.propostaQtdFuncionarios)||0) : 0, valorFuncionarios,
       pendencias: [],
       itensExtras: state.propostaItensExtras.slice(),
+      servicosSaoOpcoes,
       incluirBalanco: state.propostaIncluirBalanco,
       observacoes: state.propostaObservacoes,
       sitFedStatus: '', sitFedData: '', sitFedObs: '',
@@ -2249,10 +2252,25 @@
       linha('Honorário base (Tabela de Honorários)' + (p.faixaTexto?' — '+p.faixaTexto:''), p.honorarioBase||0, true);
       if(p.qtdFuncionarios>0) linha('Funcionários registrados (' + p.qtdFuncionarios + ' × ' + fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS) + ')', p.valorFuncionarios);
     }
-    p.itensExtras.forEach(it=> linha(it.descricao, it.valor));
+    if(p.servicosSaoOpcoes && p.itensExtras.length){
+      if(y > 260){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+      doc.text('Opções de serviço à sua escolha:', 14, y); y += 6;
+      p.itensExtras.forEach(it=> linha(it.descricao, it.valor));
+    } else {
+      p.itensExtras.forEach(it=> linha(it.descricao, it.valor));
+    }
     doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
-    linha('TOTAL MENSAL ESTIMADO', p.totalMensal, true);
-    y += 6;
+    if(p.incluirHonorarioMensal || !p.servicosSaoOpcoes){
+      linha('TOTAL MENSAL ESTIMADO', p.totalMensal, true);
+      y += 6;
+    } else {
+      doc.setFont('helvetica','italic'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+      const obsOpcoesLines = doc.splitTextToSize('Os serviços acima são opções à escolha do cliente — o valor final depende de qual opção for selecionada.', pageW-28);
+      doc.text(obsOpcoesLines, 14, y);
+      y += obsOpcoesLines.length*4.2 + 6;
+      doc.setTextColor(20,25,30);
+    }
 
     if(p.pendencias && p.pendencias.length){
       if(y > 250){ doc.addPage(); y = 20; }
@@ -2683,7 +2701,9 @@
     }
     const valorFuncionarios = (Number(state.propostaQtdFuncionarios)||0) * VALOR_POR_EMPREGADO_HONORARIOS;
     const totalExtras = state.propostaItensExtras.reduce((s,i)=>s+(Number(i.valor)||0), 0);
-    const totalMensal = (state.propostaIncluirHonorarioMensal ? ((honorarioBase||0) + valorFuncionarios) : 0) + totalExtras;
+    const extrasSomamNoTotal = !state.propostaServicosSaoOpcoes;
+    const totalMensal = (state.propostaIncluirHonorarioMensal ? ((honorarioBase||0) + valorFuncionarios) : 0) + (extrasSomamNoTotal ? totalExtras : 0);
+    const mostraTotal = state.propostaIncluirHonorarioMensal || extrasSomamNoTotal;
 
     return `
       <div class="panel">
@@ -2725,6 +2745,9 @@
 
         <div class="form-section-title">Serviços a Prestar e Valores</div>
         <div class="form-hint" style="margin:-4px 0 12px;">Descreva cada serviço (tipo de trabalho) e o valor correspondente. Pode adicionar quantos precisar.</div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-soft); cursor:pointer; margin-bottom:12px;">
+          <input type="checkbox" id="propServicosSaoOpcoes" ${state.propostaServicosSaoOpcoes?'checked':''}/> Estes são opções alternativas — o cliente escolhe apenas uma (não somar no total)
+        </label>
         <div id="propItensExtrasContainer">
           ${state.propostaItensExtras.map((it,idx)=>`
             <div class="form-row" style="align-items:flex-end;">
@@ -2743,9 +2766,13 @@
 
         <div class="field" style="margin-top:14px;"><label>Observações adicionais na proposta</label><input type="text" id="propObservacoes" value="${escapeHtml(state.propostaObservacoes)}"/></div>
 
-        <div class="payroll-result" style="margin-top:16px;">
-          <div class="pr-line total"><span>TOTAL MENSAL ESTIMADO</span><span>${aCombinar ? 'A combinar' : fmtBRL(totalMensal)}</span></div>
-        </div>
+        ${mostraTotal ? `
+          <div class="payroll-result" style="margin-top:16px;">
+            <div class="pr-line total"><span>TOTAL MENSAL ESTIMADO</span><span>${aCombinar ? 'A combinar' : fmtBRL(totalMensal)}</span></div>
+          </div>
+        ` : `
+          <div class="form-hint" style="margin-top:16px;">Os serviços acima são opções à escolha do cliente — o valor final depende de qual opção for selecionada, por isso não há um total somado.</div>
+        `}
 
         <div style="display:flex; gap:10px; margin-top:14px;">
           <button type="button" class="btn-add" id="propGerarPdfBtn" ${!state.propostaNomeAvulso ? 'disabled' : ''}>Gerar Proposta em PDF</button>
@@ -2761,7 +2788,7 @@
                 <tr>
                   <td>${escapeHtml(p.clienteNome||'—')}</td>
                   <td>${p.criadaEm ? new Date(p.criadaEm).toLocaleDateString('pt-BR') : '—'}</td>
-                  <td style="text-align:right" class="mono">${p.aCombinar ? 'A combinar' : fmtBRL(p.totalMensal)}</td>
+                  <td style="text-align:right" class="mono">${p.aCombinar ? 'A combinar' : (p.servicosSaoOpcoes && !p.incluirHonorarioMensal ? 'Opções (a definir)' : fmtBRL(p.totalMensal))}</td>
                   <td><button class="btn-sm danger" data-del-proposta="${p.id}">Excluir</button></td>
                 </tr>
               `).join('')}
@@ -10390,6 +10417,8 @@
     if(propIncluirBalanco) propIncluirBalanco.onchange = (e)=>{ state.propostaIncluirBalanco = e.target.checked; };
     const propIncluirHonorarioMensal = document.getElementById('propIncluirHonorarioMensal');
     if(propIncluirHonorarioMensal) propIncluirHonorarioMensal.onchange = (e)=>{ state.propostaIncluirHonorarioMensal = e.target.checked; render(); };
+    const propServicosSaoOpcoes = document.getElementById('propServicosSaoOpcoes');
+    if(propServicosSaoOpcoes) propServicosSaoOpcoes.onchange = (e)=>{ state.propostaServicosSaoOpcoes = e.target.checked; render(); };
     const propObservacoes = document.getElementById('propObservacoes');
     if(propObservacoes) propObservacoes.onchange = (e)=>{ state.propostaObservacoes = e.target.value; };
     const propGerarPdfBtn = document.getElementById('propGerarPdfBtn');
