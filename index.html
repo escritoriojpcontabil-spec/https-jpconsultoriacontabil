@@ -10424,14 +10424,14 @@
     const propGerarPdfBtn = document.getElementById('propGerarPdfBtn');
     if(propGerarPdfBtn){
       propGerarPdfBtn.onclick = ()=>{
-        if(!state.propostaClienteId){ alert('Selecione um cliente.'); return; }
+        if(!state.propostaNomeAvulso){ alert('Informe o nome do cliente.'); return; }
         gerarPropostaPDF(montarPropostaSnapshot());
       };
     }
     const propSalvarBtn = document.getElementById('propSalvarBtn');
     if(propSalvarBtn){
       propSalvarBtn.onclick = ()=>{
-        if(!state.propostaClienteId){ alert('Selecione um cliente.'); return; }
+        if(!state.propostaNomeAvulso){ alert('Informe o nome do cliente.'); return; }
         savePropostaItem(montarPropostaSnapshot());
         alert('Proposta salva no histórico.');
       };
