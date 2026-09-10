@@ -2315,13 +2315,13 @@
     doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
     const condicoes = [
       'Reajustes: todos os valores serão reajustados após 12 (doze) meses de contrato, conforme a tabela do salário mínimo vigente.',
+      'Visitas Técnicas serão por conta do cliente.',
     ];
     if(p.incluirBalanco){
       condicoes.push('Balanço Anual: caso seja necessário o fechamento de balanço anual, será cobrado no final de cada ano um honorário a mais para encerramento de exercício, conforme consta no CFC.');
       condicoes.push('Para fins de fechamento de balanço é necessário fechar a contabilidade mês a mês em tempo hábil. Para isso é necessário ter as seguintes informações: extratos bancários em formato PDF e OFX; relatório de despesas com informações de tipo de despesa, data de pagamento, valores, juros, multas e identificação do fornecedor. Estes relatórios servirão de conferência dos lançamentos nos bancos que não são identificados.');
       condicoes.push('Orientamos que as despesas jurídicas (da empresa) não poderão ser misturadas com pagamentos pessoais (pessoa física dos sócios).');
     }
-    condicoes.push('Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (' + fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026) + ', valor 2026) para faturamento de até R$ 50.000,00/mês.');
     condicoes.forEach(c=>{
       if(y > 280){ doc.addPage(); y = 20; }
       const l = doc.splitTextToSize(c, pageW-28);
@@ -2767,7 +2767,7 @@
             ` : `<div class="pr-line"><span>Informe o faturamento para calcular a faixa</span><span>—</span></div>`) : `<div class="pr-line"><span>Informe o faturamento mensal acima</span><span>—</span></div>`}
             <div class="pr-line"><span>Funcionários (${state.propostaQtdFuncionarios} × ${fmtBRL(VALOR_POR_EMPREGADO_HONORARIOS)})</span><span>${fmtBRL(valorFuncionarios)}</span></div>
           </div>
-          <div class="legis-note">Caso a empresa não opte pela tabela acima, o valor dos honorários será de ½ salário mínimo (${fmtBRL(VALOR_MEIO_SALARIO_MINIMO_2026)}, valor 2026) para faturamento de até R$ 50.000,00/mês. Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
+          <div class="legis-note">Reajuste anual conforme a tabela do salário mínimo vigente, após 12 meses de contrato. Fechamento de balanço anual, quando necessário, é cobrado à parte (um honorário a mais), conforme normas do CFC.</div>
         ` : `<div class="form-hint" style="margin:-4px 0 4px;">Não incluído — a proposta vai considerar só os serviços descritos abaixo, com seus próprios valores.</div>`}
 
         <div class="form-section-title">Serviços a Prestar e Valores</div>
