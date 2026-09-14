@@ -592,6 +592,8 @@
     folhas: [],
     ferias: [],
     rescisoes: [],
+    prolabores: [],
+    prolaboreFormData: {},
     dpTab: 'funcionarios',
     contabilTab: 'plano',
     contabilEmpresaAtiva: '',
@@ -615,6 +617,9 @@
     propostaPreview: null,
     fichasContratosData: {},
     contratoPfData: {},
+    folhaEmpresaFiltro: '',
+    feriasEmpresaFiltro: '',
+    rescisaoEmpresaFiltro: '',
     honorarios: [],
     honorarioEmpresaAtiva: '',
     honorarioModalData: null,
@@ -938,6 +943,23 @@
 
   function calcFGTS(salarioBruto){ return round2(salarioBruto * FGTS_ALIQUOTA); }
 
+  // Pró-labore do(s) sócio(s) — contribuinte individual: INSS de 11% fixo (não a tabela
+  // progressiva do empregado), com teto do INSS geral; sem FGTS (sócio não tem direito).
+  // IRRF segue a mesma tabela/redutor 2026 do rendimento do trabalho.
+  const INSS_ALIQUOTA_PROLABORE = 0.11;
+  function calcINSSProLabore(valor){
+    const base = Math.min(Math.max(Number(valor)||0,0), TETO_INSS_2026);
+    return round2(base * INSS_ALIQUOTA_PROLABORE);
+  }
+  function calcProLabore(valor, dependentes){
+    const bruto = round2(Number(valor)||0);
+    const inss = calcINSSProLabore(bruto);
+    const baseIrrf = bruto - inss - (Number(dependentes)||0)*IRRF_DEDUCAO_DEPENDENTE_2026;
+    const irrf = calcIRRF(baseIrrf, bruto);
+    const liquido = round2(bruto - inss - irrf);
+    return { bruto, inss, irrf, liquido };
+  }
+
   // Folha de pagamento mensal de um funcionário.
   function calcFolha(salarioBase, outrosProventos, dependentes, outrosDescontos){
     const bruto = round2((Number(salarioBase)||0) + (Number(outrosProventos)||0));
@@ -975,6 +997,34 @@
   function calcAvisoPrevioDias(anosCasa){
     return Math.min(30 + Math.floor(Math.max(anosCasa,0))*3, 90);
   }
+  // Estimativa automática de anos de casa e avos proporcionais a partir das datas de
+  // admissão e desligamento — usada no lançamento em lote (encerramento de empresa, etc.).
+  // Aproximação pela regra dos 15 dias; sempre revisável manualmente no formulário individual.
+  function calcAvosRescisaoPorDatas(dataAdmissaoStr, dataDesligamentoStr){
+    const result = { anosCasa:0, diasSaldoSalario:0, avosFerias:0, avos13:0 };
+    if(!dataAdmissaoStr || !dataDesligamentoStr) return result;
+    const [ay,am,ad] = dataAdmissaoStr.split('-').map(Number);
+    const [dy,dm,dd] = dataDesligamentoStr.split('-').map(Number);
+    result.diasSaldoSalario = dd;
+
+    let anos = dy - ay;
+    if(dm < am || (dm===am && dd < ad)) anos--;
+    result.anosCasa = Math.max(0, anos);
+
+    const inicioAnoMes = (dy === ay) ? am : 1;
+    let avos13 = dm - inicioAnoMes + 1;
+    if(dd < 15) avos13 -= 1;
+    result.avos13 = Math.max(0, Math.min(12, avos13));
+
+    const mesesTotais = (dy-ay)*12 + (dm-am);
+    let avosFerias = mesesTotais % 12;
+    if(dd < ad) avosFerias -= 1;
+    if(avosFerias < 0) avosFerias += 12;
+    result.avosFerias = Math.max(0, Math.min(12, avosFerias));
+
+    return result;
+  }
+
   function calcRescisao(params){
     const {
       salarioBase, dependentes, tipoRescisao, avisoPrevio,
@@ -3358,7 +3408,7 @@
     campo('Endereço', enderecoCompleto.replace(/^—\s*/,'').replace(/^,\s*/,'') || '');
 
     secao('Dados do Contrato de Trabalho');
-    campo('Empresa (empregador)', cliente ? (cliente.name + (cliente.cnpj?' — CNPJ '+cliente.cnpj:'')) : '');
+    campo('Empresa (empregador)', cliente ? (cliente.name + (cliente.doc?' — CNPJ/CPF '+cliente.doc:'')) : '');
     campo('Cargo/Função', func.cargo);
     campo('CBO', func.cbo);
     campo('Categoria eSocial', func.categoriaEsocial);
@@ -3409,7 +3459,7 @@
       (func.bairro ? ' — ' + func.bairro : '') + (func.municipioUf ? ' — ' + func.municipioUf : '');
 
     paragrafo('Pelo presente instrumento particular de Contrato Individual de Trabalho, de um lado ' +
-      (cliente ? cliente.name : '__________') + (cliente && cliente.cnpj ? ', inscrita no CNPJ sob o nº ' + cliente.cnpj : '') +
+      (cliente ? cliente.name : '__________') + (cliente && cliente.doc ? ', inscrita no CNPJ/CPF sob o nº ' + cliente.doc : '') +
       (cliente && cliente.address ? ', com sede em ' + cliente.address + (cliente.city?', '+cliente.city:'') + (cliente.uf?'/'+cliente.uf:'') : '') +
       ', doravante denominada EMPREGADORA, e de outro lado ' + (func.nome||'__________') +
       (func.cpf ? ', portador(a) do CPF nº ' + func.cpf : '') + (func.ctpsNumero ? ', CTPS nº ' + func.ctpsNumero + '/série ' + (func.ctpsSerie||'—') : '') +
@@ -3482,7 +3532,7 @@
     };
 
     paragrafo('Pelo presente instrumento particular, de um lado ' + (cliente?cliente.name:'__________') +
-      (cliente && cliente.cnpj ? ', inscrita no CNPJ sob o nº ' + cliente.cnpj : '') +
+      (cliente && cliente.doc ? ', inscrita no CNPJ/CPF sob o nº ' + cliente.doc : '') +
       (cliente && cliente.address ? ', com sede em ' + cliente.address + (cliente.city?', '+cliente.city:'') + (cliente.uf?'/'+cliente.uf:'') : '') +
       ', doravante denominada CONTRATANTE, e de outro lado ' + d.nome +
       (d.cpf ? ', portador(a) do CPF nº ' + d.cpf : '') + (d.endereco ? ', residente em ' + d.endereco : '') +
@@ -3790,6 +3840,52 @@
     doc.save('recibo-pagamento-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (folha.competencia||'') + '.pdf');
   }
 
+  function gerarReciboProLaborePDF(pl){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!pl){ alert('Recibo não encontrado.'); return; }
+    const cliente = state.clients.find(c=>c.id===pl.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Recibo de Pró-labore', cliente ? cliente.name : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.text('Sócio(a): ' + (pl.socioNome||'—'), 14, y); y+=6;
+    doc.text('Competência: ' + monthLabel(pl.competencia) + '/' + (pl.competencia||'').slice(0,4), 14, y); y+=10;
+
+    const linha = (label, valor, negrito)=>{
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      doc.text(label, 14, y);
+      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
+      y += 6.5;
+    };
+    doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4); y+=1;
+    linha('Pró-labore (bruto)', pl.bruto);
+    linha('(-) INSS (11%, contribuinte individual)', -Math.abs(pl.inss||0));
+    linha('(-) IRRF', -Math.abs(pl.irrf||0));
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
+    linha('LÍQUIDO', pl.liquido, true);
+    y += 4;
+    doc.setFontSize(8); doc.setTextColor(120,130,140);
+    doc.text('Pró-labore de sócio não gera FGTS nem direito a férias/13º pela CLT — remuneração de contribuinte individual.', 14, y);
+    doc.setTextColor(20,25,30); doc.setFontSize(9.5);
+
+    y += 20;
+    if(y > 260){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, pageW-14, y);
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Declaro ter recebido a importância líquida discriminada neste recibo, referente ao meu pró-labore.', 14, y);
+    y += 14;
+    doc.line(14, y, 100, y);
+    y += 4.5;
+    doc.text('Assinatura do(a) sócio(a) — ' + (pl.socioNome||''), 14, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema (INSS 11% fixo de contribuinte individual + tabela de IRRF vigentes em 2026). Não substitui a apuração oficial nem a guia de recolhimento DAS/GPS.');
+    doc.save('recibo-prolabore-' + (pl.socioNome||'socio').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (pl.competencia||'') + '.pdf');
+  }
+
   function gerarReciboFeriasPDF(ferias){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     if(!ferias){ alert('Recibo não encontrado.'); return; }
@@ -3825,7 +3921,7 @@
     doc.setFont('helvetica','bold');
     doc.text('CNPJ:', mx, y+4);
     doc.setFont('helvetica','normal');
-    doc.text(cliente && cliente.cnpj ? cliente.cnpj : '—', mx+15, y+4);
+    doc.text(cliente && cliente.doc ? cliente.doc : '—', mx+15, y+4);
     y += 9;
 
     doc.setFont('helvetica','bold');
@@ -3996,7 +4092,7 @@
     // ===== IDENTIFICAÇÃO DO EMPREGADOR =====
     secHeader('IDENTIFICAÇÃO DO EMPREGADOR');
     gridRow([
-      {numero:'01', label:'CNPJ/CEI', valor:cliente&&cliente.cnpj?cliente.cnpj:'', w:cw*0.30},
+      {numero:'01', label:'CNPJ/CEI', valor:cliente&&cliente.doc?cliente.doc:'', w:cw*0.30},
       {numero:'02', label:'Razão Social/Nome', valor:cliente?cliente.name:'', w:cw*0.70},
     ], 8);
     gridRow([
@@ -4380,6 +4476,9 @@
     {codigo:'6.5.04', nome:'Encargos Sociais (INSS/FGTS Patronal)', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'6.5.04.001', nome:'Encargos Sociais (INSS/FGTS Patronal)', tipo:'Sintética', natureza:'Devedora'},
     {codigo:'6.5.04.001.0001', nome:'Encargos Sociais (INSS/FGTS Patronal)', tipo:'Analítica', natureza:'Devedora'},
+    {codigo:'6.5.05', nome:'Pró-labore', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.05.001', nome:'Pró-labore', tipo:'Sintética', natureza:'Devedora'},
+    {codigo:'6.5.05.001.0001', nome:'Pró-labore', tipo:'Analítica', natureza:'Devedora'},
   ];
 
   // Migração: mapeia os códigos antigos (sem máscara) do plano de contas padrão para os
@@ -5830,6 +5929,37 @@
     return { ok: entradas.length>0, geradas: entradas.length, faltando };
   }
 
+  async function loadProlabores(){
+    state.prolabores = [];
+    try{
+      const keys = await Store.list('prolabores:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.prolabores.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.prolabores.sort((a,b)=>(b.competencia||'').localeCompare(a.competencia||''));
+  }
+  async function saveProlabore(p){
+    if(!p.id) p.id = uid();
+    await Store.set('prolabores:'+p.id, JSON.stringify(p), true);
+    await loadProlabores(); render();
+  }
+  async function deleteProlabore(id){
+    await Store.delete('prolabores:'+id, true);
+    await loadProlabores(); render();
+  }
+
+  async function gerarLancamentosProLabore(pl){
+    const partidas = [
+      { contaDebito:'6.5.05.001.0001', contaCredito:'2.1.02.001.0001', valor: Number(pl.liquido)||0, rotulo:'Pró-labore líquido a pagar — ' + (pl.socioNome||'') },
+      { contaDebito:'6.5.05.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(pl.inss)||0, rotulo:'INSS sobre pró-labore a recolher' },
+      { contaDebito:'6.5.05.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(pl.irrf)||0, rotulo:'IRRF sobre pró-labore a recolher' },
+    ];
+    return gerarLancamentosAutomaticos(pl.clientId, partidas, '015', 'Pró-labore — ' + (pl.socioNome||'') + ' — ' + monthLabel(pl.competencia) + '/' + pl.competencia.slice(0,4));
+  }
+
   async function gerarLancamentosFolha(folha, funcionario){
     const partidas = [
       { contaDebito:'6.5.01.001.0001', contaCredito:'2.1.02.001.0001', valor: Number(folha.liquido)||0, rotulo:'Salário líquido a pagar' },
@@ -6096,6 +6226,7 @@
     await loadFolhas();
     await loadFerias();
     await loadRescisoes();
+    await loadProlabores();
     await loadPlanoContas();
     await loadPlanoContasReferencial();
     await loadHistoricos();
@@ -8970,16 +9101,43 @@
   function folhaTabHtml(){
     const d = state.folhaCalcData || {};
     const func = state.funcionarios.find(f=>f.id===d.funcionarioId);
-    const listaCompetencia = state.folhas.filter(f=>f.competencia===state.competenciaAtiva);
+    const empresaFiltro = state.folhaEmpresaFiltro || '';
+    let clientesDisponiveis = state.clients.slice();
+    if(!state.deptAllClients) clientesDisponiveis = clientesDisponiveis.filter(c=>isClientInScope(c.id));
+    clientesDisponiveis.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+
+    let listaCompetencia = state.folhas.filter(f=>f.competencia===state.competenciaAtiva);
+    if(empresaFiltro) listaCompetencia = listaCompetencia.filter(f=>f.clientId===empresaFiltro);
     const totBruto = listaCompetencia.reduce((s,f)=>s+(f.bruto||0),0);
     const totLiquido = listaCompetencia.reduce((s,f)=>s+(f.liquido||0),0);
     const totInss = listaCompetencia.reduce((s,f)=>s+(f.inss||0),0);
     const totIrrf = listaCompetencia.reduce((s,f)=>s+(f.irrf||0),0);
     const totFgts = listaCompetencia.reduce((s,f)=>s+(f.fgts||0),0);
+
+    let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado');
+    if(!state.deptAllClients) funcsElegiveis = funcsElegiveis.filter(f=>isClientInScope(f.clientId));
+    if(empresaFiltro) funcsElegiveis = funcsElegiveis.filter(f=>f.clientId===empresaFiltro);
+    const jaCalculadosIds = new Set(state.folhas.filter(f=>f.competencia===state.competenciaAtiva).map(f=>f.funcionarioId));
+    const pendentes = funcsElegiveis.filter(f=>!jaCalculadosIds.has(f.id));
+
     return `
       <div class="form-row">
-        <div class="field"><label>Funcionário</label><select id="folhaFunc">${funcOptionsHtml(d.funcionarioId)}</select></div>
+        <div class="field"><label>Empresa</label>
+          <select id="folhaEmpresaFiltro">
+            <option value="">Todas as empresas</option>
+            ${clientesDisponiveis.map(c=>`<option value="${c.id}" ${c.id===empresaFiltro?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
         <div class="field"><label>Competência</label><input type="month" id="folhaCompetencia" value="${d.competencia||state.competenciaAtiva}"/></div>
+      </div>
+      <div class="msg-actions" style="margin-bottom:14px;">
+        <button type="button" class="btn-add" id="calcFolhaTodosBtn">⚡ Calcular folha de ${empresaFiltro ? 'todos os funcionários desta empresa' : 'TODOS os funcionários (todas as empresas)'} — ${pendentes.length} pendente(s)</button>
+      </div>
+      <div class="form-hint" style="margin:-8px 0 14px;">O cálculo em lote usa apenas o salário base cadastrado de cada funcionário (sem outros proventos/descontos) e pula quem já tem folha calculada nesta competência. Para lançar horas extras, comissões ou descontos específicos, calcule aquele funcionário individualmente abaixo.</div>
+
+      <div class="form-section-title">Calcular um funcionário individualmente</div>
+      <div class="form-row">
+        <div class="field"><label>Funcionário</label><select id="folhaFunc">${funcOptionsHtml(d.funcionarioId)}</select></div>
       </div>
       ${func ? `<div class="form-hint" style="margin:-8px 0 12px;">Salário base: ${fmtBRL(func.salarioBase)} · Dependentes: ${func.dependentes||0}</div>` : ''}
       <div class="form-row">
@@ -8990,7 +9148,7 @@
       <div id="folhaResult"></div>
       <div class="legis-note">Cálculo conforme tabelas de INSS e IRRF vigentes em 2026 (Portaria MPS/MF nº 13/2026 e Lei 15.270/2025), incluindo o redutor de isenção até R$5.000 e redução parcial até R$7.350. Verbas variáveis (horas extras, comissões, adicional noturno) devem ser somadas em "Outros proventos". Não substitui a apuração oficial em folha homologada.</div>
 
-      <div class="form-section-title">Resumo da folha — ${monthLabel(state.competenciaAtiva)}/${state.competenciaAtiva.slice(0,4)}</div>
+      <div class="form-section-title">Resumo da folha — ${monthLabel(state.competenciaAtiva)}/${state.competenciaAtiva.slice(0,4)}${empresaFiltro ? ' — ' + escapeHtml(clientName(empresaFiltro)) : ''}</div>
       <div class="cc-list">
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Total bruto</div></div><span class="tag sit-outra">${fmtBRL(totBruto)}</span></div>
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Total INSS retido</div></div><span class="tag sit-pendente">${fmtBRL(totInss)}</span></div>
@@ -8998,14 +9156,15 @@
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Total FGTS a depositar</div></div><span class="tag sit-pendente">${fmtBRL(totFgts)}</span></div>
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Total líquido a pagar</div></div><span class="tag sit-ativa">${fmtBRL(totLiquido)}</span></div>
       </div>
-      <div class="form-section-title">Folhas calculadas — ${monthLabel(state.competenciaAtiva)}/${state.competenciaAtiva.slice(0,4)}</div>
+      <div class="form-section-title">Folhas calculadas — ${monthLabel(state.competenciaAtiva)}/${state.competenciaAtiva.slice(0,4)}${empresaFiltro ? ' — ' + escapeHtml(clientName(empresaFiltro)) : ''}</div>
       ${listaCompetencia.length ? `
         <table>
-          <thead><tr><th>Funcionário</th><th style="text-align:right">Bruto</th><th style="text-align:right">INSS</th><th style="text-align:right">IRRF</th><th style="text-align:right">Líquido</th><th></th></tr></thead>
+          <thead><tr><th>Funcionário</th><th>Empresa</th><th style="text-align:right">Bruto</th><th style="text-align:right">INSS</th><th style="text-align:right">IRRF</th><th style="text-align:right">Líquido</th><th></th></tr></thead>
           <tbody>
             ${listaCompetencia.map(f=>`
               <tr>
                 <td>${escapeHtml(clientNameOrFunc(f.funcionarioId))}</td>
+                <td>${escapeHtml(clientName(f.clientId))}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.bruto)}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.inss)}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.irrf)}</td>
@@ -9015,7 +9174,49 @@
             `).join('')}
           </tbody>
         </table>
-      ` : `<div class="empty">Nenhuma folha calculada nesta competência.</div>`}
+      ` : `<div class="empty">Nenhuma folha calculada nesta competência${empresaFiltro ? ' para esta empresa' : ''}.</div>`}
+
+      <div class="form-section-title">Pró-labore dos Sócios</div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Remuneração do(s) sócio(s)/administrador(es), se houver. Diferente do funcionário CLT: INSS de contribuinte individual (11% fixo, sem FGTS).</div>
+      <div class="form-row">
+        <div class="field"><label>Empresa</label>
+          <select id="plEmpresa">
+            <option value="">— Selecione —</option>
+            ${clientesDisponiveis.map(c=>`<option value="${c.id}" ${c.id===(state.prolaboreFormData.clientId||'')?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Nome do sócio</label><input type="text" id="plSocioNome" value="${escapeHtml(state.prolaboreFormData.socioNome||'')}"/></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Valor do pró-labore (R$)</label><input type="number" step="0.01" min="0" id="plValor" value="${state.prolaboreFormData.valor||''}"/></div>
+        <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="plDependentes" value="${state.prolaboreFormData.dependentes||0}"/></div>
+      </div>
+      <button type="button" class="btn-calc" id="calcProLaboreBtn">Calcular e Salvar</button>
+      <div id="prolaboreResult"></div>
+      <div class="legis-note">INSS do pró-labore: 11% fixo sobre o valor (teto do INSS geral de ${fmtBRL(TETO_INSS_2026)}), conforme Lei 8.212/91 — não usa a tabela progressiva do empregado nem tem FGTS. IRRF segue a mesma tabela e redutor 2026 do rendimento do trabalho.</div>
+
+      ${(function(){
+        const lista = state.prolabores.filter(p=>p.competencia===state.competenciaAtiva && (!empresaFiltro || p.clientId===empresaFiltro));
+        if(!lista.length) return `<div class="empty" style="margin-top:10px;">Nenhum pró-labore lançado nesta competência${empresaFiltro?' para esta empresa':''}.</div>`;
+        return `
+          <table style="margin-top:10px;">
+            <thead><tr><th>Sócio</th><th>Empresa</th><th style="text-align:right">Bruto</th><th style="text-align:right">INSS</th><th style="text-align:right">IRRF</th><th style="text-align:right">Líquido</th><th></th></tr></thead>
+            <tbody>
+              ${lista.map(p=>`
+                <tr>
+                  <td>${escapeHtml(p.socioNome||'—')}</td>
+                  <td>${escapeHtml(clientName(p.clientId))}</td>
+                  <td style="text-align:right" class="mono">${fmtBRL(p.bruto)}</td>
+                  <td style="text-align:right" class="mono">${fmtBRL(p.inss)}</td>
+                  <td style="text-align:right" class="mono">${fmtBRL(p.irrf)}</td>
+                  <td style="text-align:right" class="mono">${fmtBRL(p.liquido)}</td>
+                  <td><button class="btn-detail" data-recibo-prolabore="${p.id}">Recibo</button> <button class="btn-sm danger" data-del-prolabore="${p.id}">Excluir</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      })()}
     `;
   }
   function clientNameOrFunc(funcId){
@@ -9025,7 +9226,29 @@
 
   function feriasTabHtml(){
     const d = state.feriasCalcData || {};
+    const empresaFiltro = state.feriasEmpresaFiltro || '';
+    let clientesDisponiveis = state.clients.slice();
+    if(!state.deptAllClients) clientesDisponiveis = clientesDisponiveis.filter(c=>isClientInScope(c.id));
+    clientesDisponiveis.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    let listaFerias = state.ferias.slice();
+    if(empresaFiltro) listaFerias = listaFerias.filter(f=>f.clientId===empresaFiltro);
+
     return `
+      <div class="form-row">
+        <div class="field"><label>Empresa (para férias coletivas)</label>
+          <select id="feriasEmpresaFiltro">
+            <option value="">Todas as empresas</option>
+            ${clientesDisponiveis.map(c=>`<option value="${c.id}" ${c.id===empresaFiltro?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Início do gozo (para todos)</label><input type="date" id="feriasInicioLote" value="${d.dataInicioGozo||todayStr()}"/></div>
+      </div>
+      <div class="msg-actions" style="margin-bottom:6px;">
+        <button type="button" class="btn-add" id="calcFeriasTodosBtn">⚡ Lançar férias coletivas — ${empresaFiltro ? 'todos os funcionários desta empresa' : 'TODOS os funcionários (todas as empresas)'}, 30 dias, sem abono</button>
+      </div>
+      <div class="form-hint" style="margin:0 0 14px;">Útil para recesso/férias coletivas (Art. 139 CLT), quando a empresa manda todo mundo de férias ao mesmo tempo. Usa 30 dias de gozo e 0 dias de abono para todos, a partir da data acima. Para uma pessoa só, ou com dias/abono diferentes, use o formulário individual abaixo.</div>
+
+      <div class="form-section-title">Calcular um funcionário individualmente</div>
       <div class="form-row">
         <div class="field"><label>Funcionário</label><select id="feriasFunc">${funcOptionsHtml(d.funcionarioId)}</select></div>
         <div class="field"><label>Início do gozo</label><input type="date" id="feriasInicio" value="${d.dataInicioGozo||todayStr()}"/></div>
@@ -9038,14 +9261,15 @@
       <div id="feriasResult"></div>
       <div class="legis-note">Cálculo conforme Art. 129 a 145 da CLT: 1/3 constitucional sobre os dias gozados e sobre o abono pecuniário; INSS e IRRF incidem sobre férias gozadas + 1/3 (o abono pecuniário é isento). Não considera adicionais (insalubridade, periculosidade) além do salário base informado no cadastro do funcionário.</div>
 
-      <div class="form-section-title">Férias registradas</div>
-      ${state.ferias.length ? `
+      <div class="form-section-title">Férias registradas${empresaFiltro ? ' — ' + escapeHtml(clientName(empresaFiltro)) : ''}</div>
+      ${listaFerias.length ? `
         <table>
-          <thead><tr><th>Funcionário</th><th>Início do gozo</th><th>Dias</th><th style="text-align:right">Total líquido</th><th></th></tr></thead>
+          <thead><tr><th>Funcionário</th><th>Empresa</th><th>Início do gozo</th><th>Dias</th><th style="text-align:right">Total líquido</th><th></th></tr></thead>
           <tbody>
-            ${state.ferias.map(f=>`
+            ${listaFerias.map(f=>`
               <tr>
                 <td>${escapeHtml(clientNameOrFunc(f.funcionarioId))}</td>
+                <td>${escapeHtml(clientName(f.clientId))}</td>
                 <td>${f.dataInicioGozo?fmtDate(f.dataInicioGozo):'—'}</td>
                 <td>${f.diasGozo||0} gozo${f.diasVendidos?' + '+f.diasVendidos+' vendidos':''}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.totalLiquido)}</td>
@@ -9054,13 +9278,49 @@
             `).join('')}
           </tbody>
         </table>
-      ` : `<div class="empty">Nenhuma férias registrada ainda.</div>`}
+      ` : `<div class="empty">Nenhuma férias registrada ainda${empresaFiltro ? ' para esta empresa' : ''}.</div>`}
     `;
   }
 
   function rescisaoTabHtml(){
     const d = state.rescisaoCalcData || {};
+    const empresaFiltro = state.rescisaoEmpresaFiltro || '';
+    let clientesDisponiveis = state.clients.slice();
+    if(!state.deptAllClients) clientesDisponiveis = clientesDisponiveis.filter(c=>isClientInScope(c.id));
+    clientesDisponiveis.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    let listaResc = state.rescisoes.slice();
+    if(empresaFiltro) listaResc = listaResc.filter(r=>r.clientId===empresaFiltro);
+
     return `
+      <div class="form-section-title" style="margin-top:0;">Rescisão em lote (encerramento de empresa, etc.)</div>
+      <div class="form-row">
+        <div class="field"><label>Empresa</label>
+          <select id="rescEmpresaFiltro">
+            <option value="">Todas as empresas</option>
+            ${clientesDisponiveis.map(c=>`<option value="${c.id}" ${c.id===empresaFiltro?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Data de desligamento (para todos)</label><input type="date" id="rescDataLote" value="${todayStr()}"/></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Tipo de rescisão (para todos)</label>
+          <select id="rescTipoLote">
+            <option value="Sem justa causa">Sem justa causa (empregador)</option>
+            <option value="Acordo mútuo (Art. 484-A)">Acordo mútuo (Art. 484-A)</option>
+          </select>
+        </div>
+        <div class="field"><label>Aviso prévio (para todos)</label>
+          <select id="rescAvisoLote">
+            <option value="Indenizado">Indenizado</option>
+            <option value="Trabalhado">Trabalhado</option>
+            <option value="Não aplicável">Não aplicável</option>
+          </select>
+        </div>
+      </div>
+      <button type="button" class="btn-add" id="calcRescTodosBtn">⚡ Calcular rescisão de ${empresaFiltro ? 'todos os funcionários desta empresa' : 'TODOS os funcionários (todas as empresas)'}</button>
+      <div class="form-hint" style="margin:8px 0 14px;">Anos de casa, avos de férias e de 13º são estimados automaticamente pela data de admissão de cada funcionário até a data acima. Férias vencidas e saldo de FGTS para multa ficam como "não" e "R$ 0" por padrão — se algum funcionário tiver férias vencidas ou FGTS a considerar na multa, exclua a rescisão dele aqui e refaça individualmente no formulário abaixo com os valores corretos.</div>
+
+      <div class="form-section-title">Calcular um funcionário individualmente</div>
       <div class="form-row">
         <div class="field"><label>Funcionário</label><select id="rescFunc">${funcOptionsHtml(d.funcionarioId)}</select></div>
         <div class="field"><label>Data de desligamento</label><input type="date" id="rescData" value="${d.dataDesligamento||todayStr()}"/></div>
@@ -9100,14 +9360,15 @@
       <div id="rescResult"></div>
       <div class="legis-note">Cálculo estimado das principais verbas rescisórias conforme a CLT: saldo de salário, férias vencidas/proporcionais + 1/3, 13º proporcional, aviso prévio proporcional (Lei 12.506/2011) e multa do FGTS (40% sem justa causa / 20% em acordo mútuo). Não inclui verbas de convenção coletiva, PPP, seguro-desemprego ou benefícios específicos — revise com a equipe antes de homologar.</div>
 
-      <div class="form-section-title">Rescisões registradas</div>
-      ${state.rescisoes.length ? `
+      <div class="form-section-title">Rescisões registradas${empresaFiltro ? ' — ' + escapeHtml(clientName(empresaFiltro)) : ''}</div>
+      ${listaResc.length ? `
         <table>
-          <thead><tr><th>Funcionário</th><th>Desligamento</th><th>Tipo</th><th style="text-align:right">Total líquido</th><th></th></tr></thead>
+          <thead><tr><th>Funcionário</th><th>Empresa</th><th>Desligamento</th><th>Tipo</th><th style="text-align:right">Total líquido</th><th></th></tr></thead>
           <tbody>
-            ${state.rescisoes.map(r=>`
+            ${listaResc.map(r=>`
               <tr>
                 <td>${escapeHtml(clientNameOrFunc(r.funcionarioId))}</td>
+                <td>${escapeHtml(clientName(r.clientId))}</td>
                 <td>${r.dataDesligamento?fmtDate(r.dataDesligamento):'—'}</td>
                 <td>${escapeHtml(r.tipoRescisao||'—')}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(r.totalLiquido)}</td>
@@ -9116,7 +9377,7 @@
             `).join('')}
           </tbody>
         </table>
-      ` : `<div class="empty">Nenhuma rescisão registrada ainda.</div>`}
+      ` : `<div class="empty">Nenhuma rescisão registrada ainda${empresaFiltro ? ' para esta empresa' : ''}.</div>`}
     `;
   }
 
@@ -12438,6 +12699,46 @@
     });
 
     // Folha de Pagamento
+    const folhaEmpresaFiltro = document.getElementById('folhaEmpresaFiltro');
+    if(folhaEmpresaFiltro) folhaEmpresaFiltro.onchange = (e)=>{ state.folhaEmpresaFiltro = e.target.value; render(); };
+    const calcFolhaTodosBtn = document.getElementById('calcFolhaTodosBtn');
+    if(calcFolhaTodosBtn){
+      calcFolhaTodosBtn.onclick = async ()=>{
+        const competencia = document.getElementById('folhaCompetencia').value || state.competenciaAtiva;
+        const empresaFiltro = state.folhaEmpresaFiltro || '';
+        let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado');
+        if(!state.deptAllClients) funcsElegiveis = funcsElegiveis.filter(f=>isClientInScope(f.clientId));
+        if(empresaFiltro) funcsElegiveis = funcsElegiveis.filter(f=>f.clientId===empresaFiltro);
+        const jaCalculadosIds = new Set(state.folhas.filter(f=>f.competencia===competencia).map(f=>f.funcionarioId));
+        const pendentes = funcsElegiveis.filter(f=>!jaCalculadosIds.has(f.id));
+        if(!pendentes.length){ alert('Não há funcionários pendentes de cálculo nesta competência' + (empresaFiltro ? ' para esta empresa' : '') + ' — todos já têm folha calculada.'); return; }
+        if(!confirm('Calcular a folha de ' + pendentes.length + ' funcionário(s) para a competência ' + monthLabel(competencia) + '/' + competencia.slice(0,4) + '? Será usado apenas o salário base cadastrado de cada um (sem proventos/descontos extras).')) return;
+        calcFolhaTodosBtn.disabled = true;
+        calcFolhaTodosBtn.textContent = 'Calculando...';
+        let sucesso = 0, comLancamento = 0, semPlano = [];
+        for(const func of pendentes){
+          const r = calcFolha(func.salarioBase, 0, func.dependentes, 0);
+          const folhaData = {
+            id: uid(), funcionarioId: func.id, clientId: func.clientId, competencia,
+            bruto: r.bruto, inss: r.inss, irrf: r.irrf, descontosExtra: 0,
+            liquido: r.liquido, fgts: r.fgts, status: 'Calculada',
+          };
+          try{
+            await Store.set('folhas:'+folhaData.id, JSON.stringify(folhaData), true);
+            sucesso++;
+            const resultado = await gerarLancamentosFolha(folhaData, func);
+            if(resultado.ok) comLancamento++;
+            else if(resultado.motivo==='sem-plano-de-contas' && !semPlano.includes(clientName(func.clientId))) semPlano.push(clientName(func.clientId));
+          }catch(e){ console.error('Erro ao calcular folha em lote para', func.nome, e); }
+        }
+        await loadFolhas();
+        calcFolhaTodosBtn.disabled = false;
+        render();
+        let msg = sucesso + ' folha(s) calculada(s) e salva(s)' + (comLancamento ? ', ' + comLancamento + ' com lançamento contábil automático' : '') + '.';
+        if(semPlano.length) msg += '\n\nEstas empresas ainda não têm Plano de Contas próprio, então os lançamentos automáticos não foram gerados para elas: ' + semPlano.join(', ') + '.';
+        alert(msg);
+      };
+    }
     const folhaFunc = document.getElementById('folhaFunc');
     if(folhaFunc) folhaFunc.onchange = (e)=>{ state.folhaCalcData = Object.assign({}, state.folhaCalcData, {funcionarioId: e.target.value}); render(); };
     const calcFolhaBtn = document.getElementById('calcFolhaBtn');
@@ -12480,7 +12781,93 @@
       el.onclick = ()=>{ if(confirm('Excluir esta folha calculada?')) deleteFolha(el.getAttribute('data-del-folha')); };
     });
 
+    // Pró-labore
+    ['plEmpresa','plSocioNome','plValor','plDependentes'].forEach(id=>{
+      const el = document.getElementById(id);
+      if(!el) return;
+      const key = { plEmpresa:'clientId', plSocioNome:'socioNome', plValor:'valor', plDependentes:'dependentes' }[id];
+      el.oninput = el.onchange = (e)=>{ state.prolaboreFormData = Object.assign({}, state.prolaboreFormData, { [key]: e.target.value }); };
+    });
+    const calcProLaboreBtn = document.getElementById('calcProLaboreBtn');
+    if(calcProLaboreBtn){
+      calcProLaboreBtn.onclick = async ()=>{
+        const clientId = document.getElementById('plEmpresa').value;
+        const socioNome = document.getElementById('plSocioNome').value;
+        const valor = parseFloat(document.getElementById('plValor').value)||0;
+        const dependentes = parseInt(document.getElementById('plDependentes').value)||0;
+        if(!clientId || !socioNome || !valor){ alert('Preencha empresa, nome do sócio e valor do pró-labore.'); return; }
+        const competencia = document.getElementById('folhaCompetencia').value || state.competenciaAtiva;
+        const r = calcProLabore(valor, dependentes);
+        document.getElementById('prolaboreResult').innerHTML = `
+          <div class="payroll-result">
+            <div class="pr-line"><span>Pró-labore (bruto)</span><span>${fmtBRL(r.bruto)}</span></div>
+            <div class="pr-line neg"><span>(-) INSS (11%)</span><span>${fmtBRL(r.inss)}</span></div>
+            <div class="pr-line neg"><span>(-) IRRF</span><span>${fmtBRL(r.irrf)}</span></div>
+            <div class="pr-line total"><span>Líquido</span><span>${fmtBRL(r.liquido)}</span></div>
+          </div>
+        `;
+        const prolaboreData = { clientId, socioNome, competencia, dependentes, bruto:r.bruto, inss:r.inss, irrf:r.irrf, liquido:r.liquido };
+        await saveProlabore(prolaboreData);
+        const resultado = await gerarLancamentosProLabore(prolaboreData);
+        if(resultado.ok){
+          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Pró-labore, INSS, IRRF).');
+        } else if(resultado.motivo === 'sem-plano-de-contas'){
+          alert('Pró-labore salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
+        } else if(resultado.faltando && resultado.faltando.length){
+          alert('Pró-labore salvo, mas não foi possível gerar os lançamentos automáticos: contas não encontradas no Plano de Contas (' + resultado.faltando.join(', ') + ').');
+        }
+        state.prolaboreFormData = {};
+      };
+    }
+    root.querySelectorAll('[data-del-prolabore]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este pró-labore lançado?')) deleteProlabore(el.getAttribute('data-del-prolabore')); };
+    });
+    root.querySelectorAll('[data-recibo-prolabore]').forEach(el=>{
+      el.onclick = ()=>{
+        const p = state.prolabores.find(x=>x.id===el.getAttribute('data-recibo-prolabore'));
+        gerarReciboProLaborePDF(p);
+      };
+    });
+
     // Férias
+    const feriasEmpresaFiltro = document.getElementById('feriasEmpresaFiltro');
+    if(feriasEmpresaFiltro) feriasEmpresaFiltro.onchange = (e)=>{ state.feriasEmpresaFiltro = e.target.value; render(); };
+    const calcFeriasTodosBtn = document.getElementById('calcFeriasTodosBtn');
+    if(calcFeriasTodosBtn){
+      calcFeriasTodosBtn.onclick = async ()=>{
+        const dataInicioGozo = document.getElementById('feriasInicioLote').value || todayStr();
+        const empresaFiltro = state.feriasEmpresaFiltro || '';
+        let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado');
+        if(!state.deptAllClients) funcsElegiveis = funcsElegiveis.filter(f=>isClientInScope(f.clientId));
+        if(empresaFiltro) funcsElegiveis = funcsElegiveis.filter(f=>f.clientId===empresaFiltro);
+        if(!funcsElegiveis.length){ alert('Nenhum funcionário ativo encontrado' + (empresaFiltro?' para esta empresa':'') + '.'); return; }
+        if(!confirm('Lançar férias coletivas (30 dias, sem abono) para ' + funcsElegiveis.length + ' funcionário(s), com início em ' + fmtDate(dataInicioGozo) + '?')) return;
+        calcFeriasTodosBtn.disabled = true;
+        calcFeriasTodosBtn.textContent = 'Lançando...';
+        let sucesso = 0, comLancamento = 0, semPlano = [];
+        for(const func of funcsElegiveis){
+          const r = calcFerias(func.salarioBase, 30, 0, func.dependentes);
+          const feriasData = {
+            id: uid(), funcionarioId: func.id, clientId: func.clientId, dataInicioGozo, diasGozo:30, diasVendidos:0,
+            valorFeriasGozo: r.valorFeriasGozo, tercoGozo: r.tercoGozo, valorAbono: r.valorAbono, tercoAbono: r.tercoAbono,
+            inss: r.inss, irrf: r.irrf, totalBruto: r.totalBruto, totalLiquido: r.totalLiquido,
+          };
+          try{
+            await Store.set('ferias:'+feriasData.id, JSON.stringify(feriasData), true);
+            sucesso++;
+            const resultado = await gerarLancamentosFerias(feriasData, func);
+            if(resultado.ok) comLancamento++;
+            else if(resultado.motivo==='sem-plano-de-contas' && !semPlano.includes(clientName(func.clientId))) semPlano.push(clientName(func.clientId));
+          }catch(e){ console.error('Erro ao lançar férias coletivas para', func.nome, e); }
+        }
+        await loadFerias();
+        calcFeriasTodosBtn.disabled = false;
+        render();
+        let msg = sucesso + ' férias lançada(s)' + (comLancamento ? ', ' + comLancamento + ' com lançamento contábil automático' : '') + '.';
+        if(semPlano.length) msg += '\n\nEstas empresas ainda não têm Plano de Contas próprio, então os lançamentos automáticos não foram gerados para elas: ' + semPlano.join(', ') + '.';
+        alert(msg);
+      };
+    }
     const feriasFunc = document.getElementById('feriasFunc');
     if(feriasFunc) feriasFunc.onchange = (e)=>{ state.feriasCalcData = Object.assign({}, state.feriasCalcData, {funcionarioId: e.target.value}); render(); };
     const calcFeriasBtn = document.getElementById('calcFeriasBtn');
@@ -12525,6 +12912,51 @@
     });
 
     // Rescisão
+    const rescEmpresaFiltro = document.getElementById('rescEmpresaFiltro');
+    if(rescEmpresaFiltro) rescEmpresaFiltro.onchange = (e)=>{ state.rescisaoEmpresaFiltro = e.target.value; render(); };
+    const calcRescTodosBtn = document.getElementById('calcRescTodosBtn');
+    if(calcRescTodosBtn){
+      calcRescTodosBtn.onclick = async ()=>{
+        const dataDesligamento = document.getElementById('rescDataLote').value || todayStr();
+        const tipoRescisao = document.getElementById('rescTipoLote').value;
+        const avisoPrevio = document.getElementById('rescAvisoLote').value;
+        const empresaFiltro = state.rescisaoEmpresaFiltro || '';
+        let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado');
+        if(!state.deptAllClients) funcsElegiveis = funcsElegiveis.filter(f=>isClientInScope(f.clientId));
+        if(empresaFiltro) funcsElegiveis = funcsElegiveis.filter(f=>f.clientId===empresaFiltro);
+        if(!funcsElegiveis.length){ alert('Nenhum funcionário ativo encontrado' + (empresaFiltro?' para esta empresa':'') + '.'); return; }
+        if(!confirm('Calcular a rescisão de ' + funcsElegiveis.length + ' funcionário(s), tipo "' + tipoRescisao + '", com desligamento em ' + fmtDate(dataDesligamento) + '? Os funcionários calculados ficarão com status "Desligado".')) return;
+        calcRescTodosBtn.disabled = true;
+        calcRescTodosBtn.textContent = 'Calculando...';
+        let sucesso = 0, comLancamento = 0, semPlano = [];
+        for(const func of funcsElegiveis){
+          const avos = calcAvosRescisaoPorDatas(func.dataAdmissao, dataDesligamento);
+          const params = {
+            salarioBase: func.salarioBase, dependentes: func.dependentes, tipoRescisao, avisoPrevio,
+            diasSaldoSalario: avos.diasSaldoSalario, anosCasa: avos.anosCasa,
+            mesesProporcionaisFerias: avos.avosFerias, mesesProporcionais13: avos.avos13,
+            mesesFeriasVencidas: 0, saldoFgtsInformado: 0,
+          };
+          const r = calcRescisao(params);
+          const rescisaoData = Object.assign({ id: uid(), funcionarioId: func.id, clientId: func.clientId, dataDesligamento, tipoRescisao, avisoPrevio }, r);
+          try{
+            await Store.set('rescisoes:'+rescisaoData.id, JSON.stringify(rescisaoData), true);
+            await Store.set('funcionarios:'+func.id, JSON.stringify(Object.assign({}, func, {status:'Desligado'})), true);
+            sucesso++;
+            const resultado = await gerarLancamentosRescisao(rescisaoData, func);
+            if(resultado.ok) comLancamento++;
+            else if(resultado.motivo==='sem-plano-de-contas' && !semPlano.includes(clientName(func.clientId))) semPlano.push(clientName(func.clientId));
+          }catch(e){ console.error('Erro ao calcular rescisão em lote para', func.nome, e); }
+        }
+        await loadRescisoes();
+        await loadFuncionarios();
+        calcRescTodosBtn.disabled = false;
+        render();
+        let msg = sucesso + ' rescisão(ões) calculada(s) e salva(s)' + (comLancamento ? ', ' + comLancamento + ' com lançamento contábil automático' : '') + '. Os funcionários processados foram marcados como "Desligado".';
+        if(semPlano.length) msg += '\n\nEstas empresas ainda não têm Plano de Contas próprio, então os lançamentos automáticos não foram gerados para elas: ' + semPlano.join(', ') + '.';
+        alert(msg);
+      };
+    }
     const rescFunc = document.getElementById('rescFunc');
     if(rescFunc) rescFunc.onchange = (e)=>{ state.rescisaoCalcData = Object.assign({}, state.rescisaoCalcData, {funcionarioId: e.target.value}); render(); };
     const calcRescBtn = document.getElementById('calcRescBtn');
