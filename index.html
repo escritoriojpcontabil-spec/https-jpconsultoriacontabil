@@ -734,6 +734,13 @@
     const [y,m,day] = d.split('-');
     return `${day}/${m}/${y}`;
   }
+  function addDaysStr(dateStr, days){
+    if(!dateStr) return '';
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m-1, d));
+    dt.setUTCDate(dt.getUTCDate() + (Number(days)||0));
+    return dt.toISOString().slice(0,10);
+  }
   function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
   // Login por nome de usuário (sem email) — sugere um "usuário" a partir do nome digitado
@@ -3525,22 +3532,172 @@
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const competenciaLabel = monthLabel(state.competenciaAtiva) + '/' + state.competenciaAtiva.slice(0,4);
     const list = state.folhas.filter(f=>f.competencia===state.competenciaAtiva);
-    let y = pdfHeader(doc, 'Relatório de Folha de Pagamento', 'Competência ' + monthLabel(state.competenciaAtiva) + '/' + state.competenciaAtiva.slice(0,4));
-    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+
+    // Agrupa por empresa (cliente)
+    const porCliente = {};
+    list.forEach(f=>{
+      const cid = f.clientId || '_sem_empresa';
+      if(!porCliente[cid]) porCliente[cid] = [];
+      porCliente[cid].push(f);
+    });
+    const clientIds = Object.keys(porCliente).sort((a,b)=> clientName(a).localeCompare(clientName(b)));
+
     if(!list.length){
+      let y = pdfHeader(doc, 'Relatório de Folha de Pagamento', 'Competência ' + competenciaLabel);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9);
       doc.text('Nenhuma folha calculada nesta competência.', 14, y);
-    } else {
-      list.forEach(f=>{
-        doc.setFont('helvetica','bold'); doc.text(clientNameOrFunc(f.funcionarioId), 14, y); y+=5;
-        doc.setFont('helvetica','normal');
-        doc.text('Bruto: ' + fmtBRL(f.bruto) + '   INSS: ' + fmtBRL(f.inss) + '   IRRF: ' + fmtBRL(f.irrf) + '   Líquido: ' + fmtBRL(f.liquido), 14, y);
-        y += 8;
-        if(y > 250){ doc.addPage(); y = 20; }
-      });
+      pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente.');
+      doc.save('relatorio-folha-' + state.competenciaAtiva + '.pdf');
+      return;
     }
-    pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente.');
-    doc.save('relatorio-folha-' + state.competenciaAtiva + '.pdf');
+
+    const tituloSecao = (titulo)=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(27,58,92);
+      doc.text(titulo, 14, 34);
+      doc.setTextColor(20,25,30); doc.setFontSize(9);
+    };
+    const cabecalhoColunas = (cols, y)=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.setFillColor(240,243,247);
+      doc.rect(14, y-4.5, pageW-28, 6.5, 'F');
+      cols.forEach(c=> doc.text(c.label, c.x, y, c.align?{align:c.align}:undefined));
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+      return y+5;
+    };
+
+    // ===== SEÇÃO 1 — RESUMO POR EMPRESA =====
+    let y = pdfHeader(doc, 'Relatório de Folha de Pagamento', 'Resumo — Competência ' + competenciaLabel);
+    tituloSecao('1. Resumo por Empresa');
+    y = 42;
+    const cols1 = [
+      {label:'EMPRESA', x:14}, {label:'FUNC.', x:104, align:'right'}, {label:'TOTAL BRUTO', x:135, align:'right'},
+      {label:'TOTAL LÍQUIDO', x:pageW-16, align:'right'},
+    ];
+    y = cabecalhoColunas(cols1, y);
+    let granBruto=0, granLiquido=0, granInss=0, granIrrf=0, granFgts=0, granFunc=0;
+    clientIds.forEach(cid=>{
+      const itens = porCliente[cid];
+      const tb = itens.reduce((s,f)=>s+(f.bruto||0),0);
+      const tl = itens.reduce((s,f)=>s+(f.liquido||0),0);
+      granBruto+=tb; granLiquido+=tl; granFunc+=itens.length;
+      if(y > 275){ doc.addPage(); y = 20; }
+      doc.text(clientName(cid), 14, y);
+      doc.text(String(itens.length), 104, y, {align:'right'});
+      doc.text(fmtBRL(tb), 135, y, {align:'right'});
+      doc.text(fmtBRL(tl), pageW-16, y, {align:'right'});
+      y += 6;
+    });
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
+    doc.setFont('helvetica','bold');
+    doc.text('TOTAL GERAL', 14, y);
+    doc.text(String(granFunc), 104, y, {align:'right'});
+    doc.text(fmtBRL(granBruto), 135, y, {align:'right'});
+    doc.text(fmtBRL(granLiquido), pageW-16, y, {align:'right'});
+
+    // ===== SEÇÃO 2 — FOLHA GERAL (BRUTA), POR EMPRESA =====
+    doc.addPage();
+    tituloSecao('2. Folha Geral (Bruta) — por Empresa e Funcionário');
+    y = 42;
+    clientIds.forEach(cid=>{
+      const itens = porCliente[cid];
+      if(y > 265){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+      doc.text(clientName(cid), 14, y); y += 5;
+      const cols2 = [{label:'FUNCIONÁRIO', x:14}, {label:'CARGO', x:100}, {label:'BRUTO', x:pageW-16, align:'right'}];
+      y = cabecalhoColunas(cols2, y);
+      let subBruto = 0;
+      itens.forEach(f=>{
+        const func = state.funcionarios.find(x=>x.id===f.funcionarioId);
+        if(y > 275){ doc.addPage(); y = 20; }
+        doc.text(func?func.nome:'—', 14, y);
+        doc.text(func?(func.cargo||'—'):'—', 100, y);
+        doc.text(fmtBRL(f.bruto), pageW-16, y, {align:'right'});
+        subBruto += f.bruto||0;
+        y += 5.5;
+      });
+      doc.setFont('helvetica','bold');
+      doc.text('Subtotal ' + clientName(cid), 14, y);
+      doc.text(fmtBRL(subBruto), pageW-16, y, {align:'right'});
+      doc.setFont('helvetica','normal');
+      y += 9;
+    });
+
+    // ===== SEÇÃO 3 — FOLHA LÍQUIDA, POR EMPRESA =====
+    doc.addPage();
+    tituloSecao('3. Folha Líquida — por Empresa e Funcionário');
+    y = 42;
+    clientIds.forEach(cid=>{
+      const itens = porCliente[cid];
+      if(y > 265){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+      doc.text(clientName(cid), 14, y); y += 5;
+      const cols3 = [{label:'FUNCIONÁRIO', x:14}, {label:'CARGO', x:100}, {label:'LÍQUIDO', x:pageW-16, align:'right'}];
+      y = cabecalhoColunas(cols3, y);
+      let subLiquido = 0;
+      itens.forEach(f=>{
+        const func = state.funcionarios.find(x=>x.id===f.funcionarioId);
+        if(y > 275){ doc.addPage(); y = 20; }
+        doc.text(func?func.nome:'—', 14, y);
+        doc.text(func?(func.cargo||'—'):'—', 100, y);
+        doc.text(fmtBRL(f.liquido), pageW-16, y, {align:'right'});
+        subLiquido += f.liquido||0;
+        y += 5.5;
+      });
+      doc.setFont('helvetica','bold');
+      doc.text('Subtotal ' + clientName(cid), 14, y);
+      doc.text(fmtBRL(subLiquido), pageW-16, y, {align:'right'});
+      doc.setFont('helvetica','normal');
+      y += 9;
+    });
+
+    // ===== SEÇÃO 4 — RESUMO DE IMPOSTOS (INSS, IRRF, FGTS), POR EMPRESA =====
+    doc.addPage();
+    tituloSecao('4. Resumo de Impostos e Encargos — por Empresa');
+    y = 42;
+    clientIds.forEach(cid=>{
+      const itens = porCliente[cid];
+      if(y > 260){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+      doc.text(clientName(cid), 14, y); y += 5;
+      const cols4 = [
+        {label:'FUNCIONÁRIO', x:14}, {label:'INSS', x:110, align:'right'},
+        {label:'IRRF', x:145, align:'right'}, {label:'FGTS', x:pageW-16, align:'right'},
+      ];
+      y = cabecalhoColunas(cols4, y);
+      let subInss=0, subIrrf=0, subFgts=0;
+      itens.forEach(f=>{
+        const func = state.funcionarios.find(x=>x.id===f.funcionarioId);
+        if(y > 275){ doc.addPage(); y = 20; }
+        doc.text(func?func.nome:'—', 14, y);
+        doc.text(fmtBRL(f.inss), 110, y, {align:'right'});
+        doc.text(fmtBRL(f.irrf), 145, y, {align:'right'});
+        doc.text(fmtBRL(f.fgts), pageW-16, y, {align:'right'});
+        subInss+=f.inss||0; subIrrf+=f.irrf||0; subFgts+=f.fgts||0;
+        y += 5.5;
+      });
+      granInss+=subInss; granIrrf+=subIrrf; granFgts+=subFgts;
+      doc.setFont('helvetica','bold');
+      doc.text('Subtotal ' + clientName(cid), 14, y);
+      doc.text(fmtBRL(subInss), 110, y, {align:'right'});
+      doc.text(fmtBRL(subIrrf), 145, y, {align:'right'});
+      doc.text(fmtBRL(subFgts), pageW-16, y, {align:'right'});
+      doc.setFont('helvetica','normal');
+      y += 9;
+    });
+    if(y > 265){ doc.addPage(); y = 20; }
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
+    doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.text('TOTAL GERAL DE IMPOSTOS E ENCARGOS', 14, y); y += 6.5;
+    doc.setFontSize(9);
+    doc.text('INSS retido (todos os funcionários): ' + fmtBRL(granInss), 14, y); y += 6;
+    doc.text('IRRF retido (todos os funcionários): ' + fmtBRL(granIrrf), 14, y); y += 6;
+    doc.text('FGTS a depositar (8%, custo do empregador): ' + fmtBRL(granFgts), 14, y);
+
+    pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente nem as guias oficiais de recolhimento (DARF, GRF/FGTS Digital).');
+    doc.save('relatorio-folha-completo-' + state.competenciaAtiva + '.pdf');
   }
 
   function generateRelatorioRescisaoPDF(){
@@ -3641,42 +3798,153 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Recibo de Férias', cliente ? cliente.name : '');
-    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-    doc.text('Funcionário: ' + (func?func.nome:'—') + (func&&func.cpf?' — CPF '+func.cpf:''), 14, y); y+=6;
-    const inicio = ferias.dataInicioGozo ? fmtDate(ferias.dataInicioGozo) : '—';
-    doc.text('Período de gozo: ' + (ferias.diasGozo||0) + ' dias, a partir de ' + inicio + (ferias.diasVendidos ? '   ·   Abono pecuniário: ' + ferias.diasVendidos + ' dias vendidos' : ''), 14, y); y+=10;
+    const mx = 12, cw = pageW - mx*2;
 
-    const linha = (label, valor, negrito)=>{
-      doc.setFont('helvetica', negrito?'bold':'normal');
-      doc.text(label, 14, y);
-      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
-      y += 6.5;
+    doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(20,25,30);
+    doc.text('Recibo de Férias', pageW/2, 18, {align:'center'});
+
+    let y = 26;
+    const outerStartY = y;
+
+    // ---- Cabeçalho: EMPREGADOR / EMPREGADO em duas caixas lado a lado ----
+    const boxLabel = (x, yy, w, h, titulo)=>{
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.3); doc.rect(x, yy, w, h);
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(90,90,90);
+      doc.text(titulo, x+2, yy+3.2);
     };
-    doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4); y+=1;
-    linha('Férias (' + (ferias.diasGozo||0) + ' dias)', ferias.valorFeriasGozo);
-    linha('1/3 constitucional', ferias.tercoGozo);
-    if(ferias.diasVendidos){
-      linha('Abono pecuniário (' + ferias.diasVendidos + ' dias vendidos, isento)', ferias.valorAbono);
-      linha('1/3 sobre o abono (isento)', ferias.tercoAbono);
-    }
-    linha('(-) INSS (sobre férias + 1/3)', -Math.abs(ferias.inss||0));
-    linha('(-) IRRF (sobre férias + 1/3)', -Math.abs(ferias.irrf||0));
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
-    linha('TOTAL LÍQUIDO', ferias.totalLiquido, true);
+    const boxValue = (x, yy, w, h, valor)=>{
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(20,25,30);
+      doc.text(String(valor||''), x+2, yy+h-2.2);
+    };
 
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(20,25,30);
+    doc.text('EMPREGADOR:', mx, y+4);
+    doc.setFont('helvetica','normal');
+    doc.text(cliente ? cliente.name : '—', mx+32, y+4);
+    y += 6.5;
+    doc.setFont('helvetica','bold');
+    doc.text('CNPJ:', mx, y+4);
+    doc.setFont('helvetica','normal');
+    doc.text(cliente && cliente.cnpj ? cliente.cnpj : '—', mx+15, y+4);
+    y += 9;
+
+    doc.setFont('helvetica','bold');
+    doc.text('EMPREGADO:', mx, y+4);
+    doc.setFont('helvetica','normal');
+    doc.text(func ? func.nome : '—', mx+32, y+4);
+    y += 6.5;
+    doc.setFont('helvetica','bold');
+    doc.text('CPF:', mx, y+4);
+    doc.setFont('helvetica','normal');
+    doc.text(func && func.cpf ? func.cpf : '—', mx+15, y+4);
+    doc.setFont('helvetica','bold');
+    doc.text('Admissão:', mx+90, y+4);
+    doc.setFont('helvetica','normal');
+    doc.text(func && func.dataAdmissao ? fmtDate(func.dataAdmissao) : '—', mx+112, y+4);
+    y += 9;
+
+    // ---- Tabela PERÍODOS ----
+    const tabHeader = (titulo, h)=>{
+      doc.setFillColor(225,228,232); doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+      doc.rect(mx, y, cw, h, 'FD');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(20,25,30);
+      doc.text(titulo, pageW/2, y+h-1.8, {align:'center'});
+      y += h;
+    };
+    const rowTwoCol = (label, valor, h)=>{
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      doc.rect(mx, y, cw*0.32, h);
+      doc.rect(mx+cw*0.32, y, cw*0.68, h);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text(label, mx+2, y+h-2);
+      doc.setFont('helvetica','normal');
+      doc.text(String(valor||''), mx+cw*0.32+2, y+h-2);
+      y += h;
+    };
+
+    tabHeader('PERÍODOS', 5.5);
+    const aquisicaoTxt = func && func.dataAdmissao ? (fmtDate(func.dataAdmissao) + ' a ' + (ferias.dataInicioGozo?fmtDate(ferias.dataInicioGozo):'—')) : '—';
+    rowTwoCol('De Aquisição:', aquisicaoTxt, 6);
+    const fimGozo = ferias.dataInicioGozo ? addDaysStr(ferias.dataInicioGozo, (ferias.diasGozo||0)-1) : '';
+    rowTwoCol('De Gozo de Férias:', (ferias.dataInicioGozo?fmtDate(ferias.dataInicioGozo):'—') + ' a ' + (fimGozo?fmtDate(fimGozo):'—') + '  (' + (ferias.diasGozo||0) + ' dias)', 6);
+    y += 3;
+
+    // ---- BASE DE CÁLCULO ----
+    tabHeader('BASE DE CÁLCULO DA REMUNERAÇÃO DAS FÉRIAS', 5.5);
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+    doc.rect(mx, y, cw/2, 6); doc.rect(mx+cw/2, y, cw/2, 6);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('Salário contratual:', mx+2, y+4);
+    doc.text('Salário base das férias:', mx+cw/2+2, y+4);
+    doc.setFont('helvetica','normal');
+    doc.text(fmtBRL(func?func.salarioBase:0), mx+38, y+4);
+    doc.text(fmtBRL(func?func.salarioBase:0), mx+cw/2+42, y+4);
+    y += 6 + 3;
+
+    // ---- PROVENTOS ----
+    tabHeader('PROVENTOS', 5.5);
+    const provRow = (label, valor, h)=>{
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      doc.rect(mx, y, cw*0.78, h);
+      doc.rect(mx+cw*0.78, y, cw*0.22, h);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      doc.text(label, mx+2, y+h-2);
+      doc.text(valor!=null ? fmtBRL(valor) : '', mx+cw*0.78+2, y+h-2);
+      y += h;
+    };
+    provRow('Férias (' + (ferias.diasGozo||0) + ' dias de gozo)', ferias.valorFeriasGozo, 5.5);
+    provRow('Adicional de 1/3 constitucional sobre férias', ferias.tercoGozo, 5.5);
+    if(ferias.diasVendidos){
+      provRow('Abono pecuniário de férias — venda de ' + ferias.diasVendidos + ' dias (isento)', ferias.valorAbono, 5.5);
+      provRow('1/3 sobre o abono pecuniário (isento)', ferias.tercoAbono, 5.5);
+    }
+    const totalProventos = (ferias.valorFeriasGozo||0)+(ferias.tercoGozo||0)+(ferias.valorAbono||0)+(ferias.tercoAbono||0);
+    doc.setFillColor(240,240,240);
+    doc.rect(mx, y, cw*0.78, 6, 'FD'); doc.rect(mx+cw*0.78, y, cw*0.22, 6, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('Total de Proventos', mx+2, y+4.2);
+    doc.text(fmtBRL(totalProventos), mx+cw*0.78+2, y+4.2);
+    y += 6 + 3;
+
+    // ---- DESCONTOS ----
+    tabHeader('DESCONTOS', 5.5);
+    provRow('INSS (sobre férias + 1/3)', ferias.inss, 5.5);
+    provRow('IRRF (sobre férias + 1/3)', ferias.irrf, 5.5);
+    const totalDescontos = (ferias.inss||0)+(ferias.irrf||0);
+    doc.setFillColor(240,240,240);
+    doc.rect(mx, y, cw*0.78, 6, 'FD'); doc.rect(mx+cw*0.78, y, cw*0.22, 6, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('Total de Descontos', mx+2, y+4.2);
+    doc.text(fmtBRL(totalDescontos), mx+cw*0.78+2, y+4.2);
+    y += 6;
+
+    // ---- LÍQUIDO A RECEBER ----
+    doc.setFillColor(220,225,232);
+    doc.rect(mx, y, cw*0.78, 7, 'FD'); doc.rect(mx+cw*0.78, y, cw*0.22, 7, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.text('LÍQUIDO A RECEBER', mx+2, y+5);
+    doc.text(fmtBRL(ferias.totalLiquido), mx+cw*0.78+2, y+5);
+    y += 7 + 4;
+
+    // ---- Moldura geral ----
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.5);
+    doc.rect(mx-2, outerStartY-2, cw+4, y-outerStartY+2);
+
+    y += 8;
+    if(y > 250){ doc.addPage(); y = 20; }
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(20,25,30);
+    const declaracao = doc.splitTextToSize('Recebi do empregador acima identificado a quantia líquida de ' + fmtBRL(ferias.totalLiquido) + ' por motivo de minhas férias regulamentares, ora concedidas e que vou gozar de acordo com a descrição acima. Por ser verdade, firmo o presente recibo, dando plena quitação.', cw);
+    doc.text(declaracao, mx, y);
+    y += declaracao.length*4.6 + 12;
+
+    if(y > 260){ doc.addPage(); y = 20; }
+    doc.text((cliente?cliente.city||'':'') + ', ____ de _______________ de ______', mx, y);
     y += 20;
-    if(y > 255){ doc.addPage(); y = 20; }
-    doc.setDrawColor(140,150,160);
-    doc.line(14, y, pageW-14, y);
-    y += 5;
-    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
-    doc.text('Declaro ter recebido a importância líquida discriminada neste recibo, referente às férias acima especificadas.', 14, y);
-    y += 14;
-    doc.line(14, y, 100, y);
+    if(y > 265){ doc.addPage(); y = 20; }
+    doc.line(mx+30, y, mx+cw-30, y);
     y += 4.5;
-    doc.text('Assinatura do(a) funcionário(a) — ' + (func?func.nome:''), 14, y);
-    doc.setTextColor(20,25,30);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('Assinatura do trabalhador — ' + (func?func.nome:''), pageW/2, y, {align:'center'});
 
     pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema, conforme Art. 129 a 145 da CLT. Não considera adicionais (insalubridade, periculosidade) além do salário base cadastrado.');
     doc.save('recibo-ferias-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
@@ -3690,64 +3958,199 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Termo de Rescisão do Contrato de Trabalho (TRCT)', cliente ? cliente.name : '');
-    doc.setFont('helvetica','normal'); doc.setFontSize(9);
-    doc.text('Empregador: ' + (cliente?cliente.name:'—') + (cliente&&cliente.cnpj?' — CNPJ '+cliente.cnpj:''), 14, y); y+=5.5;
-    doc.text('Empregado(a): ' + (func?func.nome:'—') + (func&&func.cpf?' — CPF '+func.cpf:'') + (func&&func.ctpsNumero?' — CTPS '+func.ctpsNumero+'/'+(func.ctpsSerie||'—'):''), 14, y); y+=5.5;
-    doc.text('Admissão: ' + (func&&func.dataAdmissao?fmtDate(func.dataAdmissao):'—') + '   Desligamento: ' + (resc.dataDesligamento?fmtDate(resc.dataDesligamento):'—'), 14, y); y+=5.5;
-    doc.text('Tipo de rescisão: ' + (resc.tipoRescisao||'—') + '   Aviso prévio: ' + (resc.avisoPrevio||'—'), 14, y); y+=10;
+    const mx = 10, cw = pageW - mx*2;
+    let y = 12;
 
-    const linha = (label, valor, negrito)=>{
-      if(valor==null) return;
-      doc.setFont('helvetica', negrito?'bold':'normal');
-      doc.text(label, 14, y);
-      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
-      y += 6.5;
+    // Título
+    doc.setFillColor(225,228,232); doc.setDrawColor(0,0,0); doc.setLineWidth(0.4);
+    doc.rect(mx, y, cw, 8, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(20,25,30);
+    doc.text('TERMO DE RESCISÃO DO CONTRATO DE TRABALHO', pageW/2, y+5.5, {align:'center'});
+    y += 8;
+
+    const secHeader = (titulo)=>{
+      doc.setFillColor(210,210,210); doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+      doc.rect(mx, y, cw, 4.8, 'FD');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(20,25,30);
+      doc.text(titulo, pageW/2, y+3.4, {align:'center'});
+      y += 4.8;
     };
-    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(27,58,92);
-    doc.text('Verbas Rescisórias', 14, y); y += 6;
-    doc.setTextColor(20,25,30); doc.setFontSize(9);
-    doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4);
-    linha('Saldo de salário', resc.saldoSalario);
-    if(resc.feriasVencidas) linha('Férias vencidas + 1/3', (resc.feriasVencidas||0) + (resc.tercoFeriasVencidas||0));
-    linha('Férias proporcionais + 1/3', (resc.feriasProporcionais||0) + (resc.tercoFeriasProporcionais||0));
-    linha('13º salário proporcional', resc.decimoTerceiroProporcional);
-    if(resc.avisoPrevioValor) linha('Aviso prévio indenizado (' + (resc.diasAviso||0) + ' dias)', resc.avisoPrevioValor);
-    if(resc.multaFgts) linha('Multa FGTS (rescisória)', resc.multaFgts);
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
-    linha('(-) INSS', -Math.abs(resc.inss||0));
-    linha('(-) IRRF', -Math.abs(resc.irrf||0));
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
-    linha('TOTAL LÍQUIDO A RECEBER', resc.totalLiquido, true);
+    // cells: [{numero, label, valor, w}] — w em mm, soma deve bater com cw
+    const gridRow = (cells, h)=>{
+      let cx = mx;
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      cells.forEach(c=>{
+        doc.rect(cx, y, c.w, h);
+        doc.setFont('helvetica','normal'); doc.setFontSize(6.3); doc.setTextColor(70,70,70);
+        doc.text((c.numero?c.numero+' ':'')+c.label, cx+1.2, y+3);
+        if(c.valor){
+          doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
+          const vLines = doc.splitTextToSize(String(c.valor), c.w-2.4);
+          doc.text(vLines, cx+1.2, y+h-1.5);
+        }
+        cx += c.w;
+      });
+      y += h;
+    };
 
-    y += 16;
+    // ===== IDENTIFICAÇÃO DO EMPREGADOR =====
+    secHeader('IDENTIFICAÇÃO DO EMPREGADOR');
+    gridRow([
+      {numero:'01', label:'CNPJ/CEI', valor:cliente&&cliente.cnpj?cliente.cnpj:'', w:cw*0.30},
+      {numero:'02', label:'Razão Social/Nome', valor:cliente?cliente.name:'', w:cw*0.70},
+    ], 8);
+    gridRow([
+      {numero:'03', label:'Endereço (logradouro, nº, andar, apartamento)', valor:cliente?cliente.address:'', w:cw*0.72},
+      {numero:'04', label:'Bairro', valor:'', w:cw*0.28},
+    ], 8);
+    gridRow([
+      {numero:'05', label:'Município', valor:cliente?cliente.city:'', w:cw*0.40},
+      {numero:'06', label:'UF', valor:cliente?cliente.uf:'', w:cw*0.12},
+      {numero:'07', label:'CEP', valor:'', w:cw*0.18},
+      {numero:'08', label:'CNAE', valor:'', w:cw*0.30},
+    ], 8);
+
+    // ===== IDENTIFICAÇÃO DO TRABALHADOR =====
+    secHeader('IDENTIFICAÇÃO DO TRABALHADOR');
+    gridRow([
+      {numero:'10', label:'PIS/PASEP', valor:func?func.pis:'', w:cw*0.25},
+      {numero:'11', label:'Nome', valor:func?func.nome:'', w:cw*0.75},
+    ], 8);
+    gridRow([
+      {numero:'12', label:'Endereço (logradouro, nº, andar, apartamento)', valor:func?[func.logradouro,func.numeroEndereco].filter(Boolean).join(', '):'', w:cw*0.72},
+      {numero:'13', label:'Bairro', valor:func?func.bairro:'', w:cw*0.28},
+    ], 8);
+    gridRow([
+      {numero:'14', label:'Município', valor:func?(func.municipioUf||'').split('/')[0]:'', w:cw*0.30},
+      {numero:'15', label:'UF', valor:func?(func.municipioUf||'').split('/')[1]||'':'', w:cw*0.10},
+      {numero:'16', label:'CEP', valor:func?func.cep:'', w:cw*0.18},
+      {numero:'17', label:'CTPS (nº, série, UF)', valor:func?(func.ctpsNumero||'')+'/'+(func.ctpsSerie||''):'', w:cw*0.22},
+      {numero:'18', label:'CPF', valor:func?func.cpf:'', w:cw*0.20},
+    ], 8);
+    gridRow([
+      {numero:'19', label:'Data de Nascimento', valor:func&&func.dataNascimento?fmtDate(func.dataNascimento):'', w:cw*0.30},
+      {numero:'20', label:'Nome da Mãe', valor:func?func.nomeMae:'', w:cw*0.70},
+    ], 8);
+
+    // ===== DADOS DO CONTRATO =====
+    secHeader('DADOS DO CONTRATO');
+    gridRow([{numero:'21', label:'Tipo de Contrato', valor:func?func.tipoContrato:'', w:cw}], 8);
+    gridRow([{numero:'22', label:'Causa do Afastamento', valor:resc.tipoRescisao||'', w:cw}], 9);
+    gridRow([
+      {numero:'23', label:'Remuneração Mês Ant.', valor:func?fmtBRL(func.salarioBase):'', w:cw*0.22},
+      {numero:'24', label:'Data de Admissão', valor:func&&func.dataAdmissao?fmtDate(func.dataAdmissao):'', w:cw*0.19},
+      {numero:'25', label:'Data do Aviso Prévio', valor:resc.avisoPrevio||'', w:cw*0.20},
+      {numero:'26', label:'Data de Afastamento', valor:resc.dataDesligamento?fmtDate(resc.dataDesligamento):'', w:cw*0.20},
+      {numero:'30', label:'Categoria', valor:func?func.categoriaEsocial:'', w:cw*0.19},
+    ], 8);
+    y += 2;
+
+    // ===== DISCRIMINAÇÃO DAS VERBAS RESCISÓRIAS =====
+    secHeader('DISCRIMINAÇÃO DAS VERBAS RESCISÓRIAS');
+    const verbaHeaderRow = ()=>{
+      doc.setFillColor(238,238,238); doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      const wPair = cw/3;
+      for(let i=0;i<3;i++){
+        doc.rect(mx+i*wPair, y, wPair*0.68, 4.5, 'FD');
+        doc.rect(mx+i*wPair+wPair*0.68, y, wPair*0.32, 4.5, 'FD');
+      }
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.5); doc.setTextColor(20,25,30);
+      for(let i=0;i<3;i++){
+        doc.text('Rubrica', mx+i*wPair+1, y+3.2);
+        doc.text('Valor', mx+i*wPair+wPair*0.68+1, y+3.2);
+      }
+      y += 4.5;
+    };
+    const verbaRow = (items, h)=>{
+      // items: array de até 3 {numero, label, valor}
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      const wPair = cw/3;
+      for(let i=0;i<3;i++){
+        const it = items[i];
+        doc.rect(mx+i*wPair, y, wPair*0.68, h);
+        doc.rect(mx+i*wPair+wPair*0.68, y, wPair*0.32, h);
+        if(it){
+          doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(20,25,30);
+          const lbl = (it.numero?it.numero+' ':'')+it.label;
+          const lblLines = doc.splitTextToSize(lbl, wPair*0.68-2);
+          doc.text(lblLines, mx+i*wPair+1, y+3);
+          if(it.valor!=null){
+            doc.setFontSize(7);
+            doc.text(fmtBRL(it.valor), mx+i*wPair+wPair*0.68+1, y+h-1.5);
+          }
+        }
+      }
+      y += h;
+    };
+    verbaHeaderRow();
+    verbaRow([
+      {numero:'50', label:'Saldo de Salário', valor:resc.saldoSalario},
+      {numero:'63', label:'13º Salário Proporcional', valor:resc.decimoTerceiroProporcional},
+      {numero:'65', label:'Férias Proporcionais', valor:resc.feriasProporcionais},
+    ], 8);
+    verbaRow([
+      {numero:'68', label:'Terço Constitucional de Férias', valor:(resc.tercoFeriasProporcionais||0)+(resc.tercoFeriasVencidas||0)},
+      {numero:'66.1', label:'Férias Vencidas', valor:resc.feriasVencidas||0},
+      {numero:'69', label:'Aviso Prévio Indenizado', valor:resc.avisoPrevioValor||0},
+    ], 8);
+    const totalBruto = (resc.totalLiquido||0) + (resc.inss||0) + (resc.irrf||0);
+    verbaRow([
+      resc.multaFgts ? {label:'Multa FGTS (rescisória)', valor:resc.multaFgts} : null,
+      null,
+      {label:'TOTAL BRUTO', valor:totalBruto},
+    ], 8);
+
+    // ===== DEDUÇÕES =====
+    y += 1;
+    doc.setFillColor(210,210,210); doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+    doc.rect(mx, y, cw, 4.5, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
+    doc.text('DEDUÇÕES', mx+1.5, y+3.2);
+    y += 4.5;
+    verbaHeaderRow();
+    verbaRow([
+      {numero:'112.1', label:'Previdência Social (INSS)', valor:resc.inss},
+      {numero:'114.1', label:'IRRF', valor:resc.irrf},
+      {label:'TOTAL DEDUÇÕES', valor:(resc.inss||0)+(resc.irrf||0)},
+    ], 8);
+    doc.setFillColor(225,228,232);
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+    const wPair = cw/3;
+    doc.rect(mx+2*wPair, y, wPair*0.68, 7, 'FD'); doc.rect(mx+2*wPair+wPair*0.68, y, wPair*0.32, 7, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('VALOR LÍQUIDO', mx+2*wPair+1.5, y+4.6);
+    doc.text(fmtBRL(resc.totalLiquido), mx+2*wPair+wPair*0.68+1.5, y+4.6);
+    y += 7;
+
+    y += 8;
     if(y > 250){ doc.addPage(); y = 20; }
-    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
-    const obsLines = doc.splitTextToSize('Este termo discrimina as verbas rescisórias apuradas de forma estimada pelo sistema, com base na CLT. A homologação, quando exigida, e a comunicação da dispensa (CD) / chave de conectividade do FGTS devem ser providenciadas separadamente pelos canais oficiais (eSocial/eCAC).', pageW-28);
-    doc.text(obsLines, 14, y);
-    y += obsLines.length*4.2 + 10;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,105,120);
+    const obsLines = doc.splitTextToSize('Este termo discrimina as verbas rescisórias apuradas de forma estimada pelo sistema, com base na CLT. A homologação, quando exigida, e a comunicação da dispensa (CD) / chave de conectividade do FGTS devem ser providenciadas separadamente pelos canais oficiais (eSocial/eCAC).', cw);
+    doc.text(obsLines, mx, y);
+    y += obsLines.length*4 + 10;
     doc.setTextColor(20,25,30);
 
     if(y > 250){ doc.addPage(); y = 20; }
     doc.setDrawColor(140,150,160);
-    doc.line(14, y, 95, y);
-    doc.line(115, y, pageW-14, y);
-    y += 5;
-    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
-    doc.text('EMPREGADOR', 14, y);
-    doc.text('EMPREGADO(A)', 115, y);
+    doc.line(mx, y, mx+cw*0.44, y);
+    doc.line(mx+cw*0.56, y, mx+cw, y);
     y += 4.5;
-    doc.text(cliente ? cliente.name : '', 14, y);
-    doc.text(func ? func.nome : '', 115, y);
-    y += 16;
-    doc.line(14, y, 95, y);
-    doc.line(115, y, pageW-14, y);
-    y += 5;
-    doc.text('Testemunha 1', 14, y);
-    doc.text('Testemunha 2', 115, y);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,105,120);
+    doc.text('EMPREGADOR', mx, y);
+    doc.text('EMPREGADO(A)', mx+cw*0.56, y);
+    y += 4.2;
+    doc.text(cliente ? cliente.name : '', mx, y);
+    doc.text(func ? func.nome : '', mx+cw*0.56, y);
+    y += 14;
+    if(y > 270){ doc.addPage(); y = 20; }
+    doc.line(mx, y, mx+cw*0.44, y);
+    doc.line(mx+cw*0.56, y, mx+cw, y);
+    y += 4.5;
+    doc.text('Testemunha 1', mx, y);
+    doc.text('Testemunha 2', mx+cw*0.56, y);
     doc.setTextColor(20,25,30);
 
-    pdfFooterDisclaimer(doc, 'Modelo de TRCT gerado a partir do cálculo estimado no sistema. Não substitui a homologação oficial nem a comunicação de dispensa ao eSocial — revise com a equipe antes de entregar ao trabalhador.');
+    pdfFooterDisclaimer(doc, 'Modelo de TRCT gerado a partir do cálculo estimado no sistema, no layout do formulário oficial de referência. Não substitui a homologação oficial nem a comunicação de dispensa ao eSocial — revise com a equipe antes de entregar ao trabalhador.');
     doc.save('trct-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
@@ -8751,7 +9154,7 @@
     return `
       <div class="form-hint" style="margin:0 0 16px;">Gere relatórios em PDF para arquivo do escritório ou envio ao cliente.</div>
       <div class="msg-actions">
-        <button type="button" class="btn-add" id="relFolhaBtn">📄 Relatório de Folha (competência atual)</button>
+        <button type="button" class="btn-add" id="relFolhaBtn">📄 Relatório Completo de Folha — por Empresa (Resumo + Geral + Líquida + Impostos)</button>
         <button type="button" class="btn-add" id="relFeriasBtn">📄 Relatório de Férias</button>
         <button type="button" class="btn-add" id="relRescisaoBtn">📄 Relatório de Rescisões</button>
         <button type="button" class="btn-add" id="relResumoBtn">📄 Relatório Resumo (Folha+Férias+Rescisão)</button>
