@@ -3800,43 +3800,178 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Recibo de Pagamento de Salário', cliente ? cliente.name : '');
-    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-    doc.text('Funcionário: ' + (func?func.nome:'—') + (func&&func.cpf?' — CPF '+func.cpf:''), 14, y); y+=6;
-    doc.text('Cargo: ' + (func?(func.cargo||'—'):'—') + '   Competência: ' + monthLabel(folha.competencia) + '/' + (folha.competencia||'').slice(0,4), 14, y); y+=10;
+    const mx = 12, cw = pageW - mx*2;
 
-    const linha = (label, valor, negrito)=>{
-      doc.setFont('helvetica', negrito?'bold':'normal');
-      doc.text(label, 14, y);
-      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
-      y += 6.5;
+    // Itens de vencimentos/descontos discriminados a partir do cálculo salvo.
+    const salarioBase = func ? Number(func.salarioBase)||0 : Number(folha.bruto)||0;
+    const outrosProventos = Math.max(0, round2((Number(folha.bruto)||0) - salarioBase));
+    const itens = [];
+    itens.push({cod:'001', desc:'SALÁRIO NORMAL', ref:'30,00', venc:salarioBase, desc_v:null});
+    if(outrosProventos) itens.push({cod:'010', desc:'OUTROS PROVENTOS', ref:'', venc:outrosProventos, desc_v:null});
+    if(folha.inss) itens.push({cod:'101', desc:'I.N.S.S', ref:'', venc:null, desc_v:folha.inss});
+    if(folha.irrf) itens.push({cod:'120', desc:'I.R.R.F.', ref:'', venc:null, desc_v:folha.irrf});
+    if(folha.descontosExtra) itens.push({cod:'190', desc:'OUTROS DESCONTOS', ref:'', venc:null, desc_v:folha.descontosExtra});
+
+    const desenharVia = (yInicio, viaLabel)=>{
+      let y = yInicio;
+      // Título + Competência
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+      doc.rect(mx, y, cw*0.78, 9);
+      doc.rect(mx+cw*0.78, y, cw*0.22, 9);
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(20,25,30);
+      doc.text('RECIBO DE PAGAMENTO DE SALÁRIO MENSAL', mx+2, y+6);
+      doc.setFontSize(6.5); doc.setFont('helvetica','normal');
+      doc.text('Competência', mx+cw*0.78+2, y+3.2);
+      doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text(monthLabel(folha.competencia) + '/' + (folha.competencia||'').slice(0,4), mx+cw*0.78+2, y+7.5);
+      y += 9;
+
+      // Empresa / Divisão R.H. / Function
+      const wEmpresa = cw*0.62, wDivisao = cw*0.19, wFunction = cw*0.19;
+      doc.rect(mx, y, wEmpresa, 15);
+      doc.rect(mx+wEmpresa, y, wDivisao, 15);
+      doc.rect(mx+wEmpresa+wDivisao, y, wFunction, 15);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6.5);
+      doc.text('Empresa', mx+1.5, y+3);
+      doc.text('Divisão R.H.', mx+wEmpresa+1.5, y+3);
+      doc.text('Função', mx+wEmpresa+wDivisao+1.5, y+3);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text(String(cliente?cliente.name:'—'), mx+1.5, y+7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7);
+      const endereco = cliente ? [cliente.address, cliente.city, cliente.uf].filter(Boolean).join(' — ') : '';
+      doc.text(endereco || '—', mx+1.5, y+10.5);
+      doc.text('CNPJ: ' + (cliente&&cliente.doc?cliente.doc:'—'), mx+1.5, y+13.5);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text('—', mx+wEmpresa+1.5, y+9);
+      doc.text((func?(func.cargo||'—'):'—'), mx+wEmpresa+wDivisao+1.5, y+9);
+      y += 15;
+
+      // Nº Reg / Nome
+      doc.rect(mx, y, cw*0.18, 8);
+      doc.rect(mx+cw*0.18, y, cw*0.82, 8);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6.5);
+      doc.text('Nº Reg.', mx+1.5, y+3);
+      doc.text('Nome', mx+cw*0.18+1.5, y+3);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text((func?func.id.slice(-5).toUpperCase():'—'), mx+1.5, y+6.8);
+      doc.text((func?func.nome:'—') + (func&&func.cpf?'   CPF: '+func.cpf:''), mx+cw*0.18+1.5, y+6.8);
+      y += 8;
+
+      // Tabela de vencimentos/descontos
+      const wCod=cw*0.09, wDesc=cw*0.35, wRef=cw*0.14, wVenc=cw*0.21, wDesc2=cw*0.21;
+      doc.setFillColor(238,238,238);
+      doc.rect(mx, y, wCod, 5.5, 'FD'); doc.rect(mx+wCod, y, wDesc, 5.5, 'FD');
+      doc.rect(mx+wCod+wDesc, y, wRef, 5.5, 'FD'); doc.rect(mx+wCod+wDesc+wRef, y, wVenc, 5.5, 'FD');
+      doc.rect(mx+wCod+wDesc+wRef+wVenc, y, wDesc2, 5.5, 'FD');
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.5); doc.setTextColor(20,25,30);
+      doc.text('Cód.', mx+1.5, y+3.8);
+      doc.text('Descrição', mx+wCod+wDesc/2, y+3.8, {align:'center'});
+      doc.text('Referência', mx+wCod+wDesc+wRef/2, y+3.8, {align:'center'});
+      doc.text('Vencimentos', mx+wCod+wDesc+wRef+wVenc/2, y+3.8, {align:'center'});
+      doc.text('Descontos', mx+wCod+wDesc+wRef+wVenc+wDesc2/2, y+3.8, {align:'center'});
+      y += 5.5;
+
+      const totalLinhasTabela = 12;
+      doc.setFont('helvetica','normal'); doc.setFontSize(7);
+      for(let i=0;i<totalLinhasTabela;i++){
+        const it = itens[i];
+        doc.rect(mx, y, wCod, 5); doc.rect(mx+wCod, y, wDesc, 5);
+        doc.rect(mx+wCod+wDesc, y, wRef, 5); doc.rect(mx+wCod+wDesc+wRef, y, wVenc, 5);
+        doc.rect(mx+wCod+wDesc+wRef+wVenc, y, wDesc2, 5);
+        if(it){
+          doc.text(it.cod, mx+1.5, y+3.5);
+          doc.text(it.desc, mx+wCod+1.5, y+3.5);
+          if(it.ref) doc.text(it.ref, mx+wCod+wDesc+wRef-1.5, y+3.5, {align:'right'});
+          if(it.venc!=null) doc.text(fmtBRL(it.venc).replace('R$',''), mx+wCod+wDesc+wRef+wVenc-1.5, y+3.5, {align:'right'});
+          if(it.desc_v!=null) doc.text(fmtBRL(it.desc_v).replace('R$',''), mx+wCod+wDesc+wRef+wVenc+wDesc2-1.5, y+3.5, {align:'right'});
+        }
+        y += 5;
+      }
+
+      // Resumo do salário
+      const wResumoLabel = cw*0.14;
+      const wResumoCol = (cw - wResumoLabel - cw*0.20)/3;
+      const wLiquido = cw*0.20;
+      doc.setLineWidth(0.3);
+      doc.rect(mx, y, wResumoLabel, 12);
+      doc.rect(mx+wResumoLabel, y, wResumoCol, 12);
+      doc.rect(mx+wResumoLabel+wResumoCol, y, wResumoCol, 12);
+      doc.rect(mx+wResumoLabel+wResumoCol*2, y, wResumoCol, 12);
+      doc.rect(mx+wResumoLabel+wResumoCol*3, y, wLiquido, 12);
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.5);
+      doc.text('RESUMO DO', mx+1.2, y+4.5);
+      doc.text('SALÁRIO', mx+1.2, y+7.5);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6);
+      doc.text('Salário Base', mx+wResumoLabel+1.2, y+3);
+      doc.text('Sal. Contribuição', mx+wResumoLabel+wResumoCol+1.2, y+3);
+      doc.text('Total de Vencimentos', mx+wResumoLabel+wResumoCol*2+1.2, y+3);
+      doc.text('LÍQUIDO', mx+wResumoLabel+wResumoCol*3+1.2, y+3.2);
+      doc.text('A RECEBER', mx+wResumoLabel+wResumoCol*3+1.2, y+6);
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text(fmtBRL(salarioBase), mx+wResumoLabel+wResumoCol-1.5, y+10, {align:'right'});
+      doc.text(fmtBRL(folha.bruto), mx+wResumoLabel+wResumoCol*2-1.5, y+10, {align:'right'});
+      doc.text(fmtBRL(folha.bruto), mx+wResumoLabel+wResumoCol*3-1.5, y+10, {align:'right'});
+      doc.setFontSize(9);
+      doc.text(fmtBRL(folha.liquido), mx+wResumoLabel+wResumoCol*3+wLiquido-1.5, y+10.3, {align:'right'});
+      y += 12;
+
+      // Total de descontos (linha extra, à esquerda do líquido) + Base FGTS/IR
+      const totalDescontos = round2((Number(folha.inss)||0)+(Number(folha.irrf)||0)+(Number(folha.descontosExtra)||0));
+      doc.rect(mx, y, wResumoLabel+wResumoCol, 6);
+      doc.rect(mx+wResumoLabel+wResumoCol, y, wResumoCol, 6);
+      doc.rect(mx+wResumoLabel+wResumoCol*2, y, wResumoCol, 6);
+      doc.rect(mx+wResumoLabel+wResumoCol*3, y, wLiquido, 6);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6);
+      doc.text('Total de Descontos', mx+wResumoLabel+wResumoCol+1.2, y+2.6);
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text(fmtBRL(totalDescontos), mx+wResumoLabel+wResumoCol*2-1.5, y+4.8, {align:'right'});
+      y += 6;
+
+      const wFgts3 = cw/3;
+      doc.rect(mx, y, wFgts3, 8);
+      doc.rect(mx+wFgts3, y, wFgts3, 8);
+      doc.rect(mx+wFgts3*2, y, wFgts3, 8);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6);
+      doc.text('Base Cál.', mx+1.2, y+3);
+      doc.text('F.G.T.S', mx+1.2, y+6);
+      doc.text('F.G.T.S do Mês', mx+wFgts3+1.2, y+3);
+      doc.text('Base Cál. I.R.', mx+wFgts3*2+1.2, y+3);
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text(fmtBRL(folha.bruto), mx+wFgts3-1.5, y+7, {align:'right'});
+      doc.text(fmtBRL(folha.fgts), mx+wFgts3*2-1.5, y+7, {align:'right'});
+      const baseIR = round2((Number(folha.bruto)||0) - (Number(folha.inss)||0) - (func?(Number(func.dependentes)||0)*IRRF_DEDUCAO_DEPENDENTE_2026:0));
+      doc.text(fmtBRL(baseIR), mx+wFgts3*3-1.5, y+7, {align:'right'});
+      y += 8;
+
+      doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(90,90,90);
+      doc.text('Modelo Padrão — 2 Vias', mx, y+3.5);
+      doc.text(viaLabel, mx+cw, y+3.5, {align:'right'});
+      doc.setTextColor(20,25,30);
+      y += 6;
+      return y;
     };
-    doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4); y+=1;
-    linha('Salário base + proventos (bruto)', folha.bruto);
-    linha('(-) INSS', -Math.abs(folha.inss||0));
-    linha('(-) IRRF', -Math.abs(folha.irrf||0));
-    if(folha.descontosExtra) linha('(-) Outros descontos', -Math.abs(folha.descontosExtra));
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
-    linha('SALÁRIO LÍQUIDO', folha.liquido, true);
-    y += 4;
-    doc.setFontSize(8); doc.setTextColor(120,130,140);
-    doc.text('FGTS do período (8%, depósito do empregador — não compõe o líquido): ' + fmtBRL(folha.fgts), 14, y);
-    doc.setTextColor(20,25,30); doc.setFontSize(9.5);
 
-    y += 20;
-    if(y > 260){ doc.addPage(); y = 20; }
-    doc.setDrawColor(140,150,160);
-    doc.line(14, y, pageW-14, y);
-    y += 5;
-    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
-    doc.text('Declaro ter recebido a importância líquida discriminada neste recibo.', 14, y);
-    y += 14;
-    doc.line(14, y, 100, y);
-    y += 4.5;
-    doc.text('Assinatura do(a) funcionário(a) — ' + (func?func.nome:''), 14, y);
+    let y = 10;
+    y = desenharVia(y, '1ª via / Funcionário');
+    y += 4;
+    y = desenharVia(y, '2ª via / Empregador');
+
+    y += 8;
+    if(y > 265){ doc.addPage(); y = 20; }
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+    doc.rect(mx, y, cw, 20);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    doc.text('DECLARO TER RECEBIDO A IMPORTÂNCIA LÍQUIDA DISCRIMINADA NESTE RECIBO', pageW/2, y+6, {align:'center'});
+    doc.line(mx+8, y+16, mx+cw*0.35, y+16);
+    doc.line(mx+cw*0.5, y+16, mx+cw-8, y+16);
+    doc.setFontSize(7);
+    doc.text('DATA', mx+8+((cw*0.35-8)/2), y+19, {align:'center'});
+    doc.text('ASSINATURA DO FUNCIONÁRIO', mx+cw*0.5+((cw*0.5-8)/2), y+19, {align:'center'});
+
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(140,150,160);
+    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil — recibo estimado no sistema, não substitui a folha oficial homologada.', mx, 292);
     doc.setTextColor(20,25,30);
 
-    pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema (tabelas de INSS/IRRF vigentes). Não substitui a folha de pagamento oficial homologada — verbas variáveis específicas devem ser conferidas antes da entrega ao funcionário.');
     doc.save('recibo-pagamento-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (folha.competencia||'') + '.pdf');
   }
 
