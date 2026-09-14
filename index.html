@@ -613,6 +613,8 @@
     propostaItensExtras: [],
     propostaObservacoes: 'Empresas no Lucro Presumido - contrato inicial (sem empregados) é de 01 (um) salário mínimo vigente no país.\nEmpresas no Simples Nacional - contrato inicial (sem empregados) é de 1/2 salário mínimo vigente no país.\nOs serviços anteriores à assinatura do contrato serão cobrados à parte.\nOs serviços de MEI, DIRPF, eSocial Doméstico, entre outros, ou serviços fora do contrato da prestação de serviços contábeis, serão cobrados à parte.',
     propostaPreview: null,
+    fichasContratosData: {},
+    contratoPfData: {},
     honorarios: [],
     honorarioEmpresaAtiva: '',
     honorarioModalData: null,
@@ -3304,6 +3306,219 @@
     });
     pdfFooterDisclaimer(doc, 'Este resumo é um controle interno gerado a partir das folhas calculadas no sistema. Não é a guia oficial com código de barras — emita a guia definitiva no FGTS Digital (Caixa/eSocial) ou no sistema de arrecadação do INSS/DARF.');
     doc.save('guia-' + tipo.toLowerCase() + '-' + state.competenciaAtiva + '.pdf');
+  }
+
+  function gerarFichaRegistroPDF(func){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!func){ alert('Selecione um funcionário.'); return; }
+    const cliente = state.clients.find(c=>c.id===func.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Ficha de Registro de Empregado', cliente ? cliente.name : '');
+    doc.setFontSize(9);
+    const campo = (label, valor)=>{
+      if(y > 275){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.text(label + ':', 14, y);
+      doc.setFont('helvetica','normal');
+      const l = doc.splitTextToSize(String(valor||'—'), pageW-14-55);
+      doc.text(l, 58, y);
+      y += Math.max(l.length*4.6, 6);
+    };
+    const secao = (titulo)=>{
+      if(y > 270){ doc.addPage(); y = 20; }
+      y += 3;
+      doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 5;
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(27,58,92);
+      doc.text(titulo, 14, y); y += 6;
+      doc.setTextColor(20,25,30); doc.setFontSize(9);
+    };
+    secao('Dados Pessoais');
+    campo('Nome completo', func.nome);
+    campo('CPF', func.cpf);
+    campo('Data de nascimento', func.dataNascimento ? fmtDate(func.dataNascimento) : '');
+    campo('Nome da mãe', func.nomeMae);
+    campo('Sexo', func.sexo);
+    campo('Raça/Cor', func.racaCor);
+    campo('Grau de instrução', func.grauInstrucao);
+    campo('PIS/NIS', func.pis);
+    campo('CTPS — Número/Série', (func.ctpsNumero||'—') + ' / ' + (func.ctpsSerie||'—'));
+
+    secao('Endereço');
+    const enderecoCompleto = [func.logradouro, func.numeroEndereco].filter(Boolean).join(', ') +
+      (func.bairro ? ' — ' + func.bairro : '') + (func.municipioUf ? ' — ' + func.municipioUf : '') +
+      (func.cep ? ' — CEP ' + func.cep : '');
+    campo('Endereço', enderecoCompleto.replace(/^—\s*/,'').replace(/^,\s*/,'') || '');
+
+    secao('Dados do Contrato de Trabalho');
+    campo('Empresa (empregador)', cliente ? (cliente.name + (cliente.cnpj?' — CNPJ '+cliente.cnpj:'')) : '');
+    campo('Cargo/Função', func.cargo);
+    campo('CBO', func.cbo);
+    campo('Categoria eSocial', func.categoriaEsocial);
+    campo('Tipo de contrato', func.tipoContrato);
+    campo('Data de admissão', func.dataAdmissao ? fmtDate(func.dataAdmissao) : '');
+    campo('Jornada de trabalho', func.jornada);
+    campo('Salário base', fmtBRL(func.salarioBase));
+    campo('Dependentes (IRRF)', func.dependentes||0);
+    campo('Status atual', func.status||'Ativo');
+
+    y += 20;
+    if(y > 260){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, 95, y);
+    doc.line(115, y, pageW-14, y);
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Assinatura do Empregador', 14, y);
+    doc.text('Assinatura do Empregado', 115, y);
+    y += 4.5;
+    doc.text(cliente ? cliente.name : '', 14, y);
+    doc.text(func.nome || '', 115, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Ficha de Registro de Empregado gerada a partir dos dados cadastrados no sistema. Confira todas as informações antes de arquivar ou apresentar à fiscalização — o sistema não valida automaticamente pendências ou inconsistências cadastrais.');
+    doc.save('ficha-registro-' + (func.nome||'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+
+  function gerarContratoCltPDF(func){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!func){ alert('Selecione um funcionário.'); return; }
+    const cliente = state.clients.find(c=>c.id===func.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Contrato Individual de Trabalho', '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+
+    const paragrafo = (texto, negrito)=>{
+      if(y > 275){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      const l = doc.splitTextToSize(texto, pageW-28);
+      doc.text(l, 14, y);
+      y += l.length*5 + 4;
+    };
+
+    const enderecoFunc = [func.logradouro, func.numeroEndereco].filter(Boolean).join(', ') +
+      (func.bairro ? ' — ' + func.bairro : '') + (func.municipioUf ? ' — ' + func.municipioUf : '');
+
+    paragrafo('Pelo presente instrumento particular de Contrato Individual de Trabalho, de um lado ' +
+      (cliente ? cliente.name : '__________') + (cliente && cliente.cnpj ? ', inscrita no CNPJ sob o nº ' + cliente.cnpj : '') +
+      (cliente && cliente.address ? ', com sede em ' + cliente.address + (cliente.city?', '+cliente.city:'') + (cliente.uf?'/'+cliente.uf:'') : '') +
+      ', doravante denominada EMPREGADORA, e de outro lado ' + (func.nome||'__________') +
+      (func.cpf ? ', portador(a) do CPF nº ' + func.cpf : '') + (func.ctpsNumero ? ', CTPS nº ' + func.ctpsNumero + '/série ' + (func.ctpsSerie||'—') : '') +
+      (enderecoFunc ? ', residente em ' + enderecoFunc : '') +
+      ', doravante denominado(a) EMPREGADO(A), têm entre si justo e contratado o seguinte:');
+
+    paragrafo('CLÁUSULA 1ª — DO OBJETO', true);
+    paragrafo('O(A) EMPREGADO(A) é admitido(a) para exercer a função de ' + (func.cargo||'—') +
+      (func.cbo ? ' (CBO ' + func.cbo + ')' : '') + ', sob o regime de ' + (func.tipoContrato||'contrato por prazo indeterminado') +
+      ', prestando serviços de acordo com as normas internas da EMPREGADORA e a legislação trabalhista vigente (CLT).');
+
+    paragrafo('CLÁUSULA 2ª — DA ADMISSÃO', true);
+    paragrafo('O contrato tem início em ' + (func.dataAdmissao?fmtDate(func.dataAdmissao):'__/__/____') + ', ficando os primeiros 90 (noventa) dias, quando aplicável, como período de experiência, nos termos do art. 445, parágrafo único, da CLT.');
+
+    paragrafo('CLÁUSULA 3ª — DA JORNADA DE TRABALHO', true);
+    paragrafo('A jornada de trabalho será de ' + (func.jornada || '44 (quarenta e quatro) horas semanais, observados os intervalos legais para repouso e alimentação') + ', podendo ser alterada mediante acordo entre as partes, respeitados os limites legais.');
+
+    paragrafo('CLÁUSULA 4ª — DA REMUNERAÇÃO', true);
+    paragrafo('Pelos serviços prestados, o(a) EMPREGADO(A) receberá salário mensal de ' + fmtBRL(func.salarioBase) +
+      ', pago até o 5º dia útil do mês subsequente ao vencido, sujeito aos descontos legais de INSS, IRRF e demais previstos em lei ou convenção coletiva.');
+
+    paragrafo('CLÁUSULA 5ª — DOS DIREITOS TRABALHISTAS', true);
+    paragrafo('Ficam assegurados ao(à) EMPREGADO(A) todos os direitos previstos na CLT e na legislação previdenciária vigente, incluindo, entre outros: férias anuais remuneradas com adicional de 1/3 (um terço); 13º salário; FGTS (8% sobre a remuneração mensal); e demais benefícios eventualmente previstos em Convenção ou Acordo Coletivo de Trabalho aplicável à categoria.');
+
+    paragrafo('CLÁUSULA 6ª — DA RESCISÃO', true);
+    paragrafo('O presente contrato poderá ser rescindido por qualquer das partes, observadas as disposições da CLT quanto a aviso prévio, verbas rescisórias e demais formalidades legais aplicáveis a cada modalidade de rescisão.');
+
+    paragrafo('CLÁUSULA 7ª — DO FORO', true);
+    paragrafo('Fica eleito o foro da Justiça do Trabalho da localidade de prestação dos serviços para dirimir quaisquer dúvidas ou controvérsias oriundas do presente contrato.');
+
+    paragrafo('E, por estarem assim justos e contratados, firmam o presente instrumento em 2 (duas) vias de igual teor.');
+
+    y += 6;
+    paragrafo((cliente ? (cliente.city||'') : '') + ', ' + new Date().toLocaleDateString('pt-BR') + '.');
+
+    y += 14;
+    if(y > 255){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, 95, y);
+    doc.line(115, y, pageW-14, y);
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('EMPREGADORA', 14, y);
+    doc.text('EMPREGADO(A)', 115, y);
+    y += 4.5;
+    doc.text(cliente ? cliente.name : '', 14, y);
+    doc.text(func.nome || '', 115, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Modelo de contrato individual de trabalho gerado automaticamente a partir dos dados cadastrados. Recomenda-se revisão por profissional habilitado antes da assinatura, especialmente quanto a cláusulas específicas de convenção coletiva da categoria.');
+    doc.save('contrato-clt-' + (func.nome||'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+
+  function gerarContratoPfPDF(d){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!d.nome || !d.clientId){ alert('Informe ao menos o nome do prestador e a empresa contratante.'); return; }
+    const cliente = state.clients.find(c=>c.id===d.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Contrato de Prestação de Serviços', '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+
+    const paragrafo = (texto, negrito)=>{
+      if(y > 275){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      const l = doc.splitTextToSize(texto, pageW-28);
+      doc.text(l, 14, y);
+      y += l.length*5 + 4;
+    };
+
+    paragrafo('Pelo presente instrumento particular, de um lado ' + (cliente?cliente.name:'__________') +
+      (cliente && cliente.cnpj ? ', inscrita no CNPJ sob o nº ' + cliente.cnpj : '') +
+      (cliente && cliente.address ? ', com sede em ' + cliente.address + (cliente.city?', '+cliente.city:'') + (cliente.uf?'/'+cliente.uf:'') : '') +
+      ', doravante denominada CONTRATANTE, e de outro lado ' + d.nome +
+      (d.cpf ? ', portador(a) do CPF nº ' + d.cpf : '') + (d.endereco ? ', residente em ' + d.endereco : '') +
+      ', doravante denominado(a) CONTRATADO(A), têm entre si justo e contratado o seguinte:');
+
+    paragrafo('CLÁUSULA 1ª — DO OBJETO', true);
+    paragrafo('O(A) CONTRATADO(A), na qualidade de profissional autônomo(a), prestará à CONTRATANTE os seguintes serviços: ' + (d.servico||'—') + '.');
+
+    paragrafo('CLÁUSULA 2ª — DO VALOR E FORMA DE PAGAMENTO', true);
+    paragrafo('Pelos serviços prestados, a CONTRATANTE pagará ao(à) CONTRATADO(A) o valor de ' + fmtBRL(d.valor) +
+      (d.formaPagamento ? ', na forma: ' + d.formaPagamento : '') + '.');
+
+    paragrafo('CLÁUSULA 3ª — DA VIGÊNCIA', true);
+    paragrafo('O presente contrato terá início em ' + (d.dataInicio?fmtDate(d.dataInicio):'__/__/____') +
+      (d.dataFim ? ' e término previsto em ' + fmtDate(d.dataFim) : ', por prazo indeterminado, podendo ser rescindido por qualquer das partes mediante aviso prévio de 30 (trinta) dias') + '.');
+
+    paragrafo('CLÁUSULA 4ª — DA NATUREZA DA RELAÇÃO', true);
+    paragrafo('O presente contrato é de natureza exclusivamente civil, não gerando vínculo empregatício entre as partes, nos termos da legislação civil vigente, não cabendo à CONTRATANTE o recolhimento de encargos trabalhistas (FGTS, férias, 13º salário, INSS patronal) decorrentes deste instrumento. O(A) CONTRATADO(A) é responsável pelo recolhimento de seus próprios tributos e contribuições previdenciárias, na qualidade de contribuinte individual/autônomo.');
+
+    paragrafo('CLÁUSULA 5ª — DO FORO', true);
+    paragrafo('Fica eleito o foro da comarca de domicílio da CONTRATANTE para dirimir quaisquer dúvidas ou controvérsias oriundas do presente contrato.');
+
+    paragrafo('E, por estarem assim justos e contratados, firmam o presente instrumento em 2 (duas) vias de igual teor.');
+
+    y += 6;
+    paragrafo((cliente ? (cliente.city||'') : '') + ', ' + new Date().toLocaleDateString('pt-BR') + '.');
+
+    y += 14;
+    if(y > 255){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, 95, y);
+    doc.line(115, y, pageW-14, y);
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('CONTRATANTE', 14, y);
+    doc.text('CONTRATADO(A)', 115, y);
+    y += 4.5;
+    doc.text(cliente ? cliente.name : '', 14, y);
+    doc.text(d.nome || '', 115, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Modelo de contrato de prestação de serviços (pessoa física/autônomo) gerado automaticamente. Recomenda-se revisão por profissional habilitado antes da assinatura — a existência de subordinação, habitualidade e exclusividade pode gerar risco de reconhecimento de vínculo empregatício.');
+    doc.save('contrato-pf-' + (d.nome||'contratado').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function generateRelatorioFolhaPDF(){
@@ -8123,6 +8338,7 @@
               <div class="field"><label>Categoria eSocial</label><select id="fcCategoriaEsocial">${ESOCIAL_CATEGORIA.map(c=>`<option value="${c.codigo}">${c.label}</option>`).join('')}</select></div>
             </div>
             <div class="field"><label>Tipo de contrato</label><select id="fcTipoContrato">${ESOCIAL_TIPO_CONTRATO.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+            <div class="field"><label>Jornada de trabalho</label><input type="text" id="fcJornada" placeholder="Ex: 44h semanais, seg. a sex. 08h-17h, sáb. 08h-12h"/></div>
 
             <div class="form-section-title">Endereço (eSocial)</div>
             <div class="form-row">
@@ -8353,6 +8569,49 @@
     `;
   }
 
+  function fichasContratosTabHtml(){
+    const d = state.fichasContratosData || {};
+    const func = state.funcionarios.find(f=>f.id===d.funcionarioId);
+    const pf = state.contratoPfData || {};
+    return `
+      <div class="form-section-title" style="margin-top:0;">Ficha de Registro e Contrato de Trabalho (CLT)</div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Gera os documentos a partir dos dados já cadastrados na aba "Funcionários". Confira se o cadastro está completo (endereço, CTPS, PIS, jornada) antes de gerar.</div>
+      <div class="field"><label>Funcionário</label><select id="fcSelectDoc">${funcOptionsHtml(d.funcionarioId)}</select></div>
+      ${func ? `
+        <div class="form-hint" style="margin:-4px 0 12px;">${escapeHtml(func.cargo||'—')} · Admissão ${func.dataAdmissao?fmtDate(func.dataAdmissao):'—'} · ${fmtBRL(func.salarioBase)} · ${escapeHtml(clientName(func.clientId))}</div>
+        <div class="msg-actions">
+          <button type="button" class="btn-add" id="gerarFichaRegistroBtn">📄 Gerar Ficha de Registro (PDF)</button>
+          <button type="button" class="btn-add" id="gerarContratoCltBtn">📄 Gerar Contrato de Trabalho CLT (PDF)</button>
+        </div>
+      ` : `<div class="empty">Selecione um funcionário para gerar os documentos.</div>`}
+
+      <div class="form-section-title">Contrato de Prestação de Serviços (Pessoa Física / Autônomo)</div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Para prestadores avulsos que não são funcionários registrados (sem vínculo CLT) — ex: serviço pontual, consultoria, autônomo.</div>
+      <div class="field"><label>Empresa contratante (cliente)</label>
+        <select id="pfCliente">
+          <option value="">— Selecione —</option>
+          ${state.clients.map(c=>`<option value="${c.id}" ${c.id===pf.clientId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Nome do prestador (contratado)</label><input type="text" id="pfNome" value="${escapeHtml(pf.nome||'')}"/></div>
+        <div class="field"><label>CPF</label><input type="text" id="pfCpf" placeholder="000.000.000-00" value="${escapeHtml(pf.cpf||'')}"/></div>
+      </div>
+      <div class="field"><label>Endereço do prestador</label><input type="text" id="pfEndereco" value="${escapeHtml(pf.endereco||'')}"/></div>
+      <div class="field"><label>Descrição do serviço a ser prestado</label><textarea id="pfServico" rows="3" style="width:100%; font-family:inherit; font-size:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(pf.servico||'')}</textarea></div>
+      <div class="form-row">
+        <div class="field"><label>Valor do contrato (R$)</label><input type="number" step="0.01" min="0" id="pfValor" value="${pf.valor||''}"/></div>
+        <div class="field"><label>Forma de pagamento</label><input type="text" id="pfFormaPagamento" placeholder="Ex: Mensal, à vista, em 3 parcelas..." value="${escapeHtml(pf.formaPagamento||'')}"/></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Data de início</label><input type="date" id="pfDataInicio" value="${pf.dataInicio||''}"/></div>
+        <div class="field"><label>Data de término (opcional)</label><input type="date" id="pfDataFim" value="${pf.dataFim||''}"/></div>
+      </div>
+      <button type="button" class="btn-add" id="gerarContratoPfBtn">📄 Gerar Contrato PF/Autônomo (PDF)</button>
+      <div class="legis-note">Contrato de prestação de serviços entre pessoas jurídica e física (autônomo), sem vínculo empregatício. Não gera obrigações trabalhistas (FGTS, INSS patronal, férias, 13º) — se houver subordinação, horário fixo e exclusividade, pode haver risco de reconhecimento de vínculo CLT pela Justiça do Trabalho.</div>
+    `;
+  }
+
   function renderPessoalExtras(){
     let tabContent = '';
     if(state.dpTab==='funcionarios') tabContent = funcionariosPanelHtml();
@@ -8361,6 +8620,7 @@
     else if(state.dpTab==='rescisao') tabContent = rescisaoTabHtml();
     else if(state.dpTab==='guias') tabContent = guiasTabHtml();
     else if(state.dpTab==='relatorios') tabContent = relatoriosTabHtml();
+    else if(state.dpTab==='fichas') tabContent = fichasContratosTabHtml();
     return `
       <div class="panel">
         <div class="panel-head"><h3>Departamento Pessoal — Folha, Férias e Rescisão</h3></div>
@@ -8371,6 +8631,7 @@
           <button type="button" class="dp-tab-btn ${state.dpTab==='rescisao'?'active':''}" data-dp-tab="rescisao">Rescisão</button>
           <button type="button" class="dp-tab-btn ${state.dpTab==='guias'?'active':''}" data-dp-tab="guias">Guias (FGTS/INSS)</button>
           <button type="button" class="dp-tab-btn ${state.dpTab==='relatorios'?'active':''}" data-dp-tab="relatorios">Relatórios</button>
+          <button type="button" class="dp-tab-btn ${state.dpTab==='fichas'?'active':''}" data-dp-tab="fichas">Fichas &amp; Contratos</button>
         </div>
         <div id="dpTabContent">${tabContent}</div>
       </div>
@@ -11552,6 +11813,7 @@
           cbo: document.getElementById('fcCbo').value,
           categoriaEsocial: document.getElementById('fcCategoriaEsocial').value,
           tipoContrato: document.getElementById('fcTipoContrato').value,
+          jornada: document.getElementById('fcJornada').value,
           cep: document.getElementById('fcCep').value,
           municipioUf: document.getElementById('fcMunicipioUf').value,
           logradouro: document.getElementById('fcLogradouro').value,
@@ -11722,6 +11984,28 @@
     if(relRescisaoBtn) relRescisaoBtn.onclick = ()=> generateRelatorioRescisaoPDF();
     const relResumoBtn = document.getElementById('relResumoBtn');
     if(relResumoBtn) relResumoBtn.onclick = ()=> generateRelatorioResumoPDF();
+
+    // Fichas & Contratos
+    const fcSelectDoc = document.getElementById('fcSelectDoc');
+    if(fcSelectDoc) fcSelectDoc.onchange = (e)=>{ state.fichasContratosData = { funcionarioId: e.target.value }; render(); };
+    const gerarFichaRegistroBtn = document.getElementById('gerarFichaRegistroBtn');
+    if(gerarFichaRegistroBtn) gerarFichaRegistroBtn.onclick = ()=>{
+      const func = state.funcionarios.find(f=>f.id===(state.fichasContratosData||{}).funcionarioId);
+      gerarFichaRegistroPDF(func);
+    };
+    const gerarContratoCltBtn = document.getElementById('gerarContratoCltBtn');
+    if(gerarContratoCltBtn) gerarContratoCltBtn.onclick = ()=>{
+      const func = state.funcionarios.find(f=>f.id===(state.fichasContratosData||{}).funcionarioId);
+      gerarContratoCltPDF(func);
+    };
+    ['pfCliente','pfNome','pfCpf','pfEndereco','pfServico','pfValor','pfFormaPagamento','pfDataInicio','pfDataFim'].forEach(id=>{
+      const el = document.getElementById(id);
+      if(!el) return;
+      const key = { pfCliente:'clientId', pfNome:'nome', pfCpf:'cpf', pfEndereco:'endereco', pfServico:'servico', pfValor:'valor', pfFormaPagamento:'formaPagamento', pfDataInicio:'dataInicio', pfDataFim:'dataFim' }[id];
+      el.oninput = el.onchange = (e)=>{ state.contratoPfData = Object.assign({}, state.contratoPfData, { [key]: e.target.value }); };
+    });
+    const gerarContratoPfBtn = document.getElementById('gerarContratoPfBtn');
+    if(gerarContratoPfBtn) gerarContratoPfBtn.onclick = ()=> gerarContratoPfPDF(state.contratoPfData||{});
 
     const txDeptFilter = document.getElementById('txDeptFilter');
     if(txDeptFilter) txDeptFilter.onchange = (e)=>{ state.txFilterDept = e.target.value; render(); };
