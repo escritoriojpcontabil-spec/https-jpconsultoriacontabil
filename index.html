@@ -3564,6 +3564,193 @@
     doc.save('relatorio-rescisoes.pdf');
   }
 
+  function generateRelatorioFeriasPDF(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    let y = pdfHeader(doc, 'Relatório de Férias', '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    if(!state.ferias.length){
+      doc.text('Nenhuma férias registrada.', 14, y);
+    } else {
+      state.ferias.forEach(f=>{
+        doc.setFont('helvetica','bold'); doc.text(clientNameOrFunc(f.funcionarioId) + ' — Início ' + (f.dataInicioGozo?fmtDate(f.dataInicioGozo):'—'), 14, y); y+=5;
+        doc.setFont('helvetica','normal');
+        doc.text('Dias: ' + (f.diasGozo||0) + ' gozo' + (f.diasVendidos?' + '+f.diasVendidos+' vendidos':'') + '   Total líquido: ' + fmtBRL(f.totalLiquido), 14, y);
+        y += 8;
+        if(y > 250){ doc.addPage(); y = 20; }
+      });
+    }
+    pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos estimados do sistema, conforme Art. 129 a 145 da CLT. Não considera adicionais além do salário base cadastrado — revise antes do pagamento.');
+    doc.save('relatorio-ferias.pdf');
+  }
+
+  function gerarReciboPagamentoPDF(folha){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!folha){ alert('Recibo não encontrado.'); return; }
+    const func = state.funcionarios.find(f=>f.id===folha.funcionarioId);
+    const cliente = state.clients.find(c=>c.id===folha.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Recibo de Pagamento de Salário', cliente ? cliente.name : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.text('Funcionário: ' + (func?func.nome:'—') + (func&&func.cpf?' — CPF '+func.cpf:''), 14, y); y+=6;
+    doc.text('Cargo: ' + (func?(func.cargo||'—'):'—') + '   Competência: ' + monthLabel(folha.competencia) + '/' + (folha.competencia||'').slice(0,4), 14, y); y+=10;
+
+    const linha = (label, valor, negrito)=>{
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      doc.text(label, 14, y);
+      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
+      y += 6.5;
+    };
+    doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4); y+=1;
+    linha('Salário base + proventos (bruto)', folha.bruto);
+    linha('(-) INSS', -Math.abs(folha.inss||0));
+    linha('(-) IRRF', -Math.abs(folha.irrf||0));
+    if(folha.descontosExtra) linha('(-) Outros descontos', -Math.abs(folha.descontosExtra));
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
+    linha('SALÁRIO LÍQUIDO', folha.liquido, true);
+    y += 4;
+    doc.setFontSize(8); doc.setTextColor(120,130,140);
+    doc.text('FGTS do período (8%, depósito do empregador — não compõe o líquido): ' + fmtBRL(folha.fgts), 14, y);
+    doc.setTextColor(20,25,30); doc.setFontSize(9.5);
+
+    y += 20;
+    if(y > 260){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, pageW-14, y);
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Declaro ter recebido a importância líquida discriminada neste recibo.', 14, y);
+    y += 14;
+    doc.line(14, y, 100, y);
+    y += 4.5;
+    doc.text('Assinatura do(a) funcionário(a) — ' + (func?func.nome:''), 14, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema (tabelas de INSS/IRRF vigentes). Não substitui a folha de pagamento oficial homologada — verbas variáveis específicas devem ser conferidas antes da entrega ao funcionário.');
+    doc.save('recibo-pagamento-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (folha.competencia||'') + '.pdf');
+  }
+
+  function gerarReciboFeriasPDF(ferias){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!ferias){ alert('Recibo não encontrado.'); return; }
+    const func = state.funcionarios.find(f=>f.id===ferias.funcionarioId);
+    const cliente = state.clients.find(c=>c.id===ferias.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Recibo de Férias', cliente ? cliente.name : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.text('Funcionário: ' + (func?func.nome:'—') + (func&&func.cpf?' — CPF '+func.cpf:''), 14, y); y+=6;
+    const inicio = ferias.dataInicioGozo ? fmtDate(ferias.dataInicioGozo) : '—';
+    doc.text('Período de gozo: ' + (ferias.diasGozo||0) + ' dias, a partir de ' + inicio + (ferias.diasVendidos ? '   ·   Abono pecuniário: ' + ferias.diasVendidos + ' dias vendidos' : ''), 14, y); y+=10;
+
+    const linha = (label, valor, negrito)=>{
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      doc.text(label, 14, y);
+      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
+      y += 6.5;
+    };
+    doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4); y+=1;
+    linha('Férias (' + (ferias.diasGozo||0) + ' dias)', ferias.valorFeriasGozo);
+    linha('1/3 constitucional', ferias.tercoGozo);
+    if(ferias.diasVendidos){
+      linha('Abono pecuniário (' + ferias.diasVendidos + ' dias vendidos, isento)', ferias.valorAbono);
+      linha('1/3 sobre o abono (isento)', ferias.tercoAbono);
+    }
+    linha('(-) INSS (sobre férias + 1/3)', -Math.abs(ferias.inss||0));
+    linha('(-) IRRF (sobre férias + 1/3)', -Math.abs(ferias.irrf||0));
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
+    linha('TOTAL LÍQUIDO', ferias.totalLiquido, true);
+
+    y += 20;
+    if(y > 255){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, pageW-14, y);
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Declaro ter recebido a importância líquida discriminada neste recibo, referente às férias acima especificadas.', 14, y);
+    y += 14;
+    doc.line(14, y, 100, y);
+    y += 4.5;
+    doc.text('Assinatura do(a) funcionário(a) — ' + (func?func.nome:''), 14, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema, conforme Art. 129 a 145 da CLT. Não considera adicionais (insalubridade, periculosidade) além do salário base cadastrado.');
+    doc.save('recibo-ferias-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+
+  function gerarTRCTPDF(resc){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!resc){ alert('Rescisão não encontrada.'); return; }
+    const func = state.funcionarios.find(f=>f.id===resc.funcionarioId);
+    const cliente = state.clients.find(c=>c.id===resc.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Termo de Rescisão do Contrato de Trabalho (TRCT)', cliente ? cliente.name : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    doc.text('Empregador: ' + (cliente?cliente.name:'—') + (cliente&&cliente.cnpj?' — CNPJ '+cliente.cnpj:''), 14, y); y+=5.5;
+    doc.text('Empregado(a): ' + (func?func.nome:'—') + (func&&func.cpf?' — CPF '+func.cpf:'') + (func&&func.ctpsNumero?' — CTPS '+func.ctpsNumero+'/'+(func.ctpsSerie||'—'):''), 14, y); y+=5.5;
+    doc.text('Admissão: ' + (func&&func.dataAdmissao?fmtDate(func.dataAdmissao):'—') + '   Desligamento: ' + (resc.dataDesligamento?fmtDate(resc.dataDesligamento):'—'), 14, y); y+=5.5;
+    doc.text('Tipo de rescisão: ' + (resc.tipoRescisao||'—') + '   Aviso prévio: ' + (resc.avisoPrevio||'—'), 14, y); y+=10;
+
+    const linha = (label, valor, negrito)=>{
+      if(valor==null) return;
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      doc.text(label, 14, y);
+      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
+      y += 6.5;
+    };
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(27,58,92);
+    doc.text('Verbas Rescisórias', 14, y); y += 6;
+    doc.setTextColor(20,25,30); doc.setFontSize(9);
+    doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4);
+    linha('Saldo de salário', resc.saldoSalario);
+    if(resc.feriasVencidas) linha('Férias vencidas + 1/3', (resc.feriasVencidas||0) + (resc.tercoFeriasVencidas||0));
+    linha('Férias proporcionais + 1/3', (resc.feriasProporcionais||0) + (resc.tercoFeriasProporcionais||0));
+    linha('13º salário proporcional', resc.decimoTerceiroProporcional);
+    if(resc.avisoPrevioValor) linha('Aviso prévio indenizado (' + (resc.diasAviso||0) + ' dias)', resc.avisoPrevioValor);
+    if(resc.multaFgts) linha('Multa FGTS (rescisória)', resc.multaFgts);
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
+    linha('(-) INSS', -Math.abs(resc.inss||0));
+    linha('(-) IRRF', -Math.abs(resc.irrf||0));
+    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
+    linha('TOTAL LÍQUIDO A RECEBER', resc.totalLiquido, true);
+
+    y += 16;
+    if(y > 250){ doc.addPage(); y = 20; }
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    const obsLines = doc.splitTextToSize('Este termo discrimina as verbas rescisórias apuradas de forma estimada pelo sistema, com base na CLT. A homologação, quando exigida, e a comunicação da dispensa (CD) / chave de conectividade do FGTS devem ser providenciadas separadamente pelos canais oficiais (eSocial/eCAC).', pageW-28);
+    doc.text(obsLines, 14, y);
+    y += obsLines.length*4.2 + 10;
+    doc.setTextColor(20,25,30);
+
+    if(y > 250){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(14, y, 95, y);
+    doc.line(115, y, pageW-14, y);
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('EMPREGADOR', 14, y);
+    doc.text('EMPREGADO(A)', 115, y);
+    y += 4.5;
+    doc.text(cliente ? cliente.name : '', 14, y);
+    doc.text(func ? func.nome : '', 115, y);
+    y += 16;
+    doc.line(14, y, 95, y);
+    doc.line(115, y, pageW-14, y);
+    y += 5;
+    doc.text('Testemunha 1', 14, y);
+    doc.text('Testemunha 2', 115, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Modelo de TRCT gerado a partir do cálculo estimado no sistema. Não substitui a homologação oficial nem a comunicação de dispensa ao eSocial — revise com a equipe antes de entregar ao trabalhador.');
+    doc.save('trct-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+
   function generateRelatorioResumoPDF(){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const { jsPDF } = window.jspdf;
@@ -8264,6 +8451,7 @@
                 <div style="font-size:10px; color:var(--ink-soft); margin-top:2px;">Auto: ${f.envioAutomaticoEsocial?'Sim':'Não'}</div>
               </td>
               <td style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button class="btn-sm" data-edit-func="${f.id}">Editar</button>
                 <button class="btn-detail" data-envia-esocial="${f.id}">Enviar</button>
                 <button class="btn-sm danger" data-del-func="${f.id}">Excluir</button>
               </td>
@@ -8285,75 +8473,76 @@
   }
 
   function funcModalHtml(){
-    if(!state.funcModalData) return '';
+    const d = state.funcModalData;
+    if(!d) return '';
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal modal-wide">
-          <h3>Novo funcionário</h3>
+          <h3>${d.id ? 'Editar funcionário' : 'Novo funcionário'}</h3>
           <form id="funcForm">
             <div class="form-section-title" style="margin-top:0;">Dados cadastrais</div>
-            <div class="field"><label>Nome completo</label><input type="text" id="fcNome" required/></div>
+            <div class="field"><label>Nome completo</label><input type="text" id="fcNome" value="${escapeHtml(d.nome||'')}" required/></div>
             <div class="form-row">
-              <div class="field"><label>CPF</label><input type="text" id="fcCpf" placeholder="000.000.000-00" required/></div>
-              <div class="field"><label>Cargo</label><input type="text" id="fcCargo"/></div>
+              <div class="field"><label>CPF</label><input type="text" id="fcCpf" placeholder="000.000.000-00" value="${escapeHtml(d.cpf||'')}" required/></div>
+              <div class="field"><label>Cargo</label><input type="text" id="fcCargo" value="${escapeHtml(d.cargo||'')}"/></div>
             </div>
             <div class="field"><label>Empresa (cliente)</label>
               <select id="fcCliente" required>
                 <option value="">— Selecione —</option>
-                ${state.clients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+                ${state.clients.map(c=>`<option value="${c.id}" ${c.id===d.clientId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
               </select>
             </div>
             <div class="form-row">
-              <div class="field"><label>Data de admissão</label><input type="date" id="fcAdmissao" required/></div>
-              <div class="field"><label>Salário base (R$)</label><input type="number" step="0.01" min="0" id="fcSalario" required/></div>
+              <div class="field"><label>Data de admissão</label><input type="date" id="fcAdmissao" value="${d.dataAdmissao||''}" required/></div>
+              <div class="field"><label>Salário base (R$)</label><input type="number" step="0.01" min="0" id="fcSalario" value="${d.salarioBase||''}" required/></div>
             </div>
             <div class="form-row">
-              <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="fcDependentes" value="0"/></div>
+              <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="fcDependentes" value="${d.dependentes!=null?d.dependentes:0}"/></div>
               <div class="field"><label>Status</label>
                 <select id="fcStatus">
-                  <option value="Ativo">Ativo</option>
-                  <option value="Afastado">Afastado</option>
-                  <option value="Desligado">Desligado</option>
+                  <option value="Ativo" ${d.status==='Ativo'?'selected':''}>Ativo</option>
+                  <option value="Afastado" ${d.status==='Afastado'?'selected':''}>Afastado</option>
+                  <option value="Desligado" ${d.status==='Desligado'?'selected':''}>Desligado</option>
                 </select>
               </div>
             </div>
 
             <div class="form-section-title">Dados obrigatórios para o eSocial (evento S-2200)</div>
             <div class="form-row">
-              <div class="field"><label>PIS/NIS</label><input type="text" id="fcPis" placeholder="000.00000.00-0" required/></div>
-              <div class="field"><label>Data de nascimento</label><input type="date" id="fcNascimento" required/></div>
+              <div class="field"><label>PIS/NIS</label><input type="text" id="fcPis" placeholder="000.00000.00-0" value="${escapeHtml(d.pis||'')}" required/></div>
+              <div class="field"><label>Data de nascimento</label><input type="date" id="fcNascimento" value="${d.dataNascimento||''}" required/></div>
             </div>
-            <div class="field"><label>Nome da mãe</label><input type="text" id="fcNomeMae" required/></div>
+            <div class="field"><label>Nome da mãe</label><input type="text" id="fcNomeMae" value="${escapeHtml(d.nomeMae||'')}" required/></div>
             <div class="form-row">
-              <div class="field"><label>Sexo</label><select id="fcSexo">${ESOCIAL_SEXO.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
-              <div class="field"><label>Raça/Cor</label><select id="fcRacaCor">${ESOCIAL_RACA_COR.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+              <div class="field"><label>Sexo</label><select id="fcSexo">${ESOCIAL_SEXO.map(s=>`<option value="${s}" ${s===d.sexo?'selected':''}>${s}</option>`).join('')}</select></div>
+              <div class="field"><label>Raça/Cor</label><select id="fcRacaCor">${ESOCIAL_RACA_COR.map(s=>`<option value="${s}" ${s===d.racaCor?'selected':''}>${s}</option>`).join('')}</select></div>
             </div>
-            <div class="field"><label>Grau de instrução</label><select id="fcGrauInstrucao">${ESOCIAL_GRAU_INSTRUCAO.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+            <div class="field"><label>Grau de instrução</label><select id="fcGrauInstrucao">${ESOCIAL_GRAU_INSTRUCAO.map(s=>`<option value="${s}" ${s===d.grauInstrucao?'selected':''}>${s}</option>`).join('')}</select></div>
             <div class="form-row">
-              <div class="field"><label>CTPS — Número</label><input type="text" id="fcCtpsNumero" required/></div>
-              <div class="field"><label>CTPS — Série</label><input type="text" id="fcCtpsSerie" required/></div>
+              <div class="field"><label>CTPS — Número</label><input type="text" id="fcCtpsNumero" value="${escapeHtml(d.ctpsNumero||'')}" required/></div>
+              <div class="field"><label>CTPS — Série</label><input type="text" id="fcCtpsSerie" value="${escapeHtml(d.ctpsSerie||'')}" required/></div>
             </div>
             <div class="form-row">
-              <div class="field"><label>CBO (código da ocupação)</label><input type="text" id="fcCbo" placeholder="Ex: 4110-05" required/></div>
-              <div class="field"><label>Categoria eSocial</label><select id="fcCategoriaEsocial">${ESOCIAL_CATEGORIA.map(c=>`<option value="${c.codigo}">${c.label}</option>`).join('')}</select></div>
+              <div class="field"><label>CBO (código da ocupação)</label><input type="text" id="fcCbo" placeholder="Ex: 4110-05" value="${escapeHtml(d.cbo||'')}" required/></div>
+              <div class="field"><label>Categoria eSocial</label><select id="fcCategoriaEsocial">${ESOCIAL_CATEGORIA.map(c=>`<option value="${c.codigo}" ${c.codigo===d.categoriaEsocial?'selected':''}>${c.label}</option>`).join('')}</select></div>
             </div>
-            <div class="field"><label>Tipo de contrato</label><select id="fcTipoContrato">${ESOCIAL_TIPO_CONTRATO.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
-            <div class="field"><label>Jornada de trabalho</label><input type="text" id="fcJornada" placeholder="Ex: 44h semanais, seg. a sex. 08h-17h, sáb. 08h-12h"/></div>
+            <div class="field"><label>Tipo de contrato</label><select id="fcTipoContrato">${ESOCIAL_TIPO_CONTRATO.map(s=>`<option value="${s}" ${s===d.tipoContrato?'selected':''}>${s}</option>`).join('')}</select></div>
+            <div class="field"><label>Jornada de trabalho</label><input type="text" id="fcJornada" placeholder="Ex: 44h semanais, seg. a sex. 08h-17h, sáb. 08h-12h" value="${escapeHtml(d.jornada||'')}"/></div>
 
             <div class="form-section-title">Endereço (eSocial)</div>
             <div class="form-row">
-              <div class="field"><label>CEP</label><input type="text" id="fcCep" placeholder="00000-000"/></div>
-              <div class="field"><label>Município/UF</label><input type="text" id="fcMunicipioUf" placeholder="Ex: Paulista/PE"/></div>
+              <div class="field"><label>CEP</label><input type="text" id="fcCep" placeholder="00000-000" value="${escapeHtml(d.cep||'')}"/></div>
+              <div class="field"><label>Município/UF</label><input type="text" id="fcMunicipioUf" placeholder="Ex: Paulista/PE" value="${escapeHtml(d.municipioUf||'')}"/></div>
             </div>
             <div class="form-row">
-              <div class="field"><label>Logradouro</label><input type="text" id="fcLogradouro"/></div>
-              <div class="field"><label>Número</label><input type="text" id="fcNumeroEndereco"/></div>
+              <div class="field"><label>Logradouro</label><input type="text" id="fcLogradouro" value="${escapeHtml(d.logradouro||'')}"/></div>
+              <div class="field"><label>Número</label><input type="text" id="fcNumeroEndereco" value="${escapeHtml(d.numeroEndereco||'')}"/></div>
             </div>
-            <div class="field"><label>Bairro</label><input type="text" id="fcBairro"/></div>
+            <div class="field"><label>Bairro</label><input type="text" id="fcBairro" value="${escapeHtml(d.bairro||'')}"/></div>
 
             <div class="form-section-title">Envio ao eSocial</div>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-soft); margin-bottom:6px;">
-              <input type="checkbox" id="fcEnvioAutomatico"/> Habilitar envio automático ao eSocial para este funcionário
+              <input type="checkbox" id="fcEnvioAutomatico" ${d.envioAutomaticoEsocial?'checked':''}/> Habilitar envio automático ao eSocial para este funcionário
             </label>
             <div class="form-hint" style="margin:0 0 6px;">Este botão prepara os dados obrigatórios do evento S-2200 para envio — a transmissão em si ao eSocial exige certificado digital do escritório e um software homologado (nenhum sistema em navegador consegue autenticar isso automaticamente, por segurança).</div>
 
@@ -8418,7 +8607,7 @@
                 <td style="text-align:right" class="mono">${fmtBRL(f.inss)}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.irrf)}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.liquido)}</td>
-                <td><button class="btn-sm danger" data-del-folha="${f.id}">Excluir</button></td>
+                <td><button class="btn-detail" data-recibo-folha="${f.id}">Recibo</button> <button class="btn-sm danger" data-del-folha="${f.id}">Excluir</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -8457,7 +8646,7 @@
                 <td>${f.dataInicioGozo?fmtDate(f.dataInicioGozo):'—'}</td>
                 <td>${f.diasGozo||0} gozo${f.diasVendidos?' + '+f.diasVendidos+' vendidos':''}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.totalLiquido)}</td>
-                <td><button class="btn-sm danger" data-del-ferias="${f.id}">Excluir</button></td>
+                <td><button class="btn-detail" data-recibo-ferias="${f.id}">Recibo</button> <button class="btn-sm danger" data-del-ferias="${f.id}">Excluir</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -8519,7 +8708,7 @@
                 <td>${r.dataDesligamento?fmtDate(r.dataDesligamento):'—'}</td>
                 <td>${escapeHtml(r.tipoRescisao||'—')}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(r.totalLiquido)}</td>
-                <td><button class="btn-sm danger" data-del-resc="${r.id}">Excluir</button></td>
+                <td><button class="btn-detail" data-recibo-resc="${r.id}">TRCT</button> <button class="btn-sm danger" data-del-resc="${r.id}">Excluir</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -8563,6 +8752,7 @@
       <div class="form-hint" style="margin:0 0 16px;">Gere relatórios em PDF para arquivo do escritório ou envio ao cliente.</div>
       <div class="msg-actions">
         <button type="button" class="btn-add" id="relFolhaBtn">📄 Relatório de Folha (competência atual)</button>
+        <button type="button" class="btn-add" id="relFeriasBtn">📄 Relatório de Férias</button>
         <button type="button" class="btn-add" id="relRescisaoBtn">📄 Relatório de Rescisões</button>
         <button type="button" class="btn-add" id="relResumoBtn">📄 Relatório Resumo (Folha+Férias+Rescisão)</button>
       </div>
@@ -11793,7 +11983,9 @@
     if(funcForm){
       funcForm.onsubmit = (e)=>{
         e.preventDefault();
+        const editingId = state.funcModalData && state.funcModalData.id;
         const f = {
+          id: editingId || undefined,
           nome: document.getElementById('fcNome').value,
           cpf: document.getElementById('fcCpf').value,
           cargo: document.getElementById('fcCargo').value,
@@ -11820,13 +12012,21 @@
           numeroEndereco: document.getElementById('fcNumeroEndereco').value,
           bairro: document.getElementById('fcBairro').value,
           envioAutomaticoEsocial: document.getElementById('fcEnvioAutomatico').checked,
-          statusEsocial: 'Não enviado',
+          statusEsocial: (editingId && state.funcModalData.statusEsocial) || 'Não enviado',
         };
         state.modal=null; state.funcModalData=null;
         render();
         saveFuncionario(f);
       };
     }
+    root.querySelectorAll('[data-edit-func]').forEach(el=>{
+      el.onclick = ()=>{
+        const f = state.funcionarios.find(x=>x.id===el.getAttribute('data-edit-func'));
+        if(!f) return;
+        state.funcModalData = Object.assign({}, f);
+        state.modal = 'func'; render();
+      };
+    });
     root.querySelectorAll('[data-del-func]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este funcionário? Registros de folha, férias e rescisão vinculados a ele não serão apagados.')) deleteFuncionario(el.getAttribute('data-del-func')); };
     });
@@ -11980,10 +12180,31 @@
     // Relatórios
     const relFolhaBtn = document.getElementById('relFolhaBtn');
     if(relFolhaBtn) relFolhaBtn.onclick = ()=> generateRelatorioFolhaPDF();
+    const relFeriasBtn = document.getElementById('relFeriasBtn');
+    if(relFeriasBtn) relFeriasBtn.onclick = ()=> generateRelatorioFeriasPDF();
     const relRescisaoBtn = document.getElementById('relRescisaoBtn');
     if(relRescisaoBtn) relRescisaoBtn.onclick = ()=> generateRelatorioRescisaoPDF();
     const relResumoBtn = document.getElementById('relResumoBtn');
     if(relResumoBtn) relResumoBtn.onclick = ()=> generateRelatorioResumoPDF();
+
+    root.querySelectorAll('[data-recibo-folha]').forEach(el=>{
+      el.onclick = ()=>{
+        const f = state.folhas.find(x=>x.id===el.getAttribute('data-recibo-folha'));
+        gerarReciboPagamentoPDF(f);
+      };
+    });
+    root.querySelectorAll('[data-recibo-ferias]').forEach(el=>{
+      el.onclick = ()=>{
+        const f = state.ferias.find(x=>x.id===el.getAttribute('data-recibo-ferias'));
+        gerarReciboFeriasPDF(f);
+      };
+    });
+    root.querySelectorAll('[data-recibo-resc]').forEach(el=>{
+      el.onclick = ()=>{
+        const r = state.rescisoes.find(x=>x.id===el.getAttribute('data-recibo-resc'));
+        gerarTRCTPDF(r);
+      };
+    });
 
     // Fichas & Contratos
     const fcSelectDoc = document.getElementById('fcSelectDoc');
