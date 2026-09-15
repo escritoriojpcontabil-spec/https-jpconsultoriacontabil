@@ -3592,171 +3592,261 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
+    const mx = 12, cw = pageW - mx*2;
     const competenciaLabel = monthLabel(state.competenciaAtiva) + '/' + state.competenciaAtiva.slice(0,4);
-    const list = state.folhas.filter(f=>f.competencia===state.competenciaAtiva);
+    const folhasComp = state.folhas.filter(f=>f.competencia===state.competenciaAtiva);
+    const prolaboresComp = state.prolabores.filter(p=>p.competencia===state.competenciaAtiva);
 
-    // Agrupa por empresa (cliente)
     const porCliente = {};
-    list.forEach(f=>{
+    folhasComp.forEach(f=>{
       const cid = f.clientId || '_sem_empresa';
-      if(!porCliente[cid]) porCliente[cid] = [];
-      porCliente[cid].push(f);
+      if(!porCliente[cid]) porCliente[cid] = { folhas:[], prolabores:[] };
+      porCliente[cid].folhas.push(f);
+    });
+    prolaboresComp.forEach(p=>{
+      const cid = p.clientId || '_sem_empresa';
+      if(!porCliente[cid]) porCliente[cid] = { folhas:[], prolabores:[] };
+      porCliente[cid].prolabores.push(p);
     });
     const clientIds = Object.keys(porCliente).sort((a,b)=> clientName(a).localeCompare(clientName(b)));
 
-    if(!list.length){
-      let y = pdfHeader(doc, 'Relatório de Folha de Pagamento', 'Competência ' + competenciaLabel);
+    if(!clientIds.length){
+      let y = pdfHeader(doc, 'Folha de Pagamento Mensal', 'Competência ' + competenciaLabel);
       doc.setFont('helvetica','normal'); doc.setFontSize(9);
-      doc.text('Nenhuma folha calculada nesta competência.', 14, y);
+      doc.text('Nenhuma folha ou pró-labore calculado nesta competência.', mx, y);
       pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente.');
-      doc.save('relatorio-folha-' + state.competenciaAtiva + '.pdf');
+      doc.save('folha-pagamento-mensal-' + state.competenciaAtiva + '.pdf');
       return;
     }
 
-    const tituloSecao = (titulo)=>{
-      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(27,58,92);
-      doc.text(titulo, 14, 34);
-      doc.setTextColor(20,25,30); doc.setFontSize(9);
+    // ---------- helpers de layout ----------
+    const cliHeader = (titulo, subtitulo, cliente)=>{
+      let y = pdfHeader(doc, titulo, cliente ? cliente.name : subtitulo, cliente ? cliente.logo : '');
+      return y;
     };
-    const cabecalhoColunas = (cols, y)=>{
-      doc.setFont('helvetica','bold'); doc.setFontSize(8);
-      doc.setFillColor(240,243,247);
-      doc.rect(14, y-4.5, pageW-28, 6.5, 'F');
-      cols.forEach(c=> doc.text(c.label, c.x, y, c.align?{align:c.align}:undefined));
-      doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
-      return y+5;
+    const tabelaHeader = (cols, y, wTotal)=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(232,235,240); doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      let cx = mx;
+      cols.forEach(c=>{ doc.rect(cx, y, c.w, 5.5, 'FD'); doc.text(c.label, cx+1.5, y+3.8); cx += c.w; });
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      return y+5.5;
+    };
+    const tabelaRow = (cols, vals, y, negrito)=>{
+      doc.setFont('helvetica', negrito?'bold':'normal');
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      let cx = mx;
+      cols.forEach((c,i)=>{
+        doc.rect(cx, y, c.w, 5.2);
+        const v = vals[i]!=null ? String(vals[i]) : '';
+        doc.text(v, c.align==='right' ? cx+c.w-1.5 : cx+1.5, y+3.6, c.align==='right'?{align:'right'}:undefined);
+        cx += c.w;
+      });
+      return y+5.2;
     };
 
-    // ===== SEÇÃO 1 — RESUMO POR EMPRESA =====
-    let y = pdfHeader(doc, 'Relatório de Folha de Pagamento', 'Resumo — Competência ' + competenciaLabel);
-    tituloSecao('1. Resumo por Empresa');
-    y = 42;
-    const cols1 = [
-      {label:'EMPRESA', x:14}, {label:'FUNC.', x:104, align:'right'}, {label:'TOTAL BRUTO', x:135, align:'right'},
-      {label:'TOTAL LÍQUIDO', x:pageW-16, align:'right'},
-    ];
-    y = cabecalhoColunas(cols1, y);
-    let granBruto=0, granLiquido=0, granInss=0, granIrrf=0, granFgts=0, granFunc=0;
-    clientIds.forEach(cid=>{
-      const itens = porCliente[cid];
-      const tb = itens.reduce((s,f)=>s+(f.bruto||0),0);
-      const tl = itens.reduce((s,f)=>s+(f.liquido||0),0);
-      granBruto+=tb; granLiquido+=tl; granFunc+=itens.length;
-      if(y > 275){ doc.addPage(); y = 20; }
-      doc.text(clientName(cid), 14, y);
-      doc.text(String(itens.length), 104, y, {align:'right'});
-      doc.text(fmtBRL(tb), 135, y, {align:'right'});
-      doc.text(fmtBRL(tl), pageW-16, y, {align:'right'});
+    clientIds.forEach((cid, idxCliente)=>{
+      if(idxCliente>0) doc.addPage();
+      const cliente = state.clients.find(c=>c.id===cid);
+      const { folhas: fList, prolabores: pList } = porCliente[cid];
+
+      const totFolhaBruto = fList.reduce((s,f)=>s+(f.bruto||0),0);
+      const totFolhaLiquido = fList.reduce((s,f)=>s+(f.liquido||0),0);
+      const totProBruto = pList.reduce((s,p)=>s+(p.bruto||0),0);
+      const totProLiquido = pList.reduce((s,p)=>s+(p.liquido||0),0);
+      const totBruto = totFolhaBruto + totProBruto;
+      const totLiquido = totFolhaLiquido + totProLiquido;
+      const totInss = fList.reduce((s,f)=>s+(f.inss||0),0) + pList.reduce((s,p)=>s+(p.inss||0),0);
+      const totIrrf = fList.reduce((s,f)=>s+(f.irrf||0),0) + pList.reduce((s,p)=>s+(p.irrf||0),0);
+      const totFgts = fList.reduce((s,f)=>s+(f.fgts||0),0);
+      const totImpostos = totInss + totIrrf + totFgts;
+
+      const admissoesMes = state.funcionarios.filter(f=>f.clientId===cid && f.dataAdmissao && f.dataAdmissao.slice(0,7)===state.competenciaAtiva).length;
+      const desligamentosMes = state.rescisoes.filter(r=>r.clientId===cid && r.dataDesligamento && r.dataDesligamento.slice(0,7)===state.competenciaAtiva).length;
+      const multasRescMes = state.rescisoes.filter(r=>r.clientId===cid && r.dataDesligamento && r.dataDesligamento.slice(0,7)===state.competenciaAtiva).reduce((s,r)=>s+(r.multaFgts||0),0);
+
+      // ===== PÁGINA 1 — RESUMO =====
+      let y = cliHeader('Folha de Pagamento Mensal ' + competenciaLabel, cliente ? cliente.name : '—', cliente);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9);
+      const paragrafo = doc.splitTextToSize(
+        'O valor total da folha de pagamento mensal do mês ' + competenciaLabel + ' é de ' + fmtBRL(totLiquido + totImpostos) +
+        ', considerando o valor líquido a pagar aos trabalhadores somado aos encargos trabalhistas e demais valores apurados.', cw);
+      doc.text(paragrafo, mx, y);
+      y += paragrafo.length*4.6 + 8;
+
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Composição por categoria', mx, y); y += 3;
+      const colsCat = [{label:'ITEM', w:cw*0.45}, {label:'QUANTIDADE', w:cw*0.18, align:'right'}, {label:'TOTAL DA FOLHA', w:cw*0.18, align:'right'}, {label:'LÍQUIDO A PAGAR', w:cw*0.19, align:'right'}];
+      y = tabelaHeader(colsCat, y);
+      if(pList.length) y = tabelaRow(colsCat, ['Diretor não empregado sem FGTS (Pró-labore)', pList.length, fmtBRL(totProBruto), fmtBRL(totProLiquido)], y);
+      if(fList.length) y = tabelaRow(colsCat, ['Empregado (CLT)', fList.length, fmtBRL(totFolhaBruto), fmtBRL(totFolhaLiquido)], y);
       y += 6;
-    });
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
-    doc.setFont('helvetica','bold');
-    doc.text('TOTAL GERAL', 14, y);
-    doc.text(String(granFunc), 104, y, {align:'right'});
-    doc.text(fmtBRL(granBruto), 135, y, {align:'right'});
-    doc.text(fmtBRL(granLiquido), pageW-16, y, {align:'right'});
 
-    // ===== SEÇÃO 2 — FOLHA GERAL (BRUTA), POR EMPRESA =====
-    doc.addPage();
-    tituloSecao('2. Folha Geral (Bruta) — por Empresa e Funcionário');
-    y = 42;
-    clientIds.forEach(cid=>{
-      const itens = porCliente[cid];
-      if(y > 265){ doc.addPage(); y = 20; }
-      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
-      doc.text(clientName(cid), 14, y); y += 5;
-      const cols2 = [{label:'FUNCIONÁRIO', x:14}, {label:'CARGO', x:100}, {label:'BRUTO', x:pageW-16, align:'right'}];
-      y = cabecalhoColunas(cols2, y);
-      let subBruto = 0;
-      itens.forEach(f=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Composição do valor total', mx, y); y += 3;
+      const colsComp = [{label:'ITEM', w:cw*0.78}, {label:'VALOR', w:cw*0.22, align:'right'}];
+      y = tabelaHeader(colsComp, y);
+      y = tabelaRow(colsComp, ['Valor líquido a pagar aos trabalhadores', fmtBRL(totLiquido)], y);
+      y = tabelaRow(colsComp, ['Impostos descontados dos trabalhadores (INSS + IRRF retidos)', fmtBRL(totInss+totIrrf)], y);
+      y = tabelaRow(colsComp, ['Impostos a serem recolhidos pelo empregador (INSS + IRRF + FGTS)', fmtBRL(totImpostos)], y);
+      y = tabelaRow(colsComp, ['Recolhimentos sindicais', fmtBRL(0)], y);
+      y += 6;
+
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Impostos apurados nesta folha', mx, y); y += 3;
+      y = tabelaHeader(colsComp, y);
+      y = tabelaRow(colsComp, ['Previdência Social (INSS)', fmtBRL(totInss)], y);
+      y = tabelaRow(colsComp, ['Imposto de Renda (IRRF)', fmtBRL(totIrrf)], y);
+      y = tabelaRow(colsComp, ['Contribuições Sindicais', fmtBRL(0)], y);
+      y = tabelaRow(colsComp, ['Fundo de Garantia (FGTS)', fmtBRL(totFgts)], y);
+      y = tabelaRow(colsComp, ['Multas rescisórias', fmtBRL(multasRescMes)], y);
+      y += 6;
+
+      if(y > 250){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Movimentações do mês', mx, y); y += 3;
+      const colsMov = [{label:'MOVIMENTAÇÃO', w:cw*0.78}, {label:'QUANTIDADE', w:cw*0.22, align:'right'}];
+      y = tabelaHeader(colsMov, y);
+      y = tabelaRow(colsMov, ['Admissões', admissoesMes], y);
+      y = tabelaRow(colsMov, ['Desligamentos', desligamentosMes], y);
+
+      pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente.');
+
+      // ===== PÁGINA 2+ — DETALHAMENTO DA FOLHA DE PAGAMENTO =====
+      doc.addPage();
+      y = cliHeader('Detalhamento da Folha de Pagamento', cliente ? cliente.name : '—', cliente);
+
+      const desenhaDetalheFuncionario = (nome, cpf, cargoLinha, salarioRef, admissaoRef, situacaoRef, rubricas, totalProv, totalDesc, liquido, bcInssSeg, bcFgts, valorFgts, bcIrrf, dependIrrf, dependSalFamilia)=>{
+        if(y > 255){ doc.addPage(); y = 20; }
+        doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.setFillColor(245,246,248);
+        doc.rect(mx, y, cw, 9, 'FD');
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+        doc.text('Nome', mx+1.5, y+3);
+        doc.setFont('helvetica','normal');
+        doc.text(nome + (cpf?'   CPF: '+cpf:''), mx+1.5, y+7);
+        doc.setFont('helvetica','bold'); doc.text('Cargo', mx+cw*0.45, y+3);
+        doc.setFont('helvetica','normal'); doc.text(cargoLinha, mx+cw*0.45, y+7);
+        doc.setFont('helvetica','bold'); doc.text('Admissão', mx+cw*0.72, y+3);
+        doc.setFont('helvetica','normal'); doc.text(admissaoRef, mx+cw*0.72, y+7);
+        doc.setFont('helvetica','bold'); doc.text('Situação', mx+cw*0.87, y+3);
+        doc.setFont('helvetica','normal'); doc.text(situacaoRef, mx+cw*0.87, y+7);
+        y += 9;
+
+        const colsRub = [{label:'RUBRICA', w:cw*0.55}, {label:'REFERÊNCIA', w:cw*0.15, align:'right'}, {label:'PROVENTO', w:cw*0.15, align:'right'}, {label:'DESCONTO', w:cw*0.15, align:'right'}];
+        y = tabelaHeader(colsRub, y);
+        rubricas.forEach(r=>{
+          if(y > 275){ doc.addPage(); y = 20; }
+          y = tabelaRow(colsRub, [r.cod+' - '+r.desc, r.ref||'', r.prov!=null?fmtBRL(r.prov):'', r.desc_v!=null?fmtBRL(r.desc_v):''], y);
+        });
+        if(y > 270){ doc.addPage(); y = 20; }
+        y = tabelaRow(colsRub, ['Totais', '', fmtBRL(totalProv), fmtBRL(totalDesc)], y, true);
+        const colsLiq = [{label:'', w:cw*0.85}, {label:'', w:cw*0.15, align:'right'}];
+        doc.setFillColor(230,233,238);
+        y = tabelaRow(colsLiq.map((c,i)=>i===0?{...c,label:'LÍQUIDO A PAGAR'}:c), ['Líquido a pagar', fmtBRL(liquido)], y, true);
+
+        if(y > 265){ doc.addPage(); y = 20; }
+        const colsBc = [{label:'BC INSS', w:cw*0.17, align:'right'}, {label:'BC FGTS', w:cw*0.17, align:'right'}, {label:'VALOR FGTS', w:cw*0.17, align:'right'}, {label:'BC IRRF', w:cw*0.17, align:'right'}, {label:'DEP. IRRF', w:cw*0.16, align:'right'}, {label:'DEP. SAL. FAMÍLIA', w:cw*0.16, align:'right'}];
+        y = tabelaHeader(colsBc, y);
+        y = tabelaRow(colsBc, [fmtBRL(bcInssSeg), fmtBRL(bcFgts), fmtBRL(valorFgts), fmtBRL(bcIrrf), dependIrrf, dependSalFamilia], y);
+        y += 5;
+      };
+
+      fList.forEach(f=>{
         const func = state.funcionarios.find(x=>x.id===f.funcionarioId);
-        if(y > 275){ doc.addPage(); y = 20; }
-        doc.text(func?func.nome:'—', 14, y);
-        doc.text(func?(func.cargo||'—'):'—', 100, y);
-        doc.text(fmtBRL(f.bruto), pageW-16, y, {align:'right'});
-        subBruto += f.bruto||0;
-        y += 5.5;
+        const salarioBase = func ? Number(func.salarioBase)||0 : Number(f.bruto)||0;
+        const outros = Math.max(0, round2((f.bruto||0)-salarioBase));
+        const rubricas = [{cod:'01000', desc:'SALÁRIO MENSAL', ref:'30 dias', prov:salarioBase}];
+        if(outros) rubricas.push({cod:'01212', desc:'OUTROS PROVENTOS', ref:'', prov:outros});
+        if(f.inss) rubricas.push({cod:'09201', desc:'INSS - MENSAL', ref:'', desc_v:f.inss});
+        if(f.irrf) rubricas.push({cod:'09204', desc:'IRRF - MENSAL', ref:'', desc_v:f.irrf});
+        if(f.descontosExtra) rubricas.push({cod:'09290', desc:'OUTROS DESCONTOS', ref:'', desc_v:f.descontosExtra});
+        desenhaDetalheFuncionario(
+          func?func.nome:'—', func?func.cpf:'', func?(func.cargo||'—')+(func.cbo?' — CBO '+func.cbo:''):'—',
+          fmtBRL(salarioBase), func&&func.dataAdmissao?fmtDate(func.dataAdmissao):'—', func?(func.status||'Ativo'):'—',
+          rubricas, f.bruto, (f.inss||0)+(f.irrf||0)+(f.descontosExtra||0), f.liquido,
+          f.bruto, f.bruto, f.fgts, round2((f.bruto||0)-(f.inss||0)), func&&func.dependentes?func.dependentes+' dependente(s)':'Nenhum', func&&func.dependentes?func.dependentes+' dependente(s)':'Nenhum'
+        );
       });
-      doc.setFont('helvetica','bold');
-      doc.text('Subtotal ' + clientName(cid), 14, y);
-      doc.text(fmtBRL(subBruto), pageW-16, y, {align:'right'});
-      doc.setFont('helvetica','normal');
-      y += 9;
+      pList.forEach(p=>{
+        const rubricas = [{cod:'03508', desc:'RETIRADAS (PRÓ-LABORE) DE PROPRIETÁRIOS OU SÓCIOS', ref:'30 dias', prov:p.bruto}];
+        if(p.inss) rubricas.push({cod:'09201', desc:'INSS - MENSAL (11%)', ref:'', desc_v:p.inss});
+        if(p.irrf) rubricas.push({cod:'09204', desc:'IRRF - MENSAL', ref:'', desc_v:p.irrf});
+        desenhaDetalheFuncionario(
+          p.socioNome||'—', '', 'SÓCIO ADMINISTRADOR', fmtBRL(p.bruto), '—', 'Ativo',
+          rubricas, p.bruto, (p.inss||0)+(p.irrf||0), p.liquido,
+          p.bruto, 0, 0, round2((p.bruto||0)-(p.inss||0)), p.dependentes?p.dependentes+' dependente(s)':'Nenhum', 'Nenhum'
+        );
+      });
+
+      // ===== PÁGINA N — RESUMO POR RUBRICA E CATEGORIA =====
+      doc.addPage();
+      y = cliHeader('Resumo por Rubrica e Categoria', cliente ? cliente.name : '—', cliente);
+      const somaRubricas = (lista, tipo)=>{
+        const agg = {};
+        const add = (cod, desc, valor, campo)=>{
+          const key = cod+'|'+desc;
+          if(!agg[key]) agg[key] = { cod, desc, prov:0, desc_v:0 };
+          agg[key][campo] += valor||0;
+        };
+        lista.forEach(item=>{
+          if(tipo==='folha'){
+            const func = state.funcionarios.find(x=>x.id===item.funcionarioId);
+            const salarioBase = func?Number(func.salarioBase)||0:Number(item.bruto)||0;
+            const outros = Math.max(0, round2((item.bruto||0)-salarioBase));
+            add('01000','Salário mensal', salarioBase, 'prov');
+            if(outros) add('01212','Outros proventos', outros, 'prov');
+            if(item.inss) add('09201','INSS - Mensal', item.inss, 'desc_v');
+            if(item.irrf) add('09204','IRRF - Mensal', item.irrf, 'desc_v');
+            if(item.descontosExtra) add('09290','Outros descontos', item.descontosExtra, 'desc_v');
+          } else {
+            add('03508','Retiradas (pró-labore) de proprietários ou sócios', item.bruto, 'prov');
+            if(item.inss) add('09201','INSS - Mensal (pró-labore)', item.inss, 'desc_v');
+            if(item.irrf) add('09204','IRRF - Mensal (pró-labore)', item.irrf, 'desc_v');
+          }
+        });
+        return Object.values(agg);
+      };
+      const rubricasTodas = somaRubricas(fList,'folha').concat(somaRubricas(pList,'prolabore'));
+      const colsResumo = [{label:'RUBRICA', w:cw*0.6}, {label:'PROVENTO', w:cw*0.2, align:'right'}, {label:'DESCONTO', w:cw*0.2, align:'right'}];
+      y = tabelaHeader(colsResumo, y);
+      let totP=0, totD=0;
+      rubricasTodas.forEach(r=>{
+        if(y > 275){ doc.addPage(); y = 20; }
+        y = tabelaRow(colsResumo, [r.cod+' - '+r.desc, r.prov?fmtBRL(r.prov):'', r.desc_v?fmtBRL(r.desc_v):''], y);
+        totP += r.prov; totD += r.desc_v;
+      });
+      if(y > 270){ doc.addPage(); y = 20; }
+      y = tabelaRow(colsResumo, ['Totais', fmtBRL(totP), fmtBRL(totD)], y, true);
+      y = tabelaRow(colsResumo, ['Líquido a pagar', '', fmtBRL(round2(totP-totD))], y, true);
+
+      pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema. Não substitui a folha de pagamento homologada oficialmente.');
+
+      // ===== PÁGINA N+1 — RESUMO DOS IMPOSTOS =====
+      doc.addPage();
+      y = cliHeader('Resumo dos Impostos', cliente ? cliente.name : '—', cliente);
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Impostos agrupados por tipo — competência ' + competenciaLabel, mx, y); y += 3;
+      const colsImp = [{label:'IMPOSTO', w:cw*0.7}, {label:'VALOR DESTE MÊS', w:cw*0.3, align:'right'}];
+      y = tabelaHeader(colsImp, y);
+      y = tabelaRow(colsImp, ['Previdência (INSS)', fmtBRL(totInss)], y);
+      y = tabelaRow(colsImp, ['Imposto de Renda (IRRF)', fmtBRL(totIrrf)], y);
+      y = tabelaRow(colsImp, ['Contribuições Sindicais', fmtBRL(0)], y);
+      y = tabelaRow(colsImp, ['FGTS total apurado', fmtBRL(totFgts)], y);
+      y = tabelaRow(colsImp, ['Multas Rescisórias', fmtBRL(multasRescMes)], y);
+      y = tabelaRow(colsImp, ['Totais', fmtBRL(totInss+totIrrf+totFgts+multasRescMes)], y, true);
+      y += 8;
+
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Previdência Social (INSS)', mx, y); y += 3;
+      y = tabelaHeader(colsImp, y);
+      y = tabelaRow(colsImp, ['INSS segurados (retido dos trabalhadores)', fmtBRL(totInss)], y);
+      y = tabelaRow(colsImp, ['INSS patronal', fmtBRL(0)], y);
+      y += 8;
+
+      if(y > 255){ doc.addPage(); y = 20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Imposto de Renda Retido na Fonte (IRRF)', mx, y); y += 3;
+      y = tabelaHeader(colsImp, y);
+      y = tabelaRow(colsImp, ['IRRF sobre salários (folha CLT)', fmtBRL(fList.reduce((s,f)=>s+(f.irrf||0),0))], y);
+      y = tabelaRow(colsImp, ['IRRF sobre pró-labore', fmtBRL(pList.reduce((s,p)=>s+(p.irrf||0),0))], y);
+
+      pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente nem as guias oficiais de recolhimento (DARF, GRF/FGTS Digital).');
     });
 
-    // ===== SEÇÃO 3 — FOLHA LÍQUIDA, POR EMPRESA =====
-    doc.addPage();
-    tituloSecao('3. Folha Líquida — por Empresa e Funcionário');
-    y = 42;
-    clientIds.forEach(cid=>{
-      const itens = porCliente[cid];
-      if(y > 265){ doc.addPage(); y = 20; }
-      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
-      doc.text(clientName(cid), 14, y); y += 5;
-      const cols3 = [{label:'FUNCIONÁRIO', x:14}, {label:'CARGO', x:100}, {label:'LÍQUIDO', x:pageW-16, align:'right'}];
-      y = cabecalhoColunas(cols3, y);
-      let subLiquido = 0;
-      itens.forEach(f=>{
-        const func = state.funcionarios.find(x=>x.id===f.funcionarioId);
-        if(y > 275){ doc.addPage(); y = 20; }
-        doc.text(func?func.nome:'—', 14, y);
-        doc.text(func?(func.cargo||'—'):'—', 100, y);
-        doc.text(fmtBRL(f.liquido), pageW-16, y, {align:'right'});
-        subLiquido += f.liquido||0;
-        y += 5.5;
-      });
-      doc.setFont('helvetica','bold');
-      doc.text('Subtotal ' + clientName(cid), 14, y);
-      doc.text(fmtBRL(subLiquido), pageW-16, y, {align:'right'});
-      doc.setFont('helvetica','normal');
-      y += 9;
-    });
-
-    // ===== SEÇÃO 4 — RESUMO DE IMPOSTOS (INSS, IRRF, FGTS), POR EMPRESA =====
-    doc.addPage();
-    tituloSecao('4. Resumo de Impostos e Encargos — por Empresa');
-    y = 42;
-    clientIds.forEach(cid=>{
-      const itens = porCliente[cid];
-      if(y > 260){ doc.addPage(); y = 20; }
-      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
-      doc.text(clientName(cid), 14, y); y += 5;
-      const cols4 = [
-        {label:'FUNCIONÁRIO', x:14}, {label:'INSS', x:110, align:'right'},
-        {label:'IRRF', x:145, align:'right'}, {label:'FGTS', x:pageW-16, align:'right'},
-      ];
-      y = cabecalhoColunas(cols4, y);
-      let subInss=0, subIrrf=0, subFgts=0;
-      itens.forEach(f=>{
-        const func = state.funcionarios.find(x=>x.id===f.funcionarioId);
-        if(y > 275){ doc.addPage(); y = 20; }
-        doc.text(func?func.nome:'—', 14, y);
-        doc.text(fmtBRL(f.inss), 110, y, {align:'right'});
-        doc.text(fmtBRL(f.irrf), 145, y, {align:'right'});
-        doc.text(fmtBRL(f.fgts), pageW-16, y, {align:'right'});
-        subInss+=f.inss||0; subIrrf+=f.irrf||0; subFgts+=f.fgts||0;
-        y += 5.5;
-      });
-      granInss+=subInss; granIrrf+=subIrrf; granFgts+=subFgts;
-      doc.setFont('helvetica','bold');
-      doc.text('Subtotal ' + clientName(cid), 14, y);
-      doc.text(fmtBRL(subInss), 110, y, {align:'right'});
-      doc.text(fmtBRL(subIrrf), 145, y, {align:'right'});
-      doc.text(fmtBRL(subFgts), pageW-16, y, {align:'right'});
-      doc.setFont('helvetica','normal');
-      y += 9;
-    });
-    if(y > 265){ doc.addPage(); y = 20; }
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
-    doc.setFont('helvetica','bold'); doc.setFontSize(10);
-    doc.text('TOTAL GERAL DE IMPOSTOS E ENCARGOS', 14, y); y += 6.5;
-    doc.setFontSize(9);
-    doc.text('INSS retido (todos os funcionários): ' + fmtBRL(granInss), 14, y); y += 6;
-    doc.text('IRRF retido (todos os funcionários): ' + fmtBRL(granIrrf), 14, y); y += 6;
-    doc.text('FGTS a depositar (8%, custo do empregador): ' + fmtBRL(granFgts), 14, y);
-
-    pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente nem as guias oficiais de recolhimento (DARF, GRF/FGTS Digital).');
-    doc.save('relatorio-folha-completo-' + state.competenciaAtiva + '.pdf');
+    doc.save('folha-pagamento-mensal-' + state.competenciaAtiva + '.pdf');
   }
 
   function generateRelatorioRescisaoPDF(){
