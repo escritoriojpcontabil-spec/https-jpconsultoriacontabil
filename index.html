@@ -1451,7 +1451,7 @@
     const c = state.clients.find(x=>x.id===r.clientId);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Relatório de Situação Fiscal (Importado)', c ? c.name : '—');
+    let y = pdfHeader(doc, 'Relatório de Situação Fiscal (Importado)', c ? c.name : '—', c ? c.logo : '');
     doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(178,59,59);
     doc.text('Fonte: informações extraídas diretamente do relatório oficial da Receita Federal', 14, y); y += 7;
     doc.setTextColor(20,25,30);
@@ -1731,7 +1731,8 @@
   function gerarDocNotaFiscalIndividual(nf, clienteNome){
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Representação Simplificada da Nota Fiscal', clienteNome || '—');
+    const clienteNf = state.clients.find(c=>c.id===nf.clientId);
+    let y = pdfHeader(doc, 'Representação Simplificada da Nota Fiscal', clienteNome || '—', clienteNf ? clienteNf.logo : '');
     doc.setFont('helvetica','normal'); doc.setFontSize(10);
     doc.text('Tipo: ' + (nf.tipo||'—') + '   ·   Operação: ' + (nf.tipoOperacao||'—') + '   ·   Status: ' + (nf.status||'—'), 14, y); y += 7;
     doc.text('Número: ' + (nf.numero||'—') + '   ·   Série: ' + (nf.serie||'—') + '   ·   Emissão: ' + (nf.dataEmissao?fmtDate(nf.dataEmissao):'—'), 14, y); y += 7;
@@ -1986,7 +1987,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Consulta de Inscrições e Registros', cliente ? cliente.name : '—');
+    let y = pdfHeader(doc, 'Consulta de Inscrições e Registros', cliente ? cliente.name : '—', cliente ? cliente.logo : '');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
     if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 8; }
 
@@ -2096,7 +2097,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Cobrancas Mensais - Ano ' + ano, cliente ? cliente.name : '\u2014');
+    let y = pdfHeader(doc, 'Cobrancas Mensais - Ano ' + ano, cliente ? cliente.name : '\u2014', cliente ? cliente.logo : '');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
     if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 6; }
     if(cliente && cliente.contractStart){ doc.text('Inicio contratual: ' + fmtDate(cliente.contractStart), 14, y); y += 6; }
@@ -2164,7 +2165,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Termo de Quitação de Honorários', cliente ? cliente.name : '—');
+    let y = pdfHeader(doc, 'Termo de Quitação de Honorários', cliente ? cliente.name : '—', cliente ? cliente.logo : '');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
     if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 8; }
 
@@ -2419,7 +2420,7 @@
     doc.save('proposta-' + (p.clienteNome||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
-  function pdfHeader(doc, titulo, subtitulo){
+  function pdfHeader(doc, titulo, subtitulo, logoBase64){
     const pageW = doc.internal.pageSize.getWidth();
     doc.setFillColor(27, 58, 92);
     doc.rect(0, 0, pageW, 26, 'F');
@@ -2435,9 +2436,17 @@
     doc.setTextColor(20,25,30);
     let y = 36;
     if(subtitulo){
+      let textX = 14;
+      if(logoBase64){
+        try{
+          const fmt = logoBase64.indexOf('image/png')!==-1 ? 'PNG' : 'JPEG';
+          doc.addImage(logoBase64, fmt, 14, 29, 14, 14);
+          textX = 32;
+        }catch(e){}
+      }
       doc.setFont('helvetica','bold');
       doc.setFontSize(12);
-      doc.text(subtitulo, 14, y);
+      doc.text(subtitulo, textX, y);
       y += 8;
     }
     return y;
@@ -2466,7 +2475,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const c = state.clients.find(x=>x.id===p.clientId);
-    let y = pdfHeader(doc, 'Resumo de Parcelamento de Impostos', c ? c.name : '—');
+    let y = pdfHeader(doc, 'Resumo de Parcelamento de Impostos', c ? c.name : '—', c ? c.logo : '');
     const pagas = Number(p.parcelasPagas)||0;
     const total = Number(p.quantidadeParcelas)||0;
     const valorParcela = Number(p.valorParcela)||0;
@@ -2511,7 +2520,7 @@
     const mostrarServicos = tipo === 'servicos' || tipo === 'ambos';
     const cliente = clienteId !== 'all' ? state.clients.find(c=>c.id===clienteId) : null;
 
-    let y = pdfHeader(doc, 'Relatório de Faturamento Mensal', cliente ? cliente.name : 'Todos os clientes');
+    let y = pdfHeader(doc, 'Relatório de Faturamento Mensal', cliente ? cliente.name : 'Todos os clientes', cliente ? cliente.logo : '');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
     if(cliente){
       if(cliente.doc) { doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 6; }
@@ -2609,7 +2618,7 @@
     const c = state.clients.find(x=>x.id===clientId);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Balancete de Verificação', c ? c.name : '—');
+    let y = pdfHeader(doc, 'Balancete de Verificação', c ? c.name : '—', c ? c.logo : '');
     doc.setFontSize(9); doc.setFont('helvetica','normal');
     doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim), 14, y); y += 8;
     const linhas = montarBalancete(clientId, state.relDataInicio||null, state.relDataFim);
@@ -2637,7 +2646,7 @@
     const c = state.clients.find(x=>x.id===clientId);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Balanço Patrimonial', c ? c.name : '—');
+    let y = pdfHeader(doc, 'Balanço Patrimonial', c ? c.name : '—', c ? c.logo : '');
     doc.setFontSize(9); doc.setFont('helvetica','normal');
     doc.text('Data de referência: ' + fmtDate(state.relDataFim), 14, y); y += 10;
     const b = montarBalanco(clientId, state.relDataFim);
@@ -2669,7 +2678,7 @@
     const c = state.clients.find(x=>x.id===clientId);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Demonstração do Resultado do Exercício (DRE)', c ? c.name : '—');
+    let y = pdfHeader(doc, 'Demonstração do Resultado do Exercício (DRE)', c ? c.name : '—', c ? c.logo : '');
     doc.setFontSize(9); doc.setFont('helvetica','normal');
     doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim), 14, y); y += 10;
     const r = calcResultadoExercicio(clientId, state.relDataInicio||null, state.relDataFim);
@@ -2700,7 +2709,7 @@
     if(!conta) return;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Livro Razão — ' + conta.codigo + ' ' + conta.nome, c ? c.name : '—');
+    let y = pdfHeader(doc, 'Livro Razão — ' + conta.codigo + ' ' + conta.nome, c ? c.name : '—', c ? c.logo : '');
     doc.setFontSize(9); doc.setFont('helvetica','normal');
     doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim), 14, y); y += 8;
     const lancs = state.lancamentosContabeis.filter(l=>l.clientId===clientId && (l.contaDebito===contaId || l.contaCredito===contaId) && (!state.relDataInicio || l.data>=state.relDataInicio) && l.data<=state.relDataFim).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
@@ -3372,7 +3381,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Ficha de Registro de Empregado', cliente ? cliente.name : '');
+    let y = pdfHeader(doc, 'Ficha de Registro de Empregado', cliente ? cliente.name : '', cliente ? cliente.logo : '');
     doc.setFontSize(9);
     const campo = (label, valor)=>{
       if(y > 275){ doc.addPage(); y = 20; }
@@ -3831,16 +3840,24 @@
       doc.rect(mx, y, wEmpresa, 15);
       doc.rect(mx+wEmpresa, y, wDivisao, 15);
       doc.rect(mx+wEmpresa+wDivisao, y, wFunction, 15);
+      let empresaTextX = mx+1.5;
+      if(cliente && cliente.logo){
+        try{
+          const fmtLogo = cliente.logo.indexOf('image/png')!==-1 ? 'PNG' : 'JPEG';
+          doc.addImage(cliente.logo, fmtLogo, mx+1.2, y+1.2, 12, 12);
+          empresaTextX = mx+15;
+        }catch(e){}
+      }
       doc.setFont('helvetica','normal'); doc.setFontSize(6.5);
-      doc.text('Empresa', mx+1.5, y+3);
+      doc.text('Empresa', empresaTextX, y+3);
       doc.text('Divisão R.H.', mx+wEmpresa+1.5, y+3);
       doc.text('Função', mx+wEmpresa+wDivisao+1.5, y+3);
       doc.setFont('helvetica','bold'); doc.setFontSize(8);
-      doc.text(String(cliente?cliente.name:'—'), mx+1.5, y+7);
+      doc.text(String(cliente?cliente.name:'—'), empresaTextX, y+7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7);
       const endereco = cliente ? [cliente.address, cliente.city, cliente.uf].filter(Boolean).join(' — ') : '';
-      doc.text(endereco || '—', mx+1.5, y+10.5);
-      doc.text('CNPJ: ' + (cliente&&cliente.doc?cliente.doc:'—'), mx+1.5, y+13.5);
+      doc.text(endereco || '—', empresaTextX, y+10.5);
+      doc.text('CNPJ: ' + (cliente&&cliente.doc?cliente.doc:'—'), empresaTextX, y+13.5);
       doc.setFont('helvetica','bold'); doc.setFontSize(8);
       doc.text('—', mx+wEmpresa+1.5, y+9);
       doc.text((func?(func.cargo||'—'):'—'), mx+wEmpresa+wDivisao+1.5, y+9);
@@ -3984,7 +4001,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Recibo de Pró-labore', cliente ? cliente.name : '');
+    let y = pdfHeader(doc, 'Recibo de Pró-labore', cliente ? cliente.name : '', cliente ? cliente.logo : '');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
     doc.text('Sócio(a): ' + (pl.socioNome||'—'), 14, y); y+=6;
     doc.text('Competência: ' + monthLabel(pl.competencia) + '/' + (pl.competencia||'').slice(0,4), 14, y); y+=10;
@@ -4035,6 +4052,12 @@
 
     doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(20,25,30);
     doc.text('Recibo de Férias', pageW/2, 18, {align:'center'});
+    if(cliente && cliente.logo){
+      try{
+        const fmtLogo = cliente.logo.indexOf('image/png')!==-1 ? 'PNG' : 'JPEG';
+        doc.addImage(cliente.logo, fmtLogo, mx, 6, 16, 16);
+      }catch(e){}
+    }
 
     let y = 26;
     const outerStartY = y;
@@ -4199,6 +4222,12 @@
     doc.rect(mx, y, cw, 8, 'FD');
     doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(20,25,30);
     doc.text('TERMO DE RESCISÃO DO CONTRATO DE TRABALHO', pageW/2, y+5.5, {align:'center'});
+    if(cliente && cliente.logo){
+      try{
+        const fmtLogo = cliente.logo.indexOf('image/png')!==-1 ? 'PNG' : 'JPEG';
+        doc.addImage(cliente.logo, fmtLogo, mx+1, y+1, 6, 6);
+      }catch(e){}
+    }
     y += 8;
 
     const secHeader = (titulo)=>{
@@ -6641,8 +6670,15 @@
   }
   async function saveClient(c){
     if(!c.id) c.id = uid();
-    await Store.set('clients:'+c.id, JSON.stringify(c), true);
+    try{
+      await Store.set('clients:'+c.id, JSON.stringify(c), true);
+    }catch(e){
+      console.error('Erro ao salvar cliente:', e);
+      alert('Não foi possível salvar este cliente. Se você anexou uma logomarca, ela provavelmente é grande demais para o banco de dados (limite de ~1MB por documento). Tente uma imagem menor ou mais comprimida.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      return false;
+    }
     await loadAll(); render();
+    return true;
   }
   async function deleteClient(id){
     await Store.delete('clients:'+id, true);
@@ -10572,6 +10608,14 @@
             <div class="field"><label>Atividade principal</label><input type="text" id="clMainActivity" value="${escapeHtml(d.mainActivity||'')}"/></div>
             <div class="field"><label>Atividade(s) secundária(s)</label><input type="text" id="clSecondaryActivities" placeholder="Separe por ; se houver mais de uma" value="${escapeHtml(d.secondaryActivities||'')}"/></div>
 
+            <div class="form-section-title">Logomarca</div>
+            <div class="form-hint" style="margin:-4px 0 8px;">Usada automaticamente no cabeçalho dos relatórios e documentos desta empresa (PNG ou JPG, fundo transparente ou branco funciona melhor). Tamanho máximo: 400KB.</div>
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+              ${d.logo ? `<img src="${d.logo}" style="height:40px; max-width:120px; object-fit:contain; border:1px solid var(--line); border-radius:6px; padding:4px; background:#fff;"/>` : ''}
+              <input type="file" id="clLogoInput" accept=".png,.jpg,.jpeg"/>
+              ${d.logo ? `<button type="button" class="btn-sm danger" id="clLogoRemover">Remover</button>` : ''}
+            </div>
+
             <div class="form-section-title">Contato</div>
             <div class="form-row">
               <div class="field"><label>Telefone</label><input type="text" id="clPhone" value="${escapeHtml(d.phone||'')}"/></div>
@@ -13464,10 +13508,24 @@
 
     const clientForm = document.getElementById('clientForm');
     if(clientForm){
-      clientForm.onsubmit = (e)=>{
+      clientForm.onsubmit = async (e)=>{
         e.preventDefault();
         const doc = document.getElementById('clDoc').value;
         const explicitPersonType = document.getElementById('clPersonType').value;
+        let logo = (state.clientModalData && state.clientModalData.logo) || '';
+        const logoInput = document.getElementById('clLogoInput');
+        const logoFile = logoInput && logoInput.files && logoInput.files[0];
+        if(logoFile){
+          if(logoFile.size > 400*1024){ alert('A imagem é maior que 400KB — o banco de dados usado aceita no máximo cerca de 1MB por documento. Escolha uma imagem menor ou comprima antes de anexar.'); return; }
+          try{
+            logo = await new Promise((resolve, reject)=>{
+              const reader = new FileReader();
+              reader.onload = ()=>resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(logoFile);
+            });
+          }catch(err){ alert('Não foi possível ler a imagem selecionada.'); return; }
+        }
         const c = {
           id: (state.clientModalData && state.clientModalData.id) || undefined,
           name: document.getElementById('clName').value,
@@ -13478,6 +13536,7 @@
           dataAbertura: document.getElementById('clDataAbertura').value,
           mainActivity: document.getElementById('clMainActivity').value,
           secondaryActivities: document.getElementById('clSecondaryActivities').value,
+          logo,
           phone: document.getElementById('clPhone').value,
           email: document.getElementById('clEmail').value,
           address: document.getElementById('clAddress').value,
@@ -13496,10 +13555,23 @@
           contractStatus: document.getElementById('clContractStatus').value,
           contractNotes: document.getElementById('clContractNotes').value,
         };
+        const submitBtn = clientForm.querySelector('button[type="submit"]');
+        if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
+        const ok = await saveClient(c);
+        if(!ok){
+          if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = c.id ? 'Salvar alterações' : 'Salvar'; }
+          return;
+        }
         state.modal=null;
         state.clientModalData=null;
         render();
-        saveClient(c);
+      };
+    }
+    const clLogoRemover = document.getElementById('clLogoRemover');
+    if(clLogoRemover){
+      clLogoRemover.onclick = ()=>{
+        state.clientModalData = Object.assign({}, state.clientModalData, { logo: '' });
+        render();
       };
     }
   }
