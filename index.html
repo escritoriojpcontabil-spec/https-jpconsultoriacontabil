@@ -3844,6 +3844,8 @@
       doc.setFont('helvetica','bold'); doc.setFontSize(8);
       doc.text('—', mx+wEmpresa+1.5, y+9);
       doc.text((func?(func.cargo||'—'):'—'), mx+wEmpresa+wDivisao+1.5, y+9);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6.5);
+      doc.text('CBO: ' + (func&&func.cbo?func.cbo:'—'), mx+wEmpresa+wDivisao+1.5, y+13);
       y += 15;
 
       // Nº Reg / Nome
