@@ -9448,8 +9448,24 @@
             ${clientesDisponiveis.map(c=>`<option value="${c.id}" ${c.id===(state.prolaboreFormData.clientId||'')?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>Nome do sócio</label><input type="text" id="plSocioNome" value="${escapeHtml(state.prolaboreFormData.socioNome||'')}"/></div>
+        <div class="field"><label>Sócio</label>
+          ${(function(){
+            const clientePl = state.clients.find(c=>c.id===state.prolaboreFormData.clientId);
+            const socios = (clientePl && Array.isArray(clientePl.socios)) ? clientePl.socios : [];
+            if(!state.prolaboreFormData.clientId){
+              return `<select id="plSocioNome" disabled><option value="">Selecione a empresa primeiro</option></select>`;
+            }
+            if(!socios.length){
+              return `<select id="plSocioNome" disabled><option value="">Nenhum sócio cadastrado nesta empresa</option></select>`;
+            }
+            return `<select id="plSocioNome">
+              <option value="">— Selecione —</option>
+              ${socios.map(s=>`<option value="${escapeHtml(s.nome)}" ${s.nome===state.prolaboreFormData.socioNome?'selected':''}>${escapeHtml(s.nome)}${s.cargo?' — '+escapeHtml(s.cargo):''}${s.percentual?' ('+escapeHtml(String(s.percentual))+'%)':''}</option>`).join('')}
+            </select>`;
+          })()}
+        </div>
       </div>
+      ${!state.prolaboreFormData.clientId ? '' : ((state.clients.find(c=>c.id===state.prolaboreFormData.clientId)||{}).socios||[]).length ? '' : `<div class="form-hint" style="margin:-8px 0 12px; color:var(--warn, #b45309);">Essa empresa ainda não tem sócios cadastrados. Vá em Cadastro de Clientes → editar esta empresa → "Sócios e administradores" para adicionar.</div>`}
       <div class="form-row">
         <div class="field"><label>Valor do pró-labore (R$)</label><input type="number" step="0.01" min="0" id="plValor" value="${state.prolaboreFormData.valor||''}"/></div>
         <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="plDependentes" value="${state.prolaboreFormData.dependentes||0}"/></div>
@@ -13057,7 +13073,11 @@
       const el = document.getElementById(id);
       if(!el) return;
       const key = { plEmpresa:'clientId', plSocioNome:'socioNome', plValor:'valor', plDependentes:'dependentes' }[id];
-      el.oninput = el.onchange = (e)=>{ state.prolaboreFormData = Object.assign({}, state.prolaboreFormData, { [key]: e.target.value }); };
+      if(id === 'plEmpresa'){
+        el.onchange = (e)=>{ state.prolaboreFormData = Object.assign({}, state.prolaboreFormData, { clientId: e.target.value, socioNome: '' }); render(); };
+      } else {
+        el.oninput = el.onchange = (e)=>{ state.prolaboreFormData = Object.assign({}, state.prolaboreFormData, { [key]: e.target.value }); };
+      }
     });
     const calcProLaboreBtn = document.getElementById('calcProLaboreBtn');
     if(calcProLaboreBtn){
