@@ -4782,10 +4782,10 @@
     {codigo:'008', descricao:'Pelo pagamento de tributos'},
     {codigo:'009', descricao:'Pela integralização de capital'},
     {codigo:'010', descricao:'Conforme extrato bancário (importação OFX)'},
-    {codigo:'011', descricao:'Pela provisão da folha de pagamento do mês (integração DP-Pessoal)'},
-    {codigo:'012', descricao:'Pela provisão de férias (integração DP-Pessoal)'},
-    {codigo:'013', descricao:'Pela provisão de rescisão contratual (integração DP-Pessoal)'},
-    {codigo:'014', descricao:'Pela apuração de imposto/guia (integração Depto Fiscal)'},
+    {codigo:'011', descricao:'Pela provisão da folha de pagamento do mês (integração Departamento Pessoal)'},
+    {codigo:'012', descricao:'Pela provisão de férias (integração Departamento Pessoal)'},
+    {codigo:'013', descricao:'Pela provisão de rescisão contratual (integração Departamento Pessoal)'},
+    {codigo:'014', descricao:'Pela apuração de imposto/guia (integração Departamento Fiscal)'},
   ];
 
   function parcStatusClass(s){
@@ -6904,9 +6904,9 @@
     const navItems = [
       {k:'dashboard', label:'Painel Geral', subtitle:'Notificações & Resumos', icon:ICONS.dashboard},
       {k:'clientes', label:'Cadastro de Clientes', subtitle:'PF & PJ com dados da RF', icon:ICONS.clientes},
-      {k:'dp-pessoal', label:'DP - Pessoal', subtitle:'Funcionários e Folha', icon:ICONS.pessoal, dept:'Departamento Pessoal'},
-      {k:'depto-fiscal', label:'Depto Fiscal', subtitle:'XMLs e Impostos', icon:ICONS.fiscalDoc, dept:'Fiscal'},
-      {k:'depto-contabil', label:'Depto Contábil', subtitle:'Livro Diário, Balanço e DRE', icon:ICONS.contabilBook, dept:'Contábil'},
+      {k:'dp-pessoal', label:'Departamento Pessoal', subtitle:'Funcionários e Folha', icon:ICONS.pessoal, dept:'Departamento Pessoal'},
+      {k:'depto-fiscal', label:'Departamento Fiscal', subtitle:'XMLs e Impostos', icon:ICONS.fiscalDoc, dept:'Fiscal'},
+      {k:'depto-contabil', label:'Departamento Contábil', subtitle:'Livro Diário, Balanço e DRE', icon:ICONS.contabilBook, dept:'Contábil'},
       {k:'depto-legal', label:'Departamento Legal', subtitle:'Contratos e Processos', icon:ICONS.legalScale, dept:'Legal'},
       {k:'lancamentos', label:'Setor Financeiro', subtitle:'Fluxo e Lançamentos', icon:ICONS.lanc},
       {k:'servicos-contabeis', label:'Serviços Contábeis', subtitle:'Propostas e Honorários', icon:ICONS.proposta},
@@ -9371,10 +9371,12 @@
 
     let listaCompetencia = state.folhas.filter(f=>f.competencia===state.competenciaAtiva);
     if(empresaFiltro) listaCompetencia = listaCompetencia.filter(f=>f.clientId===empresaFiltro);
-    const totBruto = listaCompetencia.reduce((s,f)=>s+(f.bruto||0),0);
-    const totLiquido = listaCompetencia.reduce((s,f)=>s+(f.liquido||0),0);
-    const totInss = listaCompetencia.reduce((s,f)=>s+(f.inss||0),0);
-    const totIrrf = listaCompetencia.reduce((s,f)=>s+(f.irrf||0),0);
+    let listaProlaboresResumo = state.prolabores.filter(p=>p.competencia===state.competenciaAtiva);
+    if(empresaFiltro) listaProlaboresResumo = listaProlaboresResumo.filter(p=>p.clientId===empresaFiltro);
+    const totBruto = listaCompetencia.reduce((s,f)=>s+(f.bruto||0),0) + listaProlaboresResumo.reduce((s,p)=>s+(p.bruto||0),0);
+    const totLiquido = listaCompetencia.reduce((s,f)=>s+(f.liquido||0),0) + listaProlaboresResumo.reduce((s,p)=>s+(p.liquido||0),0);
+    const totInss = listaCompetencia.reduce((s,f)=>s+(f.inss||0),0) + listaProlaboresResumo.reduce((s,p)=>s+(p.inss||0),0);
+    const totIrrf = listaCompetencia.reduce((s,f)=>s+(f.irrf||0),0) + listaProlaboresResumo.reduce((s,p)=>s+(p.irrf||0),0);
     const totFgts = listaCompetencia.reduce((s,f)=>s+(f.fgts||0),0);
 
     let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado');
@@ -9411,7 +9413,8 @@
       <div id="folhaResult"></div>
       <div class="legis-note">Cálculo conforme tabelas de INSS e IRRF vigentes em 2026 (Portaria MPS/MF nº 13/2026 e Lei 15.270/2025), incluindo o redutor de isenção até R$5.000 e redução parcial até R$7.350. Verbas variáveis (horas extras, comissões, adicional noturno) devem ser somadas em "Outros proventos". Não substitui a apuração oficial em folha homologada.</div>
 
-      <div class="form-section-title">Resumo da folha — ${monthLabel(state.competenciaAtiva)}/${state.competenciaAtiva.slice(0,4)}${empresaFiltro ? ' — ' + escapeHtml(clientName(empresaFiltro)) : ''}</div>
+      <div class="form-section-title">Resumo da folha (CLT + Pró-labore) — ${monthLabel(state.competenciaAtiva)}/${state.competenciaAtiva.slice(0,4)}${empresaFiltro ? ' — ' + escapeHtml(clientName(empresaFiltro)) : ''}</div>
+      ${listaProlaboresResumo.length ? `<div class="form-hint" style="margin:-8px 0 10px;">Inclui ${listaCompetencia.length} folha(s) CLT + ${listaProlaboresResumo.length} pró-labore lançado(s).</div>` : ''}
       <div class="cc-list">
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Total bruto</div></div><span class="tag sit-outra">${fmtBRL(totBruto)}</span></div>
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Total INSS retido</div></div><span class="tag sit-pendente">${fmtBRL(totInss)}</span></div>
@@ -10603,9 +10606,9 @@
   function viewTitle(){
     return ({
       dashboard:'Painel Geral',
-      'dp-pessoal':'DP - Pessoal',
-      'depto-fiscal':'Depto Fiscal',
-      'depto-contabil':'Depto Contábil',
+      'dp-pessoal':'Departamento Pessoal',
+      'depto-fiscal':'Departamento Fiscal',
+      'depto-contabil':'Departamento Contábil',
       'depto-legal':'Departamento Legal',
       lancamentos:'Setor Financeiro',
       clientes:'Cadastro de Clientes',
@@ -10651,7 +10654,8 @@
   }
 
   function socioRowHtml(s, idx){
-    const line1 = [s.cargo||'Sócio', s.cpf?('CPF '+s.cpf):'', s.rg?('RG '+s.rg):'', s.percentual!==undefined&&s.percentual!==''?(s.percentual+'% de participação'):''].filter(Boolean).join(' · ');
+    const rgCompleto = s.rg ? ('RG '+s.rg+(s.rgOrgao?'/'+s.rgOrgao:'')+(s.rgUf?'/'+s.rgUf:'')) : '';
+    const line1 = [s.cargo||'Sócio', s.cpf?('CPF '+s.cpf):'', rgCompleto, s.percentual!==undefined&&s.percentual!==''?(s.percentual+'% de participação'):''].filter(Boolean).join(' · ');
     const enderecoCompleto = [s.endereco, s.bairro, [s.cidade, s.estado].filter(Boolean).join('/')].filter(Boolean).join(', ');
     const line2 = [s.regimeCasamento||'', enderecoCompleto?('Endereço: '+enderecoCompleto):'', s.retiraProLabore==='Sim'?'Retira pró-labore':(s.retiraProLabore==='Não'?'Não retira pró-labore':'')].filter(Boolean).join(' · ');
     return `
@@ -10755,6 +10759,10 @@
                 <div class="mini-field"><label>Cargo / função</label>
                   <select id="socioCargo">${SOCIO_CARGO_OPTIONS.map(o=>`<option value="${o}">${o}</option>`).join('')}</select>
                 </div>
+              </div>
+              <div class="add-socio-grid">
+                <div class="mini-field"><label>Órgão expedidor (RG)</label><input type="text" id="socioRgOrgao" placeholder="Ex: SSP, SDS, DETRAN"/></div>
+                <div class="mini-field"><label>UF da identidade (RG)</label><input type="text" id="socioRgUf" maxlength="2" style="text-transform:uppercase;" placeholder="Ex: PE"/></div>
               </div>
               <div class="add-socio-grid">
                 <div class="mini-field" style="grid-column:span 2;"><label>Endereço</label><input type="text" id="socioEndereco" placeholder="Rua, número, complemento"/></div>
@@ -10990,7 +10998,7 @@
         if(tipo === 'Imposto' && o.clientId){
           const resultado = await gerarLancamentoImposto(o);
           if(resultado.ok){
-            alert('Guia salva. ' + resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil.');
+            alert('Guia salva. ' + resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Departamento Contábil.');
           } else if(resultado.motivo === 'sem-plano-de-contas'){
           alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
@@ -13056,7 +13064,7 @@
         await saveFolha(folhaData);
         const resultado = await gerarLancamentosFolha(folhaData, func);
         if(resultado.ok){
-          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Salários, INSS, IRRF, FGTS).');
+          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Departamento Contábil (Salários, INSS, IRRF, FGTS).');
         } else if(resultado.motivo === 'sem-plano-de-contas'){
           alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
@@ -13101,7 +13109,7 @@
         await saveProlabore(prolaboreData);
         const resultado = await gerarLancamentosProLabore(prolaboreData);
         if(resultado.ok){
-          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Pró-labore, INSS, IRRF).');
+          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Departamento Contábil (Pró-labore, INSS, IRRF).');
         } else if(resultado.motivo === 'sem-plano-de-contas'){
           alert('Pró-labore salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
@@ -13190,7 +13198,7 @@
         await saveFerias(feriasData);
         const resultado = await gerarLancamentosFerias(feriasData, func);
         if(resultado.ok){
-          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Férias, INSS, IRRF).');
+          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Departamento Contábil (Férias, INSS, IRRF).');
         } else if(resultado.motivo === 'sem-plano-de-contas'){
           alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
@@ -13285,7 +13293,7 @@
         await saveRescisao(rescisaoData);
         const resultado = await gerarLancamentosRescisao(rescisaoData, func);
         if(resultado.ok){
-          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Depto Contábil (Rescisão).');
+          alert(resultado.geradas + ' lançamento(s) contábil(is) gerado(s) automaticamente no Departamento Contábil (Rescisão).');
         } else if(resultado.motivo === 'sem-plano-de-contas'){
           alert('Guia/lançamento salvo, mas esta empresa ainda não tem um Plano de Contas próprio cadastrado. Vá em Plano de Contas, selecione a empresa e clique em "Criar plano de contas padrão para esta empresa" antes de gerar lançamentos automáticos.');
         } else if(resultado.faltando && resultado.faltando.length){
@@ -13525,6 +13533,8 @@
           nome,
           cpf: document.getElementById('socioCpf').value.trim(),
           rg: document.getElementById('socioRg').value.trim(),
+          rgOrgao: document.getElementById('socioRgOrgao').value.trim(),
+          rgUf: document.getElementById('socioRgUf').value.trim(),
           cargo: document.getElementById('socioCargo').value,
           endereco: document.getElementById('socioEndereco').value.trim(),
           bairro: document.getElementById('socioBairro').value.trim(),
@@ -13539,6 +13549,8 @@
         document.getElementById('socioNome').value = '';
         document.getElementById('socioCpf').value = '';
         document.getElementById('socioRg').value = '';
+        document.getElementById('socioRgOrgao').value = '';
+        document.getElementById('socioRgUf').value = '';
         document.getElementById('socioEndereco').value = '';
         document.getElementById('socioBairro').value = '';
         document.getElementById('socioCidade').value = '';
