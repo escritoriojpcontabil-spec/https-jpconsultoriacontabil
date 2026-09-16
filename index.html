@@ -623,6 +623,7 @@
     impostosPagar: [],
     impostoModalData: null,
     impostoEmpresaAtiva: '',
+    tiposImpostoCustom: [],
     honorarios: [],
     honorarioEmpresaAtiva: '',
     honorarioModalData: null,
@@ -6334,6 +6335,42 @@
     return 'sit-pendente';
   }
 
+  async function loadTiposImpostoCustom(){
+    state.tiposImpostoCustom = [];
+    try{
+      const keys = await Store.list('tiposimpostocustom:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.tiposImpostoCustom.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.tiposImpostoCustom.sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
+  }
+  async function saveTipoImpostoCustom(nome){
+    nome = String(nome||'').trim();
+    if(!nome) return false;
+    const jaExiste = TIPO_IMPOSTO_PAGAR.some(t=>t.toLowerCase()===nome.toLowerCase()) ||
+      state.tiposImpostoCustom.some(t=>(t.nome||'').toLowerCase()===nome.toLowerCase());
+    if(jaExiste){ alert('Já existe um tipo de imposto com esse nome.'); return false; }
+    const item = { id: uid(), nome };
+    try{
+      await Store.set('tiposimpostocustom:'+item.id, JSON.stringify(item), true);
+    }catch(e){
+      alert('Não foi possível salvar este tipo de imposto.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      return false;
+    }
+    await loadTiposImpostoCustom(); render();
+    return true;
+  }
+  async function deleteTipoImpostoCustom(id){
+    await Store.delete('tiposimpostocustom:'+id, true);
+    await loadTiposImpostoCustom(); render();
+  }
+  function tiposImpostoTodos(){
+    return TIPO_IMPOSTO_PAGAR.slice(0,-1).concat(state.tiposImpostoCustom.map(t=>t.nome)).concat(['Outro']);
+  }
+
   async function loadFuncionarios(){
     state.funcionarios = [];
     try{
@@ -6535,6 +6572,7 @@
     await dedupNotasFiscais();
     await loadParcelamentos();
     await loadImpostosPagar();
+    await loadTiposImpostoCustom();
     await loadRelatoriosFiscais();
     await loadFuncionarios();
     await loadFolhas();
@@ -9275,7 +9313,10 @@
     return `
       <div class="panel-head">
         <h3>Impostos a Pagar</h3>
-        <button type="button" class="btn-add" id="novoImpostoBtn" ${!empresa?'disabled':''}>+ Novo imposto</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn-detail" id="cadastrarTipoImpostoBtn">+ Cadastrar tipo de imposto</button>
+          <button type="button" class="btn-add" id="novoImpostoBtn" ${!empresa?'disabled':''}>+ Novo imposto</button>
+        </div>
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Controle de impostos a pagar por empresa — tipo, valor a pagar, vencimento, valor pago e data de pagamento. Gere um relatório em PDF individual por empresa.</div>
       <div class="form-row">
@@ -9300,7 +9341,7 @@
           <h3>${d.id ? 'Editar imposto' : 'Novo imposto'} — ${escapeHtml(clientName(state.impostoEmpresaAtiva))}</h3>
           <form id="impostoForm">
             <div class="field"><label>Tipo de imposto</label>
-              <select id="impTipoImposto">${TIPO_IMPOSTO_PAGAR.map(t=>`<option value="${t}" ${t===d.tipoImposto?'selected':''}>${t}</option>`).join('')}</select>
+              <select id="impTipoImposto">${tiposImpostoTodos().map(t=>`<option value="${escapeHtml(t)}" ${t===d.tipoImposto?'selected':''}>${escapeHtml(t)}</option>`).join('')}</select>
             </div>
             <div class="form-row">
               <div class="field"><label>Valor a pagar (R$)</label><input type="number" step="0.01" min="0" id="impValorAPagar" value="${d.valorAPagar||''}" required/></div>
@@ -9316,6 +9357,36 @@
               <button type="submit" class="btn-add">Salvar</button>
             </div>
           </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function tipoImpostoModalHtml(){
+    if(state.modal!=='tipoImposto') return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Cadastrar tipo de imposto</h3>
+          <div class="form-hint" style="margin:-4px 0 12px;">Adicione tipos de imposto que não estão na lista padrão (ex: nome específico de uma taxa municipal, contribuição setorial, etc.). Ficam disponíveis no seletor de "Novo imposto" para todas as empresas.</div>
+          <form id="tipoImpostoForm">
+            <div class="field"><label>Nome do tipo de imposto</label><input type="text" id="novoTipoImpostoNome" placeholder="Ex: Taxa de Licenciamento Ambiental" required/></div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="tipoImpostoCancel">Fechar</button>
+              <button type="submit" class="btn-add">Adicionar</button>
+            </div>
+          </form>
+          ${state.tiposImpostoCustom.length ? `
+            <div class="form-section-title">Tipos personalizados cadastrados</div>
+            <div class="socios-list">
+              ${state.tiposImpostoCustom.map(t=>`
+                <div class="socio-row">
+                  <div class="si-name">${escapeHtml(t.nome)}</div>
+                  <button type="button" class="si-remove" data-del-tipo-imposto="${t.id}" title="Excluir">×</button>
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
         </div>
       </div>
     `;
@@ -11038,6 +11109,7 @@
       ${state.modal==='func' ? funcModalHtml() : ''}
       ${state.modal==='parc' ? parcModalHtml() : ''}
       ${state.modal==='imposto' ? impostoModalHtml() : ''}
+      ${state.modal==='tipoImposto' ? tipoImpostoModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
@@ -11998,6 +12070,22 @@
     });
     const relatorioImpostoBtn = document.getElementById('relatorioImpostoBtn');
     if(relatorioImpostoBtn) relatorioImpostoBtn.onclick = ()=> gerarRelatorioImpostosPDF(state.impostoEmpresaAtiva);
+    const cadastrarTipoImpostoBtn = document.getElementById('cadastrarTipoImpostoBtn');
+    if(cadastrarTipoImpostoBtn) cadastrarTipoImpostoBtn.onclick = ()=>{ state.modal = 'tipoImposto'; render(); };
+    const tipoImpostoCancel = document.getElementById('tipoImpostoCancel');
+    if(tipoImpostoCancel) tipoImpostoCancel.onclick = ()=>{ state.modal=null; render(); };
+    const tipoImpostoForm = document.getElementById('tipoImpostoForm');
+    if(tipoImpostoForm){
+      tipoImpostoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const input = document.getElementById('novoTipoImpostoNome');
+        const ok = await saveTipoImpostoCustom(input.value);
+        if(ok) input.value = '';
+      };
+    }
+    root.querySelectorAll('[data-del-tipo-imposto]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este tipo de imposto personalizado?')) deleteTipoImpostoCustom(el.getAttribute('data-del-tipo-imposto')); };
+    });
 
     // ===== Departamento Contábil: Plano de Contas, Histórico, Lançamentos, OFX =====
     root.querySelectorAll('[data-contabil-tab]').forEach(el=>{
