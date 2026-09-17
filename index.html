@@ -8378,8 +8378,6 @@
           `;}).join('')}
         </div>
       ` : `<div class="empty" style="margin-bottom:20px;">Nenhuma empresa do Simples Nacional está perto do limite de faturamento (calculado sobre os últimos 12 meses de notas fiscais lançadas).</div>`}
-
-      ${situacaoFiscalPanelHtml()}
     `;
   }
 
@@ -8751,8 +8749,8 @@
   function planejamentoRegimesPanelHtml(){
     return `
       <div class="panel-head"><h3>Planejamento & Regimes Tributários</h3></div>
-      <div class="form-hint" style="margin:-4px 0 16px;">Simule a carga tributária em diferentes regimes (Simples Nacional e Lucro Presumido) para ajudar na decisão de enquadramento ou mudança de regime do cliente.</div>
-      ${calculadoraImpostosHtml()}
+      <div class="form-hint" style="margin:-4px 0 16px;">Espaço para planejamento de enquadramento e mudança de regime tributário dos clientes. A simulação de carga tributária (Simples Nacional x Lucro Presumido) agora fica na aba "Cálculo de Impostos".</div>
+      <div class="empty">Nenhum planejamento registrado ainda.</div>
     `;
   }
 
@@ -10404,20 +10402,21 @@
     {k:'notas-exportacao', label:'Exportação em Lote (PDF organizado em pastas)'},
     {k:'faturamento-mensal', label:'Relatório de Faturamento Mensal'},
     {k:'alertas-sn', label:'Painel de Alertas Simples Nacional'},
+    {k:'situacao-fiscal', label:'Situação Fiscal'},
     {k:'impostos-guias', label:'Impostos & Guias'},
     {k:'obrigacoes', label:'Obrigações Acessórias'},
     {k:'parcelamentos', label:'Parcelamentos (Fed/Est/Mun)'},
     {k:'planejamento', label:'Planejamento & Regimes'},
+    {k:'calculo-impostos', label:'Cálculo de Impostos'},
     {k:'declaracao', label:'Declaração de Faturamento'},
     {k:'reforma', label:'Reforma Tributária (EC 132/23)'},
     {k:'central-pdf', label:'Central PDF & OFX (Empresas)'},
+    {k:'certidoes-cnd', label:'Certidões Negativas de Débitos (CND)'},
   ];
   function centralPdfOfxPanelHtml(){
     return `
       <div class="panel-head"><h3>Central PDF & OFX (Empresas)</h3></div>
-      <div class="form-hint" style="margin:-4px 0 16px;">Documentos oficiais (certidões e certificados digitais) por empresa, guardados aqui para consulta rápida. A importação de extratos bancários (OFX) fica no Setor Financeiro, dentro do lançamento de cada empresa.</div>
-      ${certidoesPanelHtml()}
-      <hr style="margin:24px 0; border:none; border-top:1px solid var(--line);"/>
+      <div class="form-hint" style="margin:-4px 0 16px;">Certificados digitais por empresa, guardados aqui para consulta rápida. A importação de extratos bancários (OFX) fica no Setor Financeiro, dentro do lançamento de cada empresa. As Certidões Negativas de Débitos (CND) agora ficam na aba própria "Certidões Negativas de Débitos (CND)".</div>
       ${certificadosDigitaisPanelHtml()}
     `;
   }
@@ -10428,13 +10427,16 @@
     else if(state.fiscalTab==='notas-exportacao') tabContent = notasExportacaoPanelHtml();
     else if(state.fiscalTab==='faturamento-mensal') tabContent = faturamentoRelatorioHtml();
     else if(state.fiscalTab==='alertas-sn') tabContent = alertasSimplesNacionalPanelHtml();
+    else if(state.fiscalTab==='situacao-fiscal') tabContent = situacaoFiscalPanelHtml();
     else if(state.fiscalTab==='impostos-guias') tabContent = impostosPagarPanelHtml();
     else if(state.fiscalTab==='obrigacoes') tabContent = obrigacoesAcessoriasPanelHtml();
     else if(state.fiscalTab==='parcelamentos') tabContent = parcelamentosPanelHtml();
     else if(state.fiscalTab==='planejamento') tabContent = planejamentoRegimesPanelHtml();
+    else if(state.fiscalTab==='calculo-impostos') tabContent = calculadoraImpostosHtml();
     else if(state.fiscalTab==='declaracao') tabContent = declaracaoFaturamentoPanelHtml();
     else if(state.fiscalTab==='reforma') tabContent = reformaTributariaPanelHtml();
     else if(state.fiscalTab==='central-pdf') tabContent = centralPdfOfxPanelHtml();
+    else if(state.fiscalTab==='certidoes-cnd') tabContent = certidoesPanelHtml();
     return `
       <div class="panel">
         <div class="dp-tabs">
