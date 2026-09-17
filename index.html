@@ -9443,7 +9443,7 @@
     `;
   }
 
-  function notasFiscaisPanelHtml(){
+  function notasControlePanelHtml(){
     const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
     return `
       <div class="panel-head">
@@ -9459,10 +9459,22 @@
         </select>
       </div>
       <div id="nfTableContainer">${notasFiscaisTableHtml(state.nfClientFilter)}</div>
+    `;
+  }
 
-      <div class="form-section-title">Exportação em Lote (PDF organizado em pastas)</div>
+  function notasExportacaoPanelHtml(){
+    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return `
+      <div class="panel-head"><h3>Exportação em Lote (PDF organizado em pastas)</h3></div>
       <div class="form-hint" style="margin:-4px 0 14px;">Gera um PDF de cada nota fiscal (Entrada, Saída ou Serviços) desta empresa e agrupa tudo num único arquivo .zip, já organizado em pastas por fornecedor, competência ou número — pronto para extrair no seu computador ou dentro da pasta local do OneDrive (que sincroniza sozinho pra nuvem).</div>
-      ${state.nfClientFilter==='all' ? `<div class="empty">Selecione uma empresa específica no filtro "Filtrar por cliente" acima para exportar (a exportação é feita empresa por empresa).</div>` : `
+      <div class="field" style="max-width:360px;">
+        <label>Empresa</label>
+        <select id="nfClientSelect" class="filter-select" style="width:100%;">
+          <option value="all" ${state.nfClientFilter==='all'?'selected':''}>Todos os clientes</option>
+          ${allClients.map(c=>`<option value="${c.id}" ${state.nfClientFilter===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+      </div>
+      ${state.nfClientFilter==='all' ? `<div class="empty">Selecione uma empresa específica no filtro "Empresa" acima para exportar (a exportação é feita empresa por empresa).</div>` : `
         <div class="form-row">
           <div class="field"><label>Tipo de operação</label>
             <select id="exportNfTipoOperacao">
@@ -9483,7 +9495,6 @@
         <button type="button" class="btn-add" id="gerarZipNfBtn">Gerar PDFs e Baixar ZIP Organizado</button>
         <div class="legis-note">O navegador não consegue criar pastas direto no seu computador nem enviar arquivo direto pra nuvem do OneDrive (isso é bloqueado por segurança em qualquer site). O .zip baixado já vem organizado — é só extrair dentro da pasta do OneDrive no seu computador, que ele sincroniza sozinho.</div>
       `}
-      ${faturamentoRelatorioHtml()}
     `;
   }
 
@@ -10389,7 +10400,9 @@
   }
 
   const FISCAL_TABS = [
-    {k:'notas', label:'Notas Fiscais (PDF/XML)'},
+    {k:'notas-controle', label:'Controle de Notas Fiscais - Entrada / Saída / Serviços'},
+    {k:'notas-exportacao', label:'Exportação em Lote (PDF organizado em pastas)'},
+    {k:'faturamento-mensal', label:'Relatório de Faturamento Mensal'},
     {k:'alertas-sn', label:'Painel de Alertas Simples Nacional'},
     {k:'impostos-guias', label:'Impostos & Guias'},
     {k:'obrigacoes', label:'Obrigações Acessórias'},
@@ -10409,9 +10422,11 @@
     `;
   }
   function renderFiscalExtras(){
-    if(!FISCAL_TABS.some(t=>t.k===state.fiscalTab)) state.fiscalTab = 'notas';
+    if(!FISCAL_TABS.some(t=>t.k===state.fiscalTab)) state.fiscalTab = 'notas-controle';
     let tabContent = '';
-    if(state.fiscalTab==='notas') tabContent = notasFiscaisPanelHtml();
+    if(state.fiscalTab==='notas-controle') tabContent = notasControlePanelHtml();
+    else if(state.fiscalTab==='notas-exportacao') tabContent = notasExportacaoPanelHtml();
+    else if(state.fiscalTab==='faturamento-mensal') tabContent = faturamentoRelatorioHtml();
     else if(state.fiscalTab==='alertas-sn') tabContent = alertasSimplesNacionalPanelHtml();
     else if(state.fiscalTab==='impostos-guias') tabContent = impostosPagarPanelHtml();
     else if(state.fiscalTab==='obrigacoes') tabContent = obrigacoesAcessoriasPanelHtml();
