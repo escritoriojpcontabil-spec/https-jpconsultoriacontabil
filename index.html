@@ -596,6 +596,7 @@
     prolaboreFormData: {},
     dpTab: 'funcionarios',
     fiscalTab: 'notas',
+    legalTab: 'contratos',
     contabilTab: 'plano',
     contabilEmpresaAtiva: '',
     contabilRelSubTab: 'balancete',
@@ -2584,7 +2585,7 @@
 
       let totalPagoProvisionado = 0;
       parcelas.forEach(parcela=>{
-        if(y + rowH > 280){ doc.addPage(); y = 15; desenhaCabecalho(); }
+        if(y + rowH > 225){ doc.addPage(); y = 15; desenhaCabecalho(); }
         const valorTotal = round2((Number(parcela.valorPrincipal)||0)+(Number(parcela.selicJuros)||0));
         const situacao = parcelaSituacao(parcela);
         const valores = [
@@ -2606,7 +2607,7 @@
         totalPagoProvisionado += valorTotal;
         y += rowH;
       });
-      if(y > 270){ doc.addPage(); y = 15; }
+      if(y + 6 > 235){ doc.addPage(); y = 15; }
       y += 6;
       doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
       doc.text('Total Pago / Provisionado:', mx+cw*0.55, y);
@@ -6090,6 +6091,76 @@
     return 'Válido (' + dias + ' dias restantes)';
   }
 
+  // Notificações de vencimento de Certificado Digital — alerta em duas janelas (60 e 30 dias
+  // antes do vencimento) para que o escritório providencie o aviso de renovação ao cliente.
+  // O cadastro de certificado digital guarda nome/CNPJ em texto livre (não tem clientId), então
+  // tentamos casar com um cliente cadastrado pelo CNPJ (ou pelo nome, se o CNPJ não bater) para
+  // conseguir telefone/email; se não achar, ainda mostra o alerta, só sem os botões de envio direto.
+  function certificadoAcharClienteVinculado(c){
+    const cnpjLimpo = String(c.cnpj||'').replace(/\D/g,'');
+    if(cnpjLimpo){
+      const porCnpj = state.clients.find(cl=>String(cl.doc||'').replace(/\D/g,'')===cnpjLimpo);
+      if(porCnpj) return porCnpj;
+    }
+    const nomeLimpo = String(c.nome||'').trim().toLowerCase();
+    if(nomeLimpo){
+      const porNome = state.clients.find(cl=>String(cl.name||'').trim().toLowerCase()===nomeLimpo);
+      if(porNome) return porNome;
+    }
+    return null;
+  }
+  function certificadosNotificacoesVencimento(){
+    return state.certificadosDigitais.map(c=>{
+      const dias = certificadoDiasParaVencer(c);
+      if(dias===null || dias < 0) return null;
+      let janela = null;
+      if(dias <= 30) janela = 30;
+      else if(dias <= 60) janela = 60;
+      if(!janela) return null;
+      const cliente = certificadoAcharClienteVinculado(c);
+      return { certificado: c, cliente, dias, janela };
+    }).filter(Boolean).sort((a,b)=>a.dias-b.dias);
+  }
+  function certificadoMensagemRenovacao(alerta){
+    const nome = alerta.certificado.nome || (alerta.cliente ? alerta.cliente.name : '[Cliente]');
+    const dataFim = alerta.certificado.dataFim ? fmtDate(alerta.certificado.dataFim) : '—';
+    return 'Olá, ' + nome + '! Identificamos que o certificado digital da empresa vence em ' + alerta.dias + ' dia(s), no dia ' + dataFim + '. ' +
+      'Solicitamos a gentileza de providenciar a renovação o quanto antes, para evitar interrupções nas obrigações fiscais que dependem do certificado (emissão de notas, eSocial, declarações, etc.). Qualquer dúvida, estamos à disposição.';
+  }
+
+  function certificadosNotificacoesPanelHtml(){
+    const alertas = certificadosNotificacoesVencimento();
+    if(!alertas.length) return '';
+    return `
+      <div class="panel" style="border-left:4px solid #d97706;">
+        <div class="panel-head"><h3>🔔 Certificados Digitais próximos do vencimento</h3></div>
+        <div class="form-hint" style="margin:-4px 0 14px;">Avisos automáticos a 60 e 30 dias do vencimento. Envie a mensagem de solicitação de renovação direto para o cliente.</div>
+        <div class="cc-list">
+          ${alertas.map(a=>{
+            const cor = a.janela===30 ? 'sit-baixada' : 'sit-pendente';
+            const temFone = a.cliente && a.cliente.phone;
+            const temEmail = a.cliente && a.cliente.email;
+            return `
+            <div class="cc-row" style="flex-direction:column; align-items:stretch; gap:6px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                <div class="cr-main">
+                  <div class="cr-title">${escapeHtml(a.certificado.nome||'—')}</div>
+                  <div class="cr-meta">Certificado Digital · vence em ${a.certificado.dataFim?fmtDate(a.certificado.dataFim):'—'} (${a.dias} dia(s))${!a.cliente?' · sem vínculo com cliente cadastrado':''}</div>
+                </div>
+                <span class="tag ${cor}">${a.janela===30 ? 'Urgente — 30 dias' : 'Atenção — 60 dias'}</span>
+              </div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" class="btn-sm" data-cert-notif-whatsapp="${a.certificado.id}" ${!temFone?'disabled title="Sem cliente vinculado ou sem telefone cadastrado"':''}>Enviar por WhatsApp</button>
+                <button type="button" class="btn-sm" data-cert-notif-email="${a.certificado.id}" ${!temEmail?'disabled title="Sem cliente vinculado ou sem email cadastrado"':''}>Enviar por Email</button>
+                <button type="button" class="btn-sm" data-cert-notif-copiar="${a.certificado.id}">Copiar mensagem</button>
+              </div>
+            </div>
+          `;}).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   function certidaoDiasParaVencer(c){
     if(!c.dataValidade) return null;
     const hoje = new Date(todayStr()+'T00:00:00');
@@ -8629,6 +8700,7 @@
           ${impostosCardHtml()}
           ${folhaCardHtml()}
         </div>
+        ${certificadosNotificacoesPanelHtml()}
         <div class="form-section-title" style="margin-top:8px;">Calendário de Obrigações</div>
         ${calendarioHtml()}
         <div class="form-section-title"></div>
@@ -11320,15 +11392,11 @@
     {k:'calculo-impostos', label:'Cálculo de Impostos'},
     {k:'declaracao', label:'Declaração de Faturamento'},
     {k:'reforma', label:'Reforma Tributária (EC 132/23)'},
-    {k:'central-pdf', label:'Central PDF & OFX (Empresas)'},
+    {k:'central-pdf', label:'Controle de Certificados Digitais'},
     {k:'certidoes-cnd', label:'Certidões Negativas de Débitos (CND)'},
   ];
   function centralPdfOfxPanelHtml(){
-    return `
-      <div class="panel-head"><h3>Central PDF & OFX (Empresas)</h3></div>
-      <div class="form-hint" style="margin:-4px 0 16px;">Certificados digitais por empresa, guardados aqui para consulta rápida. A importação de extratos bancários (OFX) fica no Setor Financeiro, dentro do lançamento de cada empresa. As Certidões Negativas de Débitos (CND) agora ficam na aba própria "Certidões Negativas de Débitos (CND)".</div>
-      ${certificadosDigitaisPanelHtml()}
-    `;
+    return certificadosDigitaisPanelHtml();
   }
   function renderFiscalExtras(){
     if(!FISCAL_TABS.some(t=>t.k===state.fiscalTab)) state.fiscalTab = 'notas-controle';
@@ -11580,41 +11648,59 @@
     `;
   }
 
-  function renderLegalExtras(){
+  const LEGAL_TABS = [
+    {k:'contratos', label:'Contratos de Serviços'},
+    {k:'societarios', label:'Documentos Societários'},
+    {k:'inscricoes', label:'Inscrições'},
+    {k:'alvaras', label:'Alvarás'},
+    {k:'processos', label:'Processos Fiscais'},
+  ];
+  function contratosServicosPanelHtml(){
     const empresa = state.clients.find(c=>c.id===state.contratoEmpresaAtiva);
     const contratosCliente = state.contratos.filter(c=>c.clientId===state.contratoEmpresaAtiva).sort((a,b)=>(b.dataAssinatura||'').localeCompare(a.dataAssinatura||''));
     return `
-      <div class="panel">
-        <div class="panel-head"><h3>Contratos de Serviços</h3></div>
-        <div class="form-hint" style="margin:-4px 0 14px;">Guarde aqui os contratos (PDF) de cada cliente — assinados, aditivos ou distratos — separados por empresa.</div>
-        ${empresaSelectorHtmlContrato()}
-        ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou anexar contratos dela.</div>` : `
-          <button type="button" class="btn-add" id="novoContratoBtn" style="margin-bottom:14px;">+ Novo contrato</button>
-          ${!contratosCliente.length ? `<div class="empty">Nenhum contrato cadastrado para ${escapeHtml(empresa.name)} ainda.</div>` : `
-            <div class="cc-list">
-              ${contratosCliente.map(c=>`
-                <div class="cc-row" style="align-items:flex-start;">
-                  <div class="cr-main">
-                    <div class="cr-title">${escapeHtml(c.nomeContrato || c.tipoContrato || 'Contrato')} <span class="tag ${contratoStatusClass(c.status)}" style="margin-left:6px;">${escapeHtml(c.status||'Ativo')}</span></div>
-                    <div class="cr-meta">${escapeHtml(c.tipoContrato||'')}${c.dataAssinatura?' · Assinado em '+fmtDate(c.dataAssinatura):''}${c.dataInicio?' · Início '+fmtDate(c.dataInicio):''}${c.dataFim?' · Vigência até '+fmtDate(c.dataFim):' · Prazo indeterminado'}</div>
-                    ${c.observacoes ? `<div class="cr-meta">${escapeHtml(c.observacoes)}</div>` : ''}
-                    ${c.arquivoNome ? `<div class="cr-meta">📎 ${escapeHtml(c.arquivoNome)}</div>` : `<div class="cr-meta" style="color:var(--ink-soft);">Sem arquivo PDF anexado</div>`}
-                  </div>
-                  <div style="display:flex; gap:6px; flex-shrink:0;">
-                    ${c.arquivoBase64 ? `<button type="button" class="btn-detail" data-baixar-contrato="${c.id}">Baixar PDF</button>` : ''}
-                    <button type="button" class="btn-detail" data-edit-contrato="${c.id}">Editar</button>
-                    <button type="button" class="btn-sm danger" data-del-contrato="${c.id}">Excluir</button>
-                  </div>
+      <div class="panel-head"><h3>Contratos de Serviços</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Guarde aqui os contratos (PDF) de cada cliente — assinados, aditivos ou distratos — separados por empresa.</div>
+      ${empresaSelectorHtmlContrato()}
+      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou anexar contratos dela.</div>` : `
+        <button type="button" class="btn-add" id="novoContratoBtn" style="margin-bottom:14px;">+ Novo contrato</button>
+        ${!contratosCliente.length ? `<div class="empty">Nenhum contrato cadastrado para ${escapeHtml(empresa.name)} ainda.</div>` : `
+          <div class="cc-list">
+            ${contratosCliente.map(c=>`
+              <div class="cc-row" style="align-items:flex-start;">
+                <div class="cr-main">
+                  <div class="cr-title">${escapeHtml(c.nomeContrato || c.tipoContrato || 'Contrato')} <span class="tag ${contratoStatusClass(c.status)}" style="margin-left:6px;">${escapeHtml(c.status||'Ativo')}</span></div>
+                  <div class="cr-meta">${escapeHtml(c.tipoContrato||'')}${c.dataAssinatura?' · Assinado em '+fmtDate(c.dataAssinatura):''}${c.dataInicio?' · Início '+fmtDate(c.dataInicio):''}${c.dataFim?' · Vigência até '+fmtDate(c.dataFim):' · Prazo indeterminado'}</div>
+                  ${c.observacoes ? `<div class="cr-meta">${escapeHtml(c.observacoes)}</div>` : ''}
+                  ${c.arquivoNome ? `<div class="cr-meta">📎 ${escapeHtml(c.arquivoNome)}</div>` : `<div class="cr-meta" style="color:var(--ink-soft);">Sem arquivo PDF anexado</div>`}
                 </div>
-              `).join('')}
-            </div>
-          `}
+                <div style="display:flex; gap:6px; flex-shrink:0;">
+                  ${c.arquivoBase64 ? `<button type="button" class="btn-detail" data-baixar-contrato="${c.id}">Baixar PDF</button>` : ''}
+                  <button type="button" class="btn-detail" data-edit-contrato="${c.id}">Editar</button>
+                  <button type="button" class="btn-sm danger" data-del-contrato="${c.id}">Excluir</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
         `}
+      `}
+    `;
+  }
+  function renderLegalExtras(){
+    if(!LEGAL_TABS.some(t=>t.k===state.legalTab)) state.legalTab = 'contratos';
+    let tabContent = '';
+    if(state.legalTab==='contratos') tabContent = contratosServicosPanelHtml();
+    else if(state.legalTab==='societarios') tabContent = documentosSocietariosPanelHtml();
+    else if(state.legalTab==='inscricoes') tabContent = inscricoesPanelHtml();
+    else if(state.legalTab==='alvaras') tabContent = alvarasPanelHtml();
+    else if(state.legalTab==='processos') tabContent = processosFiscaisPanelHtml();
+    return `
+      <div class="panel">
+        <div class="dp-tabs">
+          ${LEGAL_TABS.map(t=>`<button type="button" class="dp-tab-btn ${state.legalTab===t.k?'active':''}" data-legal-tab="${t.k}">${t.label}</button>`).join('')}
+        </div>
       </div>
-      <div class="panel">${documentosSocietariosPanelHtml()}</div>
-      <div class="panel">${inscricoesPanelHtml()}</div>
-      <div class="panel">${alvarasPanelHtml()}</div>
-      <div class="panel">${processosFiscaisPanelHtml()}</div>
+      <div class="panel">${tabContent}</div>
     `;
   }
 
@@ -12778,6 +12864,49 @@
     const comCorpo = document.getElementById('comCorpo');
     if(comCorpo) comCorpo.onchange = (e)=>{ state.comunicadoCorpo = e.target.value; render(); };
 
+    root.querySelectorAll('[data-cert-notif-whatsapp]').forEach(el=>{
+      el.onclick = async ()=>{
+        const cert = state.certificadosDigitais.find(c=>c.id===el.getAttribute('data-cert-notif-whatsapp'));
+        if(!cert) return;
+        const cliente = certificadoAcharClienteVinculado(cert);
+        if(!cliente || !cliente.phone){ alert('Sem telefone cadastrado para este cliente.'); return; }
+        const dias = certificadoDiasParaVencer(cert);
+        const janela = dias<=30?30:60;
+        const texto = certificadoMensagemRenovacao({certificado:cert, cliente, dias, janela});
+        await saveEnvio({ clientId: cliente.id, canal:'whatsapp', texto, assunto:'Renovação de Certificado Digital', isComunicado:true, sentAt:new Date().toISOString(), sentBy: state.user?state.user.username:'' });
+        window.open('https://wa.me/'+waPhoneDigits(cliente.phone)+'?text='+encodeURIComponent(texto), '_blank');
+      };
+    });
+    root.querySelectorAll('[data-cert-notif-email]').forEach(el=>{
+      el.onclick = async ()=>{
+        const cert = state.certificadosDigitais.find(c=>c.id===el.getAttribute('data-cert-notif-email'));
+        if(!cert) return;
+        const cliente = certificadoAcharClienteVinculado(cert);
+        if(!cliente || !cliente.email){ alert('Sem email cadastrado para este cliente.'); return; }
+        const dias = certificadoDiasParaVencer(cert);
+        const janela = dias<=30?30:60;
+        const texto = certificadoMensagemRenovacao({certificado:cert, cliente, dias, janela});
+        const assunto = 'Renovação de Certificado Digital — ' + (cert.nome||'');
+        await saveEnvio({ clientId: cliente.id, canal:'email', texto, assunto, isComunicado:true, sentAt:new Date().toISOString(), sentBy: state.user?state.user.username:'' });
+        window.location.href = 'mailto:'+encodeURIComponent(cliente.email)+'?subject='+encodeURIComponent(assunto)+'&body='+encodeURIComponent(texto);
+      };
+    });
+    root.querySelectorAll('[data-cert-notif-copiar]').forEach(el=>{
+      el.onclick = async ()=>{
+        const cert = state.certificadosDigitais.find(c=>c.id===el.getAttribute('data-cert-notif-copiar'));
+        if(!cert) return;
+        const cliente = certificadoAcharClienteVinculado(cert);
+        const dias = certificadoDiasParaVencer(cert);
+        const janela = dias<=30?30:60;
+        const texto = certificadoMensagemRenovacao({certificado:cert, cliente, dias, janela});
+        try{
+          await navigator.clipboard.writeText(texto);
+          alert('Mensagem copiada! Já pode colar no WhatsApp ou email do cliente.');
+        }catch(e){
+          prompt('Copie a mensagem abaixo:', texto);
+        }
+      };
+    });
     const comEnviarIndividualBtn = document.getElementById('comEnviarIndividualBtn');
     if(comEnviarIndividualBtn){
       comEnviarIndividualBtn.onclick = async ()=>{
@@ -13455,6 +13584,11 @@
     // ===== Departamento Fiscal: abas =====
     root.querySelectorAll('[data-fiscal-tab]').forEach(el=>{
       el.onclick = ()=>{ state.fiscalTab = el.getAttribute('data-fiscal-tab'); render(); };
+    });
+
+    // ===== Departamento Legal: abas =====
+    root.querySelectorAll('[data-legal-tab]').forEach(el=>{
+      el.onclick = ()=>{ state.legalTab = el.getAttribute('data-legal-tab'); render(); };
     });
 
     // ===== Obrigações Acessórias =====
