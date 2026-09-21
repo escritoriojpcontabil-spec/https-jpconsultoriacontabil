@@ -641,6 +641,9 @@
     esocialEmpresaAtiva: '',
     informeRendimentosData: {},
     sindicatos: [],
+    parcelasIndividuais: [],
+    parcelamentoFluxoAtivo: '',
+    parcelaIndividualModalData: null,
     sindicatoModalData: null,
     sindicatoEmpresaAtiva: '',
     simuladorTipo: 'ferias',
@@ -6319,6 +6322,131 @@
     await loadParcelamentos(); render();
   }
 
+  async function loadParcelasIndividuais(){
+    state.parcelasIndividuais = [];
+    try{
+      const keys = await Store.list('parcelasindividuais:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.parcelasIndividuais.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.parcelasIndividuais.sort((a,b)=>(a.vencimentoOriginal||'').localeCompare(b.vencimentoOriginal||''));
+  }
+  async function saveParcelaIndividual(p){
+    if(!p.id) p.id = uid();
+    try{
+      await Store.set('parcelasindividuais:'+p.id, JSON.stringify(p), true);
+    }catch(e){
+      alert('Não foi possível salvar esta parcela.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      return false;
+    }
+    await loadParcelasIndividuais(); render();
+    return true;
+  }
+  async function deleteParcelaIndividual(id){
+    await Store.delete('parcelasindividuais:'+id, true);
+    await loadParcelasIndividuais(); render();
+  }
+  function addMesesData(dataStr, meses){
+    const [y,m,d] = dataStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m-1+meses, d));
+    return dt.toISOString().slice(0,10);
+  }
+  async function gerarFluxoParcelasAutomatico(parcelamento){
+    const jaExistem = state.parcelasIndividuais.some(p=>p.parcelamentoId===parcelamento.id);
+    if(jaExistem) return;
+    const total = Math.max(1, Number(parcelamento.quantidadeParcelas)||1);
+    const valorParcela = Number(parcelamento.valorParcela)||0;
+    const dataBase = parcelamento.proximoVencimento || parcelamento.dataAdesao || todayStr();
+    for(let i=0;i<total;i++){
+      const numeroParcela = String(i+1).padStart(2,'0') + '/' + String(total).padStart(2,'0');
+      const vencimentoOriginal = addMesesData(dataBase, i);
+      const p = {
+        id: uid(), parcelamentoId: parcelamento.id, clientId: parcelamento.clientId,
+        numeroParcela, vencimentoOriginal, valorPrincipal: valorParcela,
+        selicJuros: 0, dataPagamento: '', bancoOrigem: '',
+      };
+      try{ await Store.set('parcelasindividuais:'+p.id, JSON.stringify(p), true); }catch(e){}
+    }
+    await loadParcelasIndividuais();
+  }
+  function parcelaSituacao(p){ return p.dataPagamento ? 'Pago' : 'Aberto'; }
+
+  function fluxoParcelasPanelHtml(){
+    const parcelamento = state.parcelamentos.find(p=>p.id===state.parcelamentoFluxoAtivo);
+    if(!parcelamento) return `<div class="empty">Parcelamento não encontrado.</div>`;
+    const parcelas = state.parcelasIndividuais.filter(p=>p.parcelamentoId===parcelamento.id)
+      .sort((a,b)=>(a.numeroParcela||'').localeCompare(b.numeroParcela||'', undefined, {numeric:true}));
+    let totalPagoProvisionado = 0;
+    parcelas.forEach(p=>{ totalPagoProvisionado += (Number(p.valorPrincipal)||0) + (Number(p.selicJuros)||0); });
+    return `
+      <div class="panel-head">
+        <h3>Fluxo de Parcelas — ${escapeHtml(clientName(parcelamento.clientId))}</h3>
+        <button type="button" class="btn-sm" id="voltarParcelamentosBtn">← Voltar aos parcelamentos</button>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 14px;">${escapeHtml(parcelamento.tipoImposto||'—')} · ${escapeHtml(parcelamento.esfera||'—')} · Processo nº ${escapeHtml(parcelamento.numeroProcesso||'—')}</div>
+      ${!parcelas.length ? `
+        <div class="empty">Nenhuma parcela gerada ainda para este parcelamento.</div>
+        <button type="button" class="btn-add" id="gerarFluxoBtn" style="margin-top:12px;">Gerar Fluxo de Parcelas (${parcelamento.quantidadeParcelas||0} parcelas)</button>
+      ` : `
+        <table>
+          <thead><tr><th>Nº Parcela</th><th>Vencimento Original</th><th style="text-align:right">Valor Principal</th><th style="text-align:right">Selic + Juros Acumulados</th><th style="text-align:right">Valor Total da Guia</th><th>Data de Pagamento</th><th>Banco/Origem</th><th>Situação</th><th></th></tr></thead>
+          <tbody>
+            ${parcelas.map(p=>{
+              const valorTotal = round2((Number(p.valorPrincipal)||0)+(Number(p.selicJuros)||0));
+              const situacao = parcelaSituacao(p);
+              return `
+              <tr>
+                <td>${escapeHtml(p.numeroParcela||'—')}</td>
+                <td>${p.vencimentoOriginal?fmtDate(p.vencimentoOriginal):'—'}</td>
+                <td style="text-align:right" class="mono">${fmtBRL(p.valorPrincipal)}</td>
+                <td style="text-align:right" class="mono">${fmtBRL(p.selicJuros)}</td>
+                <td style="text-align:right" class="mono">${fmtBRL(valorTotal)}</td>
+                <td>${p.dataPagamento?fmtDate(p.dataPagamento):'—'}</td>
+                <td>${escapeHtml(p.bancoOrigem||'—')}</td>
+                <td><span class="tag ${situacao==='Pago'?'sit-ativa':'sit-pendente'}">${situacao}</span></td>
+                <td><button class="btn-sm" data-edit-parcela-individual="${p.id}">Editar</button></td>
+              </tr>
+            `;}).join('')}
+          </tbody>
+          <tfoot>
+            <tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Total Pago / Provisionado:</td><td style="text-align:right" class="mono">${fmtBRL(totalPagoProvisionado)}</td><td colspan="4"></td></tr>
+          </tfoot>
+        </table>
+      `}
+    `;
+  }
+
+  function parcelaIndividualModalHtml(){
+    const d = state.parcelaIndividualModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Editar parcela ${escapeHtml(d.numeroParcela||'')}</h3>
+          <form id="parcelaIndividualForm">
+            <div class="field"><label>Vencimento original</label><input type="date" id="piVencimento" value="${d.vencimentoOriginal||''}"/></div>
+            <div class="form-row">
+              <div class="field"><label>Valor principal (R$)</label><input type="number" step="0.01" min="0" id="piValorPrincipal" value="${d.valorPrincipal||0}"/></div>
+              <div class="field"><label>Selic + Juros Acumulados (R$)</label><input type="number" step="0.01" min="0" id="piSelicJuros" value="${d.selicJuros||0}"/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Data de pagamento</label><input type="date" id="piDataPagamento" value="${d.dataPagamento||''}"/></div>
+              <div class="field"><label>Banco/Origem</label><input type="text" id="piBancoOrigem" value="${escapeHtml(d.bancoOrigem||'')}"/></div>
+            </div>
+            <div class="form-hint" style="margin:-8px 0 12px;">A situação (Pago/Aberto) é definida automaticamente pela data de pagamento — deixe em branco se ainda não foi paga.</div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="piCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
   async function loadImpostosPagar(){
     state.impostosPagar = [];
     try{
@@ -7046,64 +7174,130 @@
     const decimoAno = state.decimosTerceiros.find(x=>x.funcionarioId===func.id && String(x.ano)===String(ano));
     const feriasAno = state.ferias.filter(f=>f.funcionarioId===func.id && (f.dataInicioGozo||'').slice(0,4)===String(ano));
     const rendTributavel = round2(
-      folhasAno.reduce((s,f)=>s+(f.bruto||0),0) + (decimoAno ? decimoAno.totalBruto : 0) +
+      folhasAno.reduce((s,f)=>s+(f.bruto||0),0) +
       feriasAno.reduce((s,f)=>s+((f.valorFeriasGozo||0)+(f.tercoGozo||0)),0)
     );
     const inssTotal = round2(
-      folhasAno.reduce((s,f)=>s+(f.inss||0),0) + (decimoAno ? decimoAno.inss : 0) +
+      folhasAno.reduce((s,f)=>s+(f.inss||0),0) +
       feriasAno.reduce((s,f)=>s+(f.inss||0),0)
     );
     const irrfTotal = round2(
-      folhasAno.reduce((s,f)=>s+(f.irrf||0),0) + (decimoAno ? decimoAno.irrf : 0) +
+      folhasAno.reduce((s,f)=>s+(f.irrf||0),0) +
       feriasAno.reduce((s,f)=>s+(f.irrf||0),0)
     );
     const decimoBruto = decimoAno ? decimoAno.totalBruto : 0;
-    const decimoInss = decimoAno ? decimoAno.inss : 0;
     const decimoIrrf = decimoAno ? decimoAno.irrf : 0;
 
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Informe de Rendimentos — Ano-calendário ' + ano, cliente ? cliente.name : '', cliente ? cliente.logo : '');
-    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-    doc.text('Beneficiário: ' + func.nome + (func.cpf?' — CPF '+func.cpf:''), 14, y); y+=8;
+    const mx = 12, cw = pageW - mx*2;
+    let y = 12;
 
-    const linha = (label, valor, negrito)=>{
-      doc.setFont('helvetica', negrito?'bold':'normal');
-      doc.text(label, 14, y);
-      doc.text(fmtBRL(valor), pageW-16, y, {align:'right'});
-      y += 6.5;
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(20,25,30);
+    doc.text('COMPROVANTE DE RENDIMENTOS PAGOS E DE RETENÇÃO DE IMPOSTO DE RENDA NA FONTE', pageW/2, y, {align:'center'});
+    y += 6;
+
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+    const wEsq = cw*0.44, wDir = cw*0.56;
+    doc.rect(mx, y, wEsq, 20);
+    doc.rect(mx+wEsq, y, wDir, 20);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('MINISTÉRIO DA FAZENDA', mx+wEsq/2, y+8, {align:'center'});
+    doc.text('SECRETARIA DA RECEITA FEDERAL', mx+wEsq/2, y+13, {align:'center'});
+    doc.setFontSize(8);
+    doc.text('COMPROVANTE DE RENDIMENTOS PAGOS', mx+wEsq+wDir/2, y+6, {align:'center'});
+    doc.text('E DE RETENÇÃO DE', mx+wEsq+wDir/2, y+10, {align:'center'});
+    doc.text('IMPOSTO DE RENDA NA FONTE', mx+wEsq+wDir/2, y+14, {align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+    doc.text('Ano-calendário ' + ano, mx+wEsq+wDir/2, y+18, {align:'center'});
+    y += 20;
+
+    const secHeader = (titulo)=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text(titulo, mx, y+4);
+      y += 5;
     };
-    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.text('Rendimentos tributáveis recebidos de pessoa jurídica', 14, y); y+=7;
-    doc.setFontSize(9.5);
-    linha('Salários (folha mensal, ' + folhasAno.length + ' competência(s))', folhasAno.reduce((s,f)=>s+(f.bruto||0),0));
-    linha('Férias + 1/3 constitucional', feriasAno.reduce((s,f)=>s+((f.valorFeriasGozo||0)+(f.tercoGozo||0)),0));
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
-    linha('Total de rendimentos tributáveis', rendTributavel, true);
-    y += 4;
+    const box2Col = (label1, val1, label2, val2, h)=>{
+      const w1 = cw*0.72, w2 = cw*0.28;
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      doc.rect(mx, y, w1, h); doc.rect(mx+w1, y, w2, h);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6.5);
+      doc.text(label1, mx+1.5, y+3);
+      doc.text(label2, mx+w1+1.5, y+3);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text(String(val1||''), mx+1.5, y+h-1.8);
+      doc.text(String(val2||''), mx+w1+1.5, y+h-1.8);
+      y += h;
+    };
+    const valorRow = (numero, label, valor, h)=>{
+      h = h || 8;
+      const wLabel = cw*0.78, wValor = cw*0.22;
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      doc.rect(mx, y, wLabel, h); doc.rect(mx+wLabel, y, wValor, h);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7);
+      const lbl = doc.splitTextToSize(numero + '. ' + label, wLabel-3);
+      doc.text(lbl, mx+1.5, y+3.5);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text(fmtBRL(valor), mx+wLabel+wValor-1.5, y+h-2, {align:'right'});
+      y += h;
+    };
 
-    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.text('13º salário (tributação exclusiva na fonte)', 14, y); y+=7;
-    doc.setFontSize(9.5);
-    linha('13º salário (total bruto)', decimoBruto);
-    linha('(-) INSS sobre o 13º', -Math.abs(decimoInss));
-    linha('(-) IRRF sobre o 13º', -Math.abs(decimoIrrf));
-    y += 4;
+    secHeader('1. FONTE PAGADORA PESSOA JURÍDICA OU PESSOA FÍSICA');
+    box2Col('NOME EMPRESARIAL / NOME', cliente?cliente.name:'—', 'CNPJ / CPF', cliente?cliente.doc:'—', 10);
+    y += 3;
 
-    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.text('Contribuições e retenções do ano', 14, y); y+=7;
-    doc.setFontSize(9.5);
-    linha('Contribuição previdenciária oficial (INSS)', inssTotal);
-    linha('Imposto de Renda Retido na Fonte (IRRF)', irrfTotal, true);
+    secHeader('2. PESSOA FÍSICA BENEFICIÁRIA DOS RENDIMENTOS');
+    box2Col('CPF', func.cpf||'—', 'NOME COMPLETO', func.nome, 10);
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+    doc.rect(mx, y, cw, 9);
+    doc.setFont('helvetica','normal'); doc.setFontSize(6.5);
+    doc.text('NATUREZA DO RENDIMENTO', mx+1.5, y+3);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('Rendimentos do trabalho assalariado (CLT)', mx+1.5, y+7);
+    y += 9 + 3;
 
-    y += 14;
-    if(y > 255){ doc.addPage(); y = 20; }
+    secHeader('3. RENDIMENTOS TRIBUTÁVEIS, DEDUÇÕES E IMPOSTO RETIDO NA FONTE');
+    valorRow('01', 'Total dos Rendimentos (inclusive férias)', rendTributavel);
+    valorRow('02', 'Contribuição Previdenciária Oficial', inssTotal);
+    valorRow('03', 'Contribuição à Previdência Privada e ao Fundo de Aposentadoria Programada Individual - FAPI', 0, 9);
+    valorRow('04', 'Pensão Alimentícia (informar o beneficiário no Quadro 6)', 0);
+    valorRow('05', 'Imposto de Renda Retido', irrfTotal);
+    y += 3;
+
+    if(y > 240){ doc.addPage(); y = 15; }
+    secHeader('4. RENDIMENTOS ISENTOS E NÃO TRIBUTÁVEIS');
+    valorRow('01', 'Parcela Isenta dos Proventos de Aposentadoria, Reserva, Reforma e Pensão (65 anos ou mais)', 0, 9);
+    valorRow('02', 'Diárias e Ajudas de Custo', 0);
+    valorRow('03', 'Pensão, Proventos de Aposentadoria ou Reforma por Moléstia Grave e Aposentadoria ou Reforma por Acidente em Serviço', 0, 9);
+    valorRow('04', 'Lucro e Dividendo Apurado a partir de 1996 pago por PJ (Lucro Real, Presumido ou Arbitrado)', 0, 9);
+    y += 3;
+
+    if(y > 230){ doc.addPage(); y = 15; }
+    secHeader('5. RENDIMENTOS SUJEITOS À TRIBUTAÇÃO EXCLUSIVA (INCLUSIVE COMPLEMENTAÇÃO APOSENTADORIA)');
+    valorRow('01', '13º Salário', decimoBruto);
+    valorRow('02', 'IRRF sobre o 13º Salário', decimoIrrf);
+    valorRow('03', 'Ganho de Capital / Outros', 0);
+    y += 3;
+
+    if(y > 250){ doc.addPage(); y = 15; }
+    secHeader('6. INFORMAÇÕES COMPLEMENTARES');
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+    doc.rect(mx, y, cw, 14);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7);
+    const compTexto = doc.splitTextToSize('Comprovante gerado a partir dos registros de folha de pagamento, férias e 13º salário lançados no sistema para o ano-calendário de ' + ano + '. Confira os valores com a folha de pagamento oficial homologada antes de utilizar na Declaração de Ajuste Anual do Imposto de Renda.', cw-3);
+    doc.text(compTexto, mx+1.5, y+4);
+    y += 14 + 10;
+
+    if(y > 265){ doc.addPage(); y = 20; }
     doc.setDrawColor(140,150,160);
-    doc.line(14, y, pageW-14, y);
-    y += 5;
-    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,105,120);
-    doc.text('Responsável — ' + (cliente?cliente.name:''), 14, y);
+    doc.line(mx+cw*0.15, y, mx+cw*0.85, y);
+    y += 4.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(90,105,120);
+    doc.text('Responsável pelas informações — ' + (cliente?cliente.name:''), pageW/2, y, {align:'center'});
     doc.setTextColor(20,25,30);
 
-    pdfFooterDisclaimer(doc, 'Informe gerado a partir dos registros de folha, 13º e férias calculados neste sistema. Não substitui o Informe de Rendimentos oficial emitido pela folha de pagamento homologada — confira os valores antes de usar na Declaração de Imposto de Renda.');
+    pdfFooterDisclaimer(doc, 'Comprovante gerado a partir dos registros de folha, 13º e férias calculados neste sistema. Não substitui o Informe de Rendimentos oficial emitido pela folha de pagamento homologada — confira os valores antes de usar na Declaração de Imposto de Renda.');
     doc.save('informe-rendimentos-' + func.nome.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + ano + '.pdf');
   }
 
@@ -7461,6 +7655,7 @@
     await loadPontoRegistros();
     await loadDecimosTerceiros();
     await loadSindicatos();
+    await loadParcelasIndividuais();
     await loadPlanoContas();
     await loadPlanoContasReferencial();
     await loadHistoricos();
@@ -10152,6 +10347,7 @@
             ${p.observacoes ? `<div class="si-meta">Obs: ${escapeHtml(p.observacoes)}</div>` : ''}
             <div style="display:flex; gap:8px;">
               <button type="button" class="btn-sm" data-editar-parc="${p.id}">Editar</button>
+              <button type="button" class="btn-detail" data-fluxo-parc="${p.id}">Fluxo de Parcelas</button>
               <button type="button" class="btn-detail" data-pdf-parc="${p.id}">PDF para o cliente</button>
             </div>
           </div>
@@ -10161,6 +10357,7 @@
   }
 
   function parcelamentosPanelHtml(){
+    if(state.parcelamentoFluxoAtivo) return fluxoParcelasPanelHtml();
     const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
     return `
       <div class="panel-head">
@@ -12127,6 +12324,7 @@
       ${state.modal==='declaracao' ? declaracaoModalHtml() : ''}
       ${state.modal==='ponto' ? pontoModalHtml() : ''}
       ${state.modal==='sindicato' ? sindicatoModalHtml() : ''}
+      ${state.modal==='parcelaIndividual' ? parcelaIndividualModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
@@ -13010,8 +13208,56 @@
           state.modal = 'parc'; render();
         };
       });
+      document.querySelectorAll('[data-fluxo-parc]').forEach(el=>{
+        el.onclick = ()=>{ state.parcelamentoFluxoAtivo = el.getAttribute('data-fluxo-parc'); render(); };
+      });
     }
     wireParcButtons();
+    const voltarParcelamentosBtn = document.getElementById('voltarParcelamentosBtn');
+    if(voltarParcelamentosBtn) voltarParcelamentosBtn.onclick = ()=>{ state.parcelamentoFluxoAtivo = ''; render(); };
+    const gerarFluxoBtn = document.getElementById('gerarFluxoBtn');
+    if(gerarFluxoBtn){
+      gerarFluxoBtn.onclick = async ()=>{
+        const parcelamento = state.parcelamentos.find(p=>p.id===state.parcelamentoFluxoAtivo);
+        if(!parcelamento) return;
+        gerarFluxoBtn.disabled = true; gerarFluxoBtn.textContent = 'Gerando...';
+        await gerarFluxoParcelasAutomatico(parcelamento);
+        render();
+      };
+    }
+    root.querySelectorAll('[data-edit-parcela-individual]').forEach(el=>{
+      el.onclick = ()=>{
+        const p = state.parcelasIndividuais.find(x=>x.id===el.getAttribute('data-edit-parcela-individual'));
+        if(!p) return;
+        state.parcelaIndividualModalData = Object.assign({}, p);
+        state.modal = 'parcelaIndividual'; render();
+      };
+    });
+    const piCancel = document.getElementById('piCancel');
+    if(piCancel) piCancel.onclick = ()=>{ state.modal=null; state.parcelaIndividualModalData=null; render(); };
+    const parcelaIndividualForm = document.getElementById('parcelaIndividualForm');
+    if(parcelaIndividualForm){
+      parcelaIndividualForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const d = state.parcelaIndividualModalData;
+        const p = Object.assign({}, d, {
+          vencimentoOriginal: document.getElementById('piVencimento').value,
+          valorPrincipal: document.getElementById('piValorPrincipal').value,
+          selicJuros: document.getElementById('piSelicJuros').value,
+          dataPagamento: document.getElementById('piDataPagamento').value,
+          bancoOrigem: document.getElementById('piBancoOrigem').value,
+        });
+        const submitBtn = parcelaIndividualForm.querySelector('button[type="submit"]');
+        if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
+        const ok = await saveParcelaIndividual(p);
+        if(!ok){
+          if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Salvar'; }
+          return;
+        }
+        state.modal=null; state.parcelaIndividualModalData=null;
+        render();
+      };
+    }
     const novoParcBtn = document.getElementById('novoParcBtn');
     if(novoParcBtn) novoParcBtn.onclick = ()=>{ state.parcModalData = { esfera: 'Federal' }; state.modal='parc'; render(); };
     const parcCancel = document.getElementById('parcCancel');
