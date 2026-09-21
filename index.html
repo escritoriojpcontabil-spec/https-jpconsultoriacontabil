@@ -2567,9 +2567,12 @@
 
       const desenhaCabecalho = ()=>{
         doc.setFont('helvetica','bold'); doc.setFontSize(7);
-        doc.setFillColor(232,235,240); doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+        doc.setTextColor(20,25,30);
         cols.forEach(col=>{
-          doc.rect(col.x0, y-4.3, col.wmm, rowH, 'FD');
+          doc.setFillColor(232,235,240);
+          doc.rect(col.x0, y-4.3, col.wmm, rowH, 'F');
+          doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+          doc.rect(col.x0, y-4.3, col.wmm, rowH, 'S');
           const tx = col.align==='right' ? col.x0+col.wmm-1.5 : col.x0+1.5;
           doc.text(col.label, tx, y-0.8, col.align?{align:col.align}:undefined);
         });
@@ -2592,9 +2595,10 @@
           parcela.dataPagamento?fmtDate(parcela.dataPagamento):'—',
           situacao,
         ];
-        doc.setDrawColor(210,210,210); doc.setLineWidth(0.15);
+        doc.setTextColor(20,25,30);
         cols.forEach((col,i)=>{
-          doc.rect(col.x0, y-3.8, col.wmm, rowH-1);
+          doc.setDrawColor(210,210,210); doc.setLineWidth(0.15);
+          doc.rect(col.x0, y-3.8, col.wmm, rowH-1, 'S');
           const tx = col.align==='right' ? col.x0+col.wmm-1.5 : col.x0+1.5;
           doc.text(String(valores[i]), tx, y-0.3, col.align?{align:col.align}:undefined);
         });
