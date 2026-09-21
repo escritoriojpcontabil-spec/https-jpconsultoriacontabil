@@ -2509,41 +2509,91 @@
     doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil', 14, pageH-10);
   }
 
-  function generateParcelamentoPDF(parcId){
+  async function generateParcelamentoPDF(parcId){
     const p = state.parcelamentos.find(x=>x.id===parcId);
     if(!p) return;
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    await gerarFluxoParcelasAutomatico(p);
+    const parcelas = state.parcelasIndividuais.filter(x=>x.parcelamentoId===p.id)
+      .sort((a,b)=>(a.numeroParcela||'').localeCompare(b.numeroParcela||'', undefined, {numeric:true}));
+
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const c = state.clients.find(x=>x.id===p.clientId);
-    let y = pdfHeader(doc, 'Resumo de Parcelamento de Impostos', c ? c.name : '—', c ? c.logo : '');
-    const pagas = Number(p.parcelasPagas)||0;
-    const total = Number(p.quantidadeParcelas)||0;
-    const valorParcela = Number(p.valorParcela)||0;
-    const saldoDevedor = Math.max(0, valorParcela*(total-pagas));
-    doc.setFont('helvetica','normal'); doc.setFontSize(10.5);
+    const orgao = p.orgao || PARC_ORGAO[p.esfera] || '—';
+    let y = pdfHeader(doc, 'Resumo de Parcelamento de Imposto — ' + (p.esfera||''), c ? c.name : '—', c ? c.logo : '');
+    const pageW = doc.internal.pageSize.getWidth();
+
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
     [
-      ['Esfera', p.esfera],
-      ['Órgão', PARC_ORGAO[p.esfera] || '—'],
+      ['Órgão de cobrança', orgao],
       ['Tipo de imposto', p.tipoImposto],
       ['Modalidade', p.modalidade],
       ['Número do processo', p.numeroProcesso],
       ['Data de adesão', p.dataAdesao ? fmtDate(p.dataAdesao) : '—'],
-      ['Próximo vencimento', p.proximoVencimento ? fmtDate(p.proximoVencimento) : '—'],
-      ['Parcelas', pagas + ' de ' + total + ' pagas'],
-      ['Valor de cada parcela', fmtBRL(valorParcela)],
-      ['Total do débito original', fmtBRLorDash(p.totalDebito)],
-      ['Saldo devedor estimado', fmtBRL(saldoDevedor)],
       ['Status', p.status],
-    ].forEach(([label,val])=>{ doc.text(String(label)+': '+String(val||'—'), 14, y); y += 7; });
+    ].forEach(([label,val])=>{ doc.text(String(label)+': '+String(val||'—'), 14, y); y += 6; });
+    y += 4;
+
     if(p.observacoes){
-      y += 3;
       doc.setFont('helvetica','bold'); doc.text('Observações:', 14, y); y += 6;
       doc.setFont('helvetica','normal');
       const obsLines = doc.splitTextToSize(p.observacoes, 180);
       doc.text(obsLines, 14, y);
+      y += obsLines.length*4.5 + 4;
     }
-    pdfFooterDisclaimer(doc, 'Resumo elaborado pelo escritório com base nas informações registradas no sistema. O saldo devedor é uma estimativa (valor da parcela × parcelas restantes) e pode não refletir juros, multas ou atualizações aplicadas pelo órgão responsável — confirme o valor exato no extrato oficial antes de qualquer pagamento.');
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+    doc.text('Fluxo de Parcelas', 14, y); y += 6;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+
+    if(!parcelas.length){
+      doc.text('Nenhuma parcela cadastrada.', 14, y);
+    } else {
+      const cols = [
+        {label:'Nº PARCELA', x:14}, {label:'VENCIMENTO', x:42},
+        {label:'VALOR PRINCIPAL', x:70, align:'right'}, {label:'SELIC + JUROS', x:104, align:'right'},
+        {label:'VALOR TOTAL DA GUIA', x:138, align:'right'}, {label:'DATA PGTO.', x:172},
+        {label:'SITUAÇÃO', x:pageW-14, align:'right'},
+      ];
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(238,238,238);
+      doc.rect(14, y-4, pageW-28, 5.5, 'F');
+      cols.forEach(col=> doc.text(col.label, col.x, y, col.align?{align:col.align}:undefined));
+      y += 4;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8);
+
+      let totalPagoProvisionado = 0;
+      parcelas.forEach(parcela=>{
+        if(y > 275){
+          doc.addPage(); y = 20;
+          doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+          doc.setFillColor(238,238,238);
+          doc.rect(14, y-4, pageW-28, 5.5, 'F');
+          cols.forEach(col=> doc.text(col.label, col.x, y, col.align?{align:col.align}:undefined));
+          y += 4;
+          doc.setFont('helvetica','normal'); doc.setFontSize(8);
+        }
+        const valorTotal = round2((Number(parcela.valorPrincipal)||0)+(Number(parcela.selicJuros)||0));
+        const situacao = parcelaSituacao(parcela);
+        doc.text(parcela.numeroParcela||'—', 14, y);
+        doc.text(parcela.vencimentoOriginal?fmtDate(parcela.vencimentoOriginal):'—', 42, y);
+        doc.text(fmtBRL(parcela.valorPrincipal), 96, y, {align:'right'});
+        doc.text(fmtBRL(parcela.selicJuros), 128, y, {align:'right'});
+        doc.text(fmtBRL(valorTotal), 166, y, {align:'right'});
+        doc.text(parcela.dataPagamento?fmtDate(parcela.dataPagamento):'—', 172, y);
+        doc.text(situacao, pageW-14, y, {align:'right'});
+        totalPagoProvisionado += valorTotal;
+        y += 5.5;
+      });
+      if(y > 270){ doc.addPage(); y = 20; }
+      doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+      doc.text('Total Pago / Provisionado:', 100, y);
+      doc.text(fmtBRL(totalPagoProvisionado), pageW-14, y, {align:'right'});
+    }
+
+    pdfFooterDisclaimer(doc, 'Relatório elaborado pelo escritório com base nas informações registradas no sistema. Os valores de Selic e Juros de cada parcela devem ser conferidos e atualizados conforme a guia oficial emitida pelo órgão responsável — confirme o valor exato antes de qualquer pagamento.');
     const safeName = (c ? c.name : 'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
     doc.save('parcelamento-' + p.esfera.toLowerCase() + '-' + safeName + '.pdf');
   }
@@ -10332,6 +10382,7 @@
             <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
               <div>
                 <div class="si-name">${escapeHtml(clientName(p.clientId))} <span class="tag ${parcEsferaClass(p.esfera)}">${escapeHtml(p.esfera||'—')}</span> <span class="tag ${parcStatusClass(p.status)}">${escapeHtml(p.status||'Em dia')}</span></div>
+                <div class="si-meta">Órgão de cobrança: <strong>${escapeHtml(p.orgao || PARC_ORGAO[p.esfera] || '—')}</strong></div>
                 <div class="si-meta">${escapeHtml(p.tipoImposto||'—')} · Processo nº ${escapeHtml(p.numeroProcesso||'—')} · ${escapeHtml(p.modalidade||'—')}</div>
                 <div class="si-meta">Adesão: ${p.dataAdesao?fmtDate(p.dataAdesao):'—'} · Próximo vencimento: ${p.proximoVencimento?fmtDate(p.proximoVencimento):'—'}</div>
               </div>
@@ -10404,7 +10455,8 @@
                 <select id="parcTipoImposto">${tipos.map(t=>`<option value="${t}" ${t===d.tipoImposto?'selected':''}>${t}</option>`).join('')}</select>
               </div>
             </div>
-            <div class="form-hint" style="margin:-8px 0 12px;">Órgão: ${escapeHtml(PARC_ORGAO[esfera]||'—')}</div>
+            <div class="field"><label>Órgão de cobrança</label><input type="text" id="parcOrgao" placeholder="Ex: Sefaz-PE, Prefeitura do Recife, PGFN..." value="${escapeHtml(d.orgao || (d.id ? '' : PARC_ORGAO[esfera]) || '')}"/></div>
+            <div class="form-hint" style="margin:-8px 0 12px;">Identifique o órgão específico responsável pela cobrança (varia por estado/município) — usado no relatório enviado ao cliente.</div>
             <div class="form-row">
               <div class="field"><label>Modalidade</label><select id="parcModalidade">${PARC_MODALIDADE.map(m=>`<option value="${m}" ${m===d.modalidade?'selected':''}>${m}</option>`).join('')}</select></div>
               <div class="field"><label>Nº do processo</label><input type="text" id="parcNumeroProcesso" value="${escapeHtml(d.numeroProcesso||'')}" required/></div>
@@ -13198,7 +13250,11 @@
         el.onclick = ()=>{ if(confirm('Excluir este parcelamento?')) deleteParcelamento(el.getAttribute('data-del-parc')); };
       });
       document.querySelectorAll('[data-pdf-parc]').forEach(el=>{
-        el.onclick = ()=> generateParcelamentoPDF(el.getAttribute('data-pdf-parc'));
+        el.onclick = async ()=>{
+          el.disabled = true; const original = el.textContent; el.textContent = 'Gerando...';
+          await generateParcelamentoPDF(el.getAttribute('data-pdf-parc'));
+          el.disabled = false; el.textContent = original;
+        };
       });
       document.querySelectorAll('[data-editar-parc]').forEach(el=>{
         el.onclick = ()=>{
@@ -13263,7 +13319,14 @@
     const parcCancel = document.getElementById('parcCancel');
     if(parcCancel) parcCancel.onclick = ()=>{ state.modal=null; state.parcModalData=null; render(); };
     const parcEsferaSel = document.getElementById('parcEsfera');
-    if(parcEsferaSel) parcEsferaSel.onchange = (e)=>{ state.parcModalData.esfera = e.target.value; render(); };
+    if(parcEsferaSel) parcEsferaSel.onchange = (e)=>{
+      state.parcModalData.esfera = e.target.value;
+      const orgaoInput = document.getElementById('parcOrgao');
+      if(orgaoInput && !orgaoInput.dataset.touched) state.parcModalData.orgao = PARC_ORGAO[e.target.value] || '';
+      render();
+    };
+    const parcOrgaoInput = document.getElementById('parcOrgao');
+    if(parcOrgaoInput) parcOrgaoInput.addEventListener('input', ()=>{ parcOrgaoInput.dataset.touched = '1'; });
     const parcForm = document.getElementById('parcForm');
     if(parcForm){
       parcForm.onsubmit = (e)=>{
@@ -13272,6 +13335,7 @@
           id: (state.parcModalData && state.parcModalData.id) || undefined,
           clientId: document.getElementById('parcCliente').value,
           esfera: document.getElementById('parcEsfera').value,
+          orgao: document.getElementById('parcOrgao').value,
           tipoImposto: document.getElementById('parcTipoImposto').value,
           modalidade: document.getElementById('parcModalidade').value,
           numeroProcesso: document.getElementById('parcNumeroProcesso').value,
