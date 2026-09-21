@@ -2520,7 +2520,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const c = state.clients.find(x=>x.id===p.clientId);
-    const orgao = p.orgao || PARC_ORGAO[p.esfera] || '—';
+    const orgao = p.orgao || (PARC_ORGAO_OPTIONS[p.esfera] ? PARC_ORGAO_OPTIONS[p.esfera][0] : '') || '—';
     let y = pdfHeader(doc, 'Resumo de Parcelamento de Imposto — ' + (p.esfera||''), c ? c.name : '—', c ? c.logo : '');
     const pageW = doc.internal.pageSize.getWidth();
 
@@ -4636,13 +4636,13 @@
   const NF_TIPOS = ['NF-e (Produto)', 'NFS-e (Serviço)', 'NFC-e (Consumidor)'];
 
   const PARC_ESFERAS = ['Federal', 'Estadual', 'Municipal'];
-  const PARC_ORGAO = {
-    'Federal': 'Receita Federal / PGFN',
-    'Estadual': 'Sefaz',
-    'Municipal': 'Prefeitura / Secretaria de Finanças',
+  const PARC_ORGAO_OPTIONS = {
+    'Federal': ['Receita Federal', 'PGFN', 'Dívida Ativa da União', 'Outro (digitar)'],
+    'Estadual': ['Sefaz', 'PGE (Procuradoria Estadual)', 'Outro (digitar)'],
+    'Municipal': ['Prefeitura / Secretaria de Finanças', 'Procuradoria Municipal', 'Outro (digitar)'],
   };
   const PARC_TIPO_IMPOSTO = {
-    'Federal': ['DAS (Simples Nacional)', 'IRPJ', 'CSLL', 'PIS/COFINS', 'INSS/Contribuição Previdenciária', 'FGTS', 'Dívida Ativa da União', 'Receita Federal', 'Outro'],
+    'Federal': ['DAS (Simples Nacional)', 'IRPJ', 'CSLL', 'PIS/COFINS', 'INSS/Contribuição Previdenciária', 'FGTS', 'Outro'],
     'Estadual': ['ICMS', 'IPVA', 'ITCMD', 'Dívida Ativa Estadual', 'Outro'],
     'Municipal': ['ISS', 'IPTU', 'ITBI', 'Dívida Ativa Municipal', 'Outro'],
   };
@@ -10382,7 +10382,7 @@
             <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
               <div>
                 <div class="si-name">${escapeHtml(clientName(p.clientId))} <span class="tag ${parcEsferaClass(p.esfera)}">${escapeHtml(p.esfera||'—')}</span> <span class="tag ${parcStatusClass(p.status)}">${escapeHtml(p.status||'Em dia')}</span></div>
-                <div class="si-meta">Órgão de cobrança: <strong>${escapeHtml(p.orgao || PARC_ORGAO[p.esfera] || '—')}</strong></div>
+                <div class="si-meta">Órgão de cobrança: <strong>${escapeHtml(p.orgao || (PARC_ORGAO_OPTIONS[p.esfera] ? PARC_ORGAO_OPTIONS[p.esfera][0] : '') || '—')}</strong></div>
                 <div class="si-meta">${escapeHtml(p.tipoImposto||'—')} · Processo nº ${escapeHtml(p.numeroProcesso||'—')} · ${escapeHtml(p.modalidade||'—')}</div>
                 <div class="si-meta">Adesão: ${p.dataAdesao?fmtDate(p.dataAdesao):'—'} · Próximo vencimento: ${p.proximoVencimento?fmtDate(p.proximoVencimento):'—'}</div>
               </div>
@@ -10436,6 +10436,8 @@
     if(!d) return '';
     const esfera = d.esfera || 'Federal';
     const tipos = PARC_TIPO_IMPOSTO[esfera] || [];
+    const orgaoOpcoes = PARC_ORGAO_OPTIONS[esfera] || ['Outro (digitar)'];
+    const orgaoSelecionado = d.orgao && orgaoOpcoes.includes(d.orgao) ? d.orgao : (d.orgao ? 'Outro (digitar)' : orgaoOpcoes[0]);
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
@@ -10455,7 +10457,10 @@
                 <select id="parcTipoImposto">${tipos.map(t=>`<option value="${t}" ${t===d.tipoImposto?'selected':''}>${t}</option>`).join('')}</select>
               </div>
             </div>
-            <div class="field"><label>Órgão de cobrança</label><input type="text" id="parcOrgao" placeholder="Ex: Sefaz-PE, Prefeitura do Recife, PGFN..." value="${escapeHtml(d.orgao || (d.id ? '' : PARC_ORGAO[esfera]) || '')}"/></div>
+            <div class="field"><label>Órgão</label>
+              <select id="parcOrgaoSelect">${orgaoOpcoes.map(o=>`<option value="${o}" ${o===orgaoSelecionado?'selected':''}>${o}</option>`).join('')}</select>
+            </div>
+            <div class="field" id="parcOrgaoOutroWrap" style="${orgaoSelecionado==='Outro (digitar)'?'':'display:none;'}"><label>Especifique o órgão</label><input type="text" id="parcOrgaoOutro" placeholder="Ex: Sefaz-PE, Prefeitura do Recife..." value="${escapeHtml(orgaoSelecionado==='Outro (digitar)' ? (d.orgao||'') : '')}"/></div>
             <div class="form-hint" style="margin:-8px 0 12px;">Identifique o órgão específico responsável pela cobrança (varia por estado/município) — usado no relatório enviado ao cliente.</div>
             <div class="form-row">
               <div class="field"><label>Modalidade</label><select id="parcModalidade">${PARC_MODALIDADE.map(m=>`<option value="${m}" ${m===d.modalidade?'selected':''}>${m}</option>`).join('')}</select></div>
@@ -13321,21 +13326,25 @@
     const parcEsferaSel = document.getElementById('parcEsfera');
     if(parcEsferaSel) parcEsferaSel.onchange = (e)=>{
       state.parcModalData.esfera = e.target.value;
-      const orgaoInput = document.getElementById('parcOrgao');
-      if(orgaoInput && !orgaoInput.dataset.touched) state.parcModalData.orgao = PARC_ORGAO[e.target.value] || '';
+      state.parcModalData.orgao = '';
       render();
     };
-    const parcOrgaoInput = document.getElementById('parcOrgao');
-    if(parcOrgaoInput) parcOrgaoInput.addEventListener('input', ()=>{ parcOrgaoInput.dataset.touched = '1'; });
+    const parcOrgaoSelect = document.getElementById('parcOrgaoSelect');
+    const parcOrgaoOutroWrap = document.getElementById('parcOrgaoOutroWrap');
+    if(parcOrgaoSelect) parcOrgaoSelect.onchange = (e)=>{
+      if(parcOrgaoOutroWrap) parcOrgaoOutroWrap.style.display = e.target.value==='Outro (digitar)' ? '' : 'none';
+    };
     const parcForm = document.getElementById('parcForm');
     if(parcForm){
       parcForm.onsubmit = (e)=>{
         e.preventDefault();
+        const orgaoSelecionadoVal = document.getElementById('parcOrgaoSelect').value;
+        const orgaoFinal = orgaoSelecionadoVal==='Outro (digitar)' ? document.getElementById('parcOrgaoOutro').value : orgaoSelecionadoVal;
         const p = {
           id: (state.parcModalData && state.parcModalData.id) || undefined,
           clientId: document.getElementById('parcCliente').value,
           esfera: document.getElementById('parcEsfera').value,
-          orgao: document.getElementById('parcOrgao').value,
+          orgao: orgaoFinal,
           tipoImposto: document.getElementById('parcTipoImposto').value,
           modalidade: document.getElementById('parcModalidade').value,
           numeroProcesso: document.getElementById('parcNumeroProcesso').value,
