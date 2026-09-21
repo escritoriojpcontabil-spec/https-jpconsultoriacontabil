@@ -2550,47 +2550,62 @@
     if(!parcelas.length){
       doc.text('Nenhuma parcela cadastrada.', 14, y);
     } else {
-      const cols = [
-        {label:'Nº PARCELA', x:14}, {label:'VENCIMENTO', x:42},
-        {label:'VALOR PRINCIPAL', x:70, align:'right'}, {label:'SELIC + JUROS', x:104, align:'right'},
-        {label:'VALOR TOTAL DA GUIA', x:138, align:'right'}, {label:'DATA PGTO.', x:172},
-        {label:'SITUAÇÃO', x:pageW-14, align:'right'},
+      const mx = 12, cw = pageW - mx*2;
+      // Larguras proporcionais das colunas (somam 100%)
+      const colDefs = [
+        {label:'Nº PARCELA', w:0.10},
+        {label:'VENCIMENTO', w:0.13},
+        {label:'VALOR PRINCIPAL', w:0.15, align:'right'},
+        {label:'SELIC + JUROS', w:0.15, align:'right'},
+        {label:'VALOR TOTAL', w:0.17, align:'right'},
+        {label:'DATA PGTO.', w:0.13},
+        {label:'SITUAÇÃO', w:0.17, align:'right'},
       ];
-      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
-      doc.setFillColor(238,238,238);
-      doc.rect(14, y-4, pageW-28, 5.5, 'F');
-      cols.forEach(col=> doc.text(col.label, col.x, y, col.align?{align:col.align}:undefined));
-      y += 4;
-      doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      let acc = mx;
+      const cols = colDefs.map(c=>{ const x0 = acc; const wmm = cw*c.w; acc += wmm; return Object.assign({}, c, {x0, wmm}); });
+      const rowH = 6;
+
+      const desenhaCabecalho = ()=>{
+        doc.setFont('helvetica','bold'); doc.setFontSize(7);
+        doc.setFillColor(232,235,240); doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+        cols.forEach(col=>{
+          doc.rect(col.x0, y-4.3, col.wmm, rowH, 'FD');
+          const tx = col.align==='right' ? col.x0+col.wmm-1.5 : col.x0+1.5;
+          doc.text(col.label, tx, y-0.8, col.align?{align:col.align}:undefined);
+        });
+        y += rowH - 4.3;
+        doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      };
+      desenhaCabecalho();
 
       let totalPagoProvisionado = 0;
       parcelas.forEach(parcela=>{
-        if(y > 275){
-          doc.addPage(); y = 20;
-          doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
-          doc.setFillColor(238,238,238);
-          doc.rect(14, y-4, pageW-28, 5.5, 'F');
-          cols.forEach(col=> doc.text(col.label, col.x, y, col.align?{align:col.align}:undefined));
-          y += 4;
-          doc.setFont('helvetica','normal'); doc.setFontSize(8);
-        }
+        if(y > 272){ doc.addPage(); y = 20; desenhaCabecalho(); }
         const valorTotal = round2((Number(parcela.valorPrincipal)||0)+(Number(parcela.selicJuros)||0));
         const situacao = parcelaSituacao(parcela);
-        doc.text(parcela.numeroParcela||'—', 14, y);
-        doc.text(parcela.vencimentoOriginal?fmtDate(parcela.vencimentoOriginal):'—', 42, y);
-        doc.text(fmtBRL(parcela.valorPrincipal), 96, y, {align:'right'});
-        doc.text(fmtBRL(parcela.selicJuros), 128, y, {align:'right'});
-        doc.text(fmtBRL(valorTotal), 166, y, {align:'right'});
-        doc.text(parcela.dataPagamento?fmtDate(parcela.dataPagamento):'—', 172, y);
-        doc.text(situacao, pageW-14, y, {align:'right'});
+        const valores = [
+          parcela.numeroParcela||'—',
+          parcela.vencimentoOriginal?fmtDate(parcela.vencimentoOriginal):'—',
+          fmtBRL(parcela.valorPrincipal),
+          fmtBRL(parcela.selicJuros),
+          fmtBRL(valorTotal),
+          parcela.dataPagamento?fmtDate(parcela.dataPagamento):'—',
+          situacao,
+        ];
+        doc.setDrawColor(210,210,210); doc.setLineWidth(0.15);
+        cols.forEach((col,i)=>{
+          doc.rect(col.x0, y-3.8, col.wmm, rowH-1);
+          const tx = col.align==='right' ? col.x0+col.wmm-1.5 : col.x0+1.5;
+          doc.text(String(valores[i]), tx, y-0.3, col.align?{align:col.align}:undefined);
+        });
         totalPagoProvisionado += valorTotal;
-        y += 5.5;
+        y += rowH - 1;
       });
-      if(y > 270){ doc.addPage(); y = 20; }
-      doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 6;
+      if(y > 268){ doc.addPage(); y = 20; }
+      y += 4;
       doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
-      doc.text('Total Pago / Provisionado:', 100, y);
-      doc.text(fmtBRL(totalPagoProvisionado), pageW-14, y, {align:'right'});
+      doc.text('Total Pago / Provisionado:', mx+cw*0.55, y);
+      doc.text(fmtBRL(totalPagoProvisionado), mx+cw, y, {align:'right'});
     }
 
     pdfFooterDisclaimer(doc, 'Relatório elaborado pelo escritório com base nas informações registradas no sistema. Os valores de Selic e Juros de cada parcela devem ser conferidos e atualizados conforme a guia oficial emitida pelo órgão responsável — confirme o valor exato antes de qualquer pagamento.');
