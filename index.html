@@ -586,7 +586,6 @@
     ofxPreview: null,
     relatorioViewClientId: null,
     parcModalData: null,
-    parcClientFilter: 'all',
     parcEsferaFilter: 'all',
     funcionarios: [],
     folhas: [],
@@ -597,6 +596,12 @@
     dpTab: 'funcionarios',
     fiscalTab: 'notas',
     legalTab: 'contratos',
+    servicosTab: 'proposta',
+    baixasEmpresas: [],
+    baixaEmpresaModalData: null,
+    baixaEmpresaAtiva: '',
+    baixaEmpresaDocumentos: [],
+    baixaDocumentoModalData: null,
     contabilTab: 'plano',
     contabilEmpresaAtiva: '',
     contabilRelSubTab: 'balancete',
@@ -624,14 +629,11 @@
     rescisaoEmpresaFiltro: '',
     impostosPagar: [],
     impostoModalData: null,
-    impostoEmpresaAtiva: '',
     tiposImpostoCustom: [],
     obrigacoesAcessorias: [],
     obrigacaoAcessoriaModalData: null,
-    obrigacaoAcessoriaEmpresaAtiva: '',
     declaracoesFaturamento: [],
     declaracaoModalData: null,
-    declaracaoEmpresaAtiva: '',
     pontoRegistros: [],
     pontoFuncionarioAtivo: '',
     pontoMesAtivo: new Date().toISOString().slice(0,7),
@@ -646,7 +648,6 @@
     parcelamentoFluxoAtivo: '',
     parcelaIndividualModalData: null,
     sindicatoModalData: null,
-    sindicatoEmpresaAtiva: '',
     simuladorTipo: 'ferias',
     simuladorData: {},
     honorarios: [],
@@ -684,7 +685,6 @@
     processoFiscalModalData: null,
     exportNfTipoOperacao: 'Todos',
     exportNfOrdenacao: 'numero',
-    faturamentoRelClienteId: 'all',
     faturamentoRelTipo: 'ambos',
     faturamentoRelMesInicio: (()=>{ const d=new Date(); d.setMonth(d.getMonth()-5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })(),
     faturamentoRelMesFim: todayStr().slice(0,7),
@@ -699,7 +699,6 @@
     feriasCalcData: null,
     rescisaoCalcData: null,
     nfModalData: null,
-    nfClientFilter: 'all',
     sitFiscalClientFilter: 'all',
     sitFiscalPdfMsg: null,
     deptClientFilter: 'all',
@@ -2624,7 +2623,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    const clienteId = state.faturamentoRelClienteId;
+    const clienteId = deptOneSelectedClient() || 'all';
     const tipo = state.faturamentoRelTipo;
     const mesInicio = state.faturamentoRelMesInicio;
     const mesFim = state.faturamentoRelMesFim;
@@ -2897,7 +2896,32 @@
     return Object.values(grupos).sort((a,b)=> b.total - a.total);
   }
 
+  const SERVICOS_TABS = [
+    {k:'proposta', label:'Proposta Comercial'},
+    {k:'honorarios', label:'Honorários'},
+    {k:'orientacoes', label:'Orientações'},
+    {k:'esporadicos', label:'Serviços Esporádicos'},
+    {k:'baixa-empresas', label:'Baixa de Empresas'},
+  ];
   function renderServicosContabeis(){
+    if(!SERVICOS_TABS.some(t=>t.k===state.servicosTab)) state.servicosTab = 'proposta';
+    let tabContent = '';
+    if(state.servicosTab==='proposta') tabContent = propostaComercialPanelHtml();
+    else if(state.servicosTab==='honorarios') tabContent = honorariosSectionHtml();
+    else if(state.servicosTab==='orientacoes') tabContent = orientacoesSectionHtml();
+    else if(state.servicosTab==='esporadicos') tabContent = servicosEsporadicosSectionHtml();
+    else if(state.servicosTab==='baixa-empresas') tabContent = baixaEmpresaPanelHtml();
+    return `
+      <div class="panel">
+        <div class="dp-tabs">
+          ${SERVICOS_TABS.map(t=>`<button type="button" class="dp-tab-btn ${state.servicosTab===t.k?'active':''}" data-servicos-tab="${t.k}">${t.label}</button>`).join('')}
+        </div>
+      </div>
+      <div class="panel">${tabContent}</div>
+    `;
+  }
+
+  function propostaComercialPanelHtml(){
     const totalPendenciasAntesDeclarar = 0; // placeholder removido — mantém compatibilidade de nomes abaixo
 
     let honorarioBase = null, faixaInfo = null, aCombinar = false;
@@ -2913,8 +2937,7 @@
     const mostraTotal = state.propostaIncluirHonorarioMensal || extrasSomamNoTotal;
 
     return `
-      <div class="panel">
-        <div class="panel-head"><h3>Serviços Contábeis — Proposta Comercial</h3></div>
+      <div class="panel-head"><h3>Serviços Contábeis — Proposta Comercial</h3></div>
         <div class="form-hint" style="margin:-4px 0 16px;">Propostas são para clientes de fora do escritório (prospecção) — quem já é cliente cadastrado não precisa de proposta. Monta uma proposta de honorários com a logomarca do escritório, usando a Tabela de Honorários Mensais vigente.</div>
 
         <div class="form-row">
@@ -3002,11 +3025,6 @@
             </tbody>
           </table>
         `}
-
-        ${honorariosSectionHtml()}
-        ${orientacoesSectionHtml()}
-        ${servicosEsporadicosSectionHtml()}
-      </div>
     `;
   }
 
@@ -5844,6 +5862,191 @@
     await loadDocumentosSocietarios(); render();
   }
 
+  // Baixa de Empresas — serviço esporádico, sem vínculo com o Cadastro de Clientes
+  // (não precisa escolher cliente, pois pode ser uma empresa que nunca foi cliente do escritório
+  // ou que já saiu da base). Cada baixa guarda até 5 documentos: CNPJ Baixado, Extinção de
+  // Empresário Individual, Distrato Social, Certidão de Baixa de CNPJ, Orientações Técnicas.
+  async function loadBaixasEmpresas(){
+    state.baixasEmpresas = [];
+    try{
+      const keys = await Store.list('baixasempresas:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.baixasEmpresas.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.baixasEmpresas.sort((a,b)=>(b.dataSolicitacao||'').localeCompare(a.dataSolicitacao||''));
+  }
+  async function saveBaixaEmpresa(b){
+    if(!b.id) b.id = uid();
+    try{
+      await Store.set('baixasempresas:'+b.id, JSON.stringify(b), true);
+    }catch(e){
+      alert('Não foi possível salvar esta baixa de empresa.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      return false;
+    }
+    await loadBaixasEmpresas(); render();
+    return true;
+  }
+  async function deleteBaixaEmpresa(id){
+    await Store.delete('baixasempresas:'+id, true);
+    const docs = state.baixaEmpresaDocumentos.filter(d=>d.baixaId===id);
+    for(const doc of docs){ try{ await Store.delete('baixaempresadocumentos:'+doc.id, true); }catch(e){} }
+    if(state.baixaEmpresaAtiva===id) state.baixaEmpresaAtiva='';
+    await loadBaixasEmpresas(); await loadBaixaEmpresaDocumentos(); render();
+  }
+
+  async function loadBaixaEmpresaDocumentos(){
+    state.baixaEmpresaDocumentos = [];
+    try{
+      const keys = await Store.list('baixaempresadocumentos:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.baixaEmpresaDocumentos.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+  }
+  async function saveBaixaEmpresaDocumento(d){
+    if(!d.id) d.id = uid();
+    try{
+      await Store.set('baixaempresadocumentos:'+d.id, JSON.stringify(d), true);
+    }catch(e){
+      alert('Não foi possível salvar este documento. Se o arquivo for grande, tente um menor.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      return false;
+    }
+    await loadBaixaEmpresaDocumentos(); render();
+    return true;
+  }
+  async function deleteBaixaEmpresaDocumento(id){
+    await Store.delete('baixaempresadocumentos:'+id, true);
+    await loadBaixaEmpresaDocumentos(); render();
+  }
+
+  function baixaEmpresaStatusClass(status){
+    if(status==='Concluída') return 'sit-ativa';
+    if(status==='Cancelada') return 'sit-baixada';
+    return 'sit-pendente';
+  }
+
+  function baixaEmpresaPanelHtml(){
+    const lista = state.baixasEmpresas.slice();
+    return `
+      <div class="panel-head">
+        <h3>Baixa de Empresas</h3>
+        <button type="button" class="btn-add" id="novaBaixaEmpresaBtn">+ Nova baixa de empresa</button>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 16px;">Serviço avulso — não precisa escolher um cliente cadastrado, já que costuma ser esporádico. Anexe aqui o CNPJ Baixado, a Extinção de Empresário Individual, o Distrato Social, a Certidão de Baixa de CNPJ e as Orientações Técnicas.</div>
+      ${!lista.length ? `<div class="empty">Nenhuma baixa de empresa registrada ainda.</div>` : `
+        <div class="cc-list">
+          ${lista.map(b=>{
+            const docsB = state.baixaEmpresaDocumentos.filter(d=>d.baixaId===b.id);
+            const qtdAnexados = docsB.length;
+            return `
+            <div class="cc-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+                <div class="cr-main">
+                  <div class="cr-title">${escapeHtml(b.nomeEmpresa||'—')} <span class="tag ${baixaEmpresaStatusClass(b.status)}" style="margin-left:6px;">${escapeHtml(b.status||'Em andamento')}</span></div>
+                  <div class="cr-meta">${b.cnpj?'CNPJ '+escapeHtml(b.cnpj):'—'} · Solicitado em ${b.dataSolicitacao?fmtDate(b.dataSolicitacao):'—'}</div>
+                  ${b.observacoes ? `<div class="cr-meta">${escapeHtml(b.observacoes)}</div>` : ''}
+                  <div class="cr-meta">📎 ${qtdAnexados} de ${TIPOS_DOCUMENTO_BAIXA_EMPRESA.length} documentos anexados</div>
+                </div>
+                <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap;">
+                  <button type="button" class="btn-detail" data-gerenciar-docs-baixa="${b.id}">${state.baixaEmpresaAtiva===b.id?'Fechar documentos':'Gerenciar documentos'}</button>
+                  <button type="button" class="btn-sm" data-edit-baixa-empresa="${b.id}">Editar</button>
+                  <button type="button" class="btn-sm danger" data-del-baixa-empresa="${b.id}">Excluir</button>
+                </div>
+              </div>
+              ${state.baixaEmpresaAtiva===b.id ? baixaEmpresaDocumentosHtml(b.id) : ''}
+            </div>
+          `;}).join('')}
+        </div>
+      `}
+    `;
+  }
+
+  function baixaEmpresaDocumentosHtml(baixaId){
+    const docsB = state.baixaEmpresaDocumentos.filter(d=>d.baixaId===baixaId);
+    return `
+      <div style="border-top:1px solid var(--line); margin-top:6px; padding-top:10px;">
+        <div style="font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Documentos da baixa</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${TIPOS_DOCUMENTO_BAIXA_EMPRESA.map(tipo=>{
+            const doc = docsB.find(d=>d.tipo===tipo);
+            return `
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:#F8F9FB; border:1px solid var(--line); border-radius:8px; padding:8px 10px;">
+              <div style="font-size:12.5px;">
+                <strong>${escapeHtml(tipo)}</strong>
+                ${doc ? `<span style="color:var(--ink-soft);"> — 📎 ${escapeHtml(doc.arquivoNome||'arquivo anexado')}</span>` : `<span style="color:var(--ink-soft);"> — sem arquivo anexado</span>`}
+              </div>
+              <div style="display:flex; gap:6px; flex-shrink:0;">
+                ${doc ? `
+                  <button type="button" class="btn-detail" data-baixar-doc-baixa="${doc.id}">Baixar</button>
+                  <button type="button" class="btn-sm danger" data-del-doc-baixa="${doc.id}">Remover</button>
+                ` : `<button type="button" class="btn-sm" data-anexar-doc-baixa="${baixaId}|${escapeHtml(tipo)}">Anexar arquivo</button>`}
+              </div>
+            </div>
+          `;}).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function baixaEmpresaModalHtml(){
+    const d = state.baixaEmpresaModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar baixa de empresa' : 'Nova baixa de empresa'}</h3>
+          <form id="baixaEmpresaForm">
+            <div class="field"><label>Nome da empresa</label><input type="text" id="beNomeEmpresa" value="${escapeHtml(d.nomeEmpresa||'')}" required/></div>
+            <div class="form-row">
+              <div class="field"><label>CNPJ</label><input type="text" id="beCnpj" value="${escapeHtml(d.cnpj||'')}" placeholder="00.000.000/0000-00"/></div>
+              <div class="field"><label>Data de solicitação</label><input type="date" id="beDataSolicitacao" value="${d.dataSolicitacao||todayStr()}"/></div>
+            </div>
+            <div class="field"><label>Status</label>
+              <select id="beStatus">
+                <option value="Em andamento" ${!d.status||d.status==='Em andamento'?'selected':''}>Em andamento</option>
+                <option value="Concluída" ${d.status==='Concluída'?'selected':''}>Concluída</option>
+                <option value="Cancelada" ${d.status==='Cancelada'?'selected':''}>Cancelada</option>
+              </select>
+            </div>
+            <div class="field"><label>Observações</label><input type="text" id="beObservacoes" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="beCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function baixaDocumentoModalHtml(){
+    const d = state.baixaDocumentoModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Anexar — ${escapeHtml(d.tipo)}</h3>
+          <form id="baixaDocumentoForm">
+            <div class="attach-box">
+              <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo (PDF ou Word)</label>
+              <input type="file" id="bdArquivoInput" accept=".pdf,.doc,.docx" required/>
+              <div class="form-hint" style="margin-top:6px;">Tamanho máximo: 700KB.</div>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="bdCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
   // Inscrições e Registros dos clientes — CNPJ, Inscrição Estadual, Inscrição Municipal, IPTU.
   async function loadInscricoes(){
     state.inscricoes = [];
@@ -6730,8 +6933,8 @@
   }
 
   function obrigacoesAcessoriasTableHtml(){
-    const empresa = state.obrigacaoAcessoriaEmpresaAtiva;
-    if(!empresa) return `<div class="empty">Selecione uma empresa acima para ver e lançar as obrigações dela.</div>`;
+    const empresa = deptOneSelectedClient();
+    if(!empresa) return '';
     const list = state.obrigacoesAcessorias.filter(o=>o.clientId===empresa);
     if(!list.length) return `<div class="empty">Nenhuma obrigação lançada ainda para esta empresa.</div>`;
     return `
@@ -6757,22 +6960,14 @@
   }
 
   function obrigacoesAcessoriasPanelHtml(){
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-    const empresa = state.obrigacaoAcessoriaEmpresaAtiva;
+    const empresa = deptOneSelectedClient();
     return `
       <div class="panel-head">
         <h3>Obrigações Acessórias</h3>
         <button type="button" class="btn-add" id="novaObrigacaoBtn" ${!empresa?'disabled':''}>+ Nova obrigação</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Controle de entregas acessórias por empresa — DCTFWeb, DEFIS, SPED, ECD/ECF, RAIS e outras, com vencimento e status de entrega.</div>
-      <div class="form-row">
-        <div class="field"><label>Empresa</label>
-          <select id="obrigacaoEmpresaSelect" class="filter-select">
-            <option value="">— Selecione uma empresa —</option>
-            ${allClients.map(c=>`<option value="${c.id}" ${empresa===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-          </select>
-        </div>
-      </div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Controle de entregas acessórias por empresa — DCTFWeb, DEFIS, SPED, ECD/ECF, RAIS e outras, com vencimento e status de entrega. Use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
+      ${!empresa ? deptSelecioneUmaEmpresaHtml('lançar ou ver as obrigações') : ''}
       <div id="obrigacaoTableContainer">${obrigacoesAcessoriasTableHtml()}</div>
     `;
   }
@@ -6783,7 +6978,7 @@
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>${d.id ? 'Editar obrigação' : 'Nova obrigação'} — ${escapeHtml(clientName(state.obrigacaoAcessoriaEmpresaAtiva))}</h3>
+          <h3>${d.id ? 'Editar obrigação' : 'Nova obrigação'} — ${escapeHtml(clientName(deptOneSelectedClient()))}</h3>
           <form id="obrigacaoForm">
             <div class="field"><label>Obrigação</label>
               <select id="obrNome">${OBRIGACAO_NOME_PADRAO.map(n=>`<option value="${n}" ${n===d.nome?'selected':''}>${n}</option>`).join('')}</select>
@@ -6846,8 +7041,8 @@
   }
 
   function declaracoesFaturamentoTableHtml(){
-    const empresa = state.declaracaoEmpresaAtiva;
-    if(!empresa) return `<div class="empty">Selecione uma empresa acima para ver e lançar as declarações dela.</div>`;
+    const empresa = deptOneSelectedClient();
+    if(!empresa) return '';
     const list = state.declaracoesFaturamento.filter(d=>d.clientId===empresa);
     if(!list.length) return `<div class="empty">Nenhuma declaração de faturamento lançada ainda para esta empresa.</div>`;
     return `
@@ -6876,22 +7071,14 @@
   }
 
   function declaracaoFaturamentoPanelHtml(){
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-    const empresa = state.declaracaoEmpresaAtiva;
+    const empresa = deptOneSelectedClient();
     return `
       <div class="panel-head">
         <h3>Declaração de Faturamento</h3>
         <button type="button" class="btn-add" id="novaDeclaracaoBtn" ${!empresa?'disabled':''}>+ Nova declaração</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Registro do faturamento declarado por competência (ex: para o PGDAS-D do Simples Nacional), comparado automaticamente com o faturamento apurado pelas notas fiscais lançadas no sistema.</div>
-      <div class="form-row">
-        <div class="field"><label>Empresa</label>
-          <select id="declaracaoEmpresaSelect" class="filter-select">
-            <option value="">— Selecione uma empresa —</option>
-            ${allClients.map(c=>`<option value="${c.id}" ${empresa===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-          </select>
-        </div>
-      </div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Registro do faturamento declarado por competência (ex: para o PGDAS-D do Simples Nacional), comparado automaticamente com o faturamento apurado pelas notas fiscais lançadas no sistema. Use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
+      ${!empresa ? deptSelecioneUmaEmpresaHtml('lançar ou ver as declarações') : ''}
       <div id="declaracaoTableContainer">${declaracoesFaturamentoTableHtml()}</div>
     `;
   }
@@ -6902,7 +7089,7 @@
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>${d.id ? 'Editar declaração' : 'Nova declaração'} — ${escapeHtml(clientName(state.declaracaoEmpresaAtiva))}</h3>
+          <h3>${d.id ? 'Editar declaração' : 'Nova declaração'} — ${escapeHtml(clientName(deptOneSelectedClient()))}</h3>
           <form id="declaracaoForm">
             <div class="form-row">
               <div class="field"><label>Competência</label><input type="month" id="decCompetencia" value="${d.competencia||state.competenciaAtiva}" required/></div>
@@ -7471,22 +7658,13 @@
   }
 
   function sindicatosPanelHtml(){
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-    const empresa = state.sindicatoEmpresaAtiva;
-    const list = empresa ? state.sindicatos.filter(s=>s.clientId===empresa) : state.sindicatos;
+    const list = state.sindicatos.filter(s=>isClientInScope(s.clientId));
     return `
       <div class="panel-head">
         <h3>Sindicatos & CCT</h3>
         <button type="button" class="btn-add" id="novoSindicatoBtn">+ Novo sindicato</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Registro do sindicato laboral e da Convenção/Acordo Coletivo de Trabalho (CCT) vigente de cada empresa.</div>
-      <div class="field" style="max-width:360px;">
-        <label>Filtrar por empresa</label>
-        <select id="sindicatoEmpresaSelect" class="filter-select" style="width:100%;">
-          <option value="">Todas as empresas</option>
-          ${allClients.map(c=>`<option value="${c.id}" ${empresa===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-        </select>
-      </div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Registro do sindicato laboral e da Convenção/Acordo Coletivo de Trabalho (CCT) vigente de cada empresa. Use o painel "Selecionar cliente" no topo da página para filtrar a lista abaixo.</div>
       ${list.length ? `
         <table>
           <thead><tr><th>Empresa</th><th>Sindicato</th><th>Código sindical</th><th>Data-base</th><th>Vigência da CCT</th><th></th></tr></thead>
@@ -7506,7 +7684,7 @@
             `).join('')}
           </tbody>
         </table>
-      ` : `<div class="empty">Nenhum sindicato cadastrado ainda${empresa?' para esta empresa':''}.</div>`}
+      ` : `<div class="empty">Nenhum sindicato cadastrado ainda${!state.deptAllClients?' para os clientes selecionados':''}.</div>`}
     `;
   }
 
@@ -7812,6 +7990,8 @@
     await loadCertidoes();
     await loadCertificadosDigitais();
     await loadDocumentosSocietarios();
+    await loadBaixasEmpresas();
+    await loadBaixaEmpresaDocumentos();
     await loadInscricoes();
     await loadAlvaras();
     await loadProcessosFiscais();
@@ -7850,6 +8030,8 @@
       certidoes: state.certidoes,
       certificadosDigitais: state.certificadosDigitais,
       documentosSocietarios: state.documentosSocietarios,
+      baixasEmpresas: state.baixasEmpresas,
+      baixaEmpresaDocumentos: state.baixaEmpresaDocumentos,
       inscricoes: state.inscricoes,
       alvaras: state.alvaras,
       processosFiscais: state.processosFiscais,
@@ -7916,6 +8098,8 @@
       {key:'certidoes', prefix:'certidoes:', idField:'id'},
       {key:'certificadosDigitais', prefix:'certificadosdigitais:', idField:'id'},
       {key:'documentosSocietarios', prefix:'documentossocietarios:', idField:'id'},
+      {key:'baixasEmpresas', prefix:'baixasempresas:', idField:'id'},
+      {key:'baixaEmpresaDocumentos', prefix:'baixaempresadocumentos:', idField:'id'},
       {key:'inscricoes', prefix:'inscricoes:', idField:'id'},
       {key:'alvaras', prefix:'alvaras:', idField:'id'},
       {key:'processosFiscais', prefix:'processosfiscais:', idField:'id'},
@@ -8321,6 +8505,18 @@
     if(!clientId) return false;
     if(state.deptAllClients) return true;
     return state.deptSelectedClients.includes(clientId);
+  }
+  // Para ações que exigem UMA empresa-alvo (lançar imposto, nova obrigação, etc.), usa a
+  // mesma seleção de cliente do topo da página: só retorna uma empresa se exatamente uma
+  // estiver marcada (não "todos", não várias) — assim existe um único seletor de cliente
+  // para tudo, em vez de cada aba ter o seu próprio.
+  function deptOneSelectedClient(){
+    if(state.deptAllClients) return null;
+    if(state.deptSelectedClients.length !== 1) return null;
+    return state.deptSelectedClients[0];
+  }
+  function deptSelecioneUmaEmpresaHtml(acao){
+    return `<div class="empty">Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página, para ${acao||'continuar'}.</div>`;
   }
 
   function ccRowHtml(o){
@@ -9595,6 +9791,7 @@
     state.notasFiscais.forEach(n=>{
       if(n.status === 'Cancelada') return;
       if(n.tipoOperacao !== 'Saída' && n.tipoOperacao !== 'Serviços') return;
+      if(!isClientInScope(n.clientId)) return;
       if(!competencias.has((n.dataEmissao||'').slice(0,7))) return;
       if(!porCliente[n.clientId]) porCliente[n.clientId] = { clientId: n.clientId, vendas: 0, servicos: 0, quantidade: 0 };
       if(n.tipoOperacao === 'Saída') porCliente[n.clientId].vendas += Number(n.valor)||0;
@@ -10277,10 +10474,9 @@
     `;
   }
 
-  function notasFiscaisTableHtml(clientFilter){
-    let notas = state.notasFiscais.slice();
-    if(clientFilter && clientFilter!=='all') notas = notas.filter(n=>n.clientId===clientFilter);
-    if(!notas.length) return `<div class="empty">${clientFilter && clientFilter!=='all' ? 'Nenhuma nota registrada para este cliente.' : 'Nenhuma nota fiscal registrada ainda.'}</div>`;
+  function notasFiscaisTableHtml(){
+    let notas = state.notasFiscais.filter(n=>isClientInScope(n.clientId));
+    if(!notas.length) return `<div class="empty">${state.deptAllClients ? 'Nenhuma nota fiscal registrada ainda.' : 'Nenhuma nota registrada para os clientes selecionados no topo da página.'}</div>`;
     return `
       ${notasFiscaisResumoHtml(notas)}
       <table>
@@ -10303,10 +10499,8 @@
     `;
   }
   function updateNfResults(){
-    const sel = document.getElementById('nfClientSelect');
-    if(sel) state.nfClientFilter = sel.value;
     const container = document.getElementById('nfTableContainer');
-    if(container) container.innerHTML = notasFiscaisTableHtml(state.nfClientFilter);
+    if(container) container.innerHTML = notasFiscaisTableHtml();
     wireNfDeleteButtons();
   }
   function wireNfDeleteButtons(){
@@ -10319,8 +10513,7 @@
   }
 
   function faturamentoRelatorioHtml(){
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-    const clienteId = state.faturamentoRelClienteId;
+    const clienteId = deptOneSelectedClient() || 'all';
     const tipo = state.faturamentoRelTipo;
     const mesInicio = state.faturamentoRelMesInicio;
     const mesFim = state.faturamentoRelMesFim;
@@ -10331,7 +10524,7 @@
     if(clienteId === 'all'){
       const linhas = relatorioFaturamentoPorCliente(mesInicio, mesFim);
       const totalGeral = linhas.reduce((s,l)=> s + (mostrarVendas?l.vendas:0) + (mostrarServicos?l.servicos:0), 0);
-      conteudo = !linhas.length ? `<div class="empty">Nenhuma nota de Saída/Serviços encontrada no período.</div>` : `
+      conteudo = !linhas.length ? `<div class="empty">Nenhuma nota de Saída/Serviços encontrada no período${state.deptAllClients?'':' para os clientes selecionados'}.</div>` : `
         <table>
           <thead><tr><th>Cliente</th>${mostrarVendas?'<th style="text-align:right">Vendas</th>':''}${mostrarServicos?'<th style="text-align:right">Serviços</th>':''}<th style="text-align:right">Total</th></tr></thead>
           <tbody>
@@ -10371,14 +10564,8 @@
 
     return `
       <div class="form-section-title">Relatório de Faturamento Mensal</div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Consulta o faturamento por competência, a partir das notas de Saída (vendas) e Serviços já cadastradas — notas de Entrada (compras) não entram na conta.</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Consulta o faturamento por competência, a partir das notas de Saída (vendas) e Serviços já cadastradas — notas de Entrada (compras) não entram na conta. Mostra o total agrupado por cliente quando "todos" ou várias empresas estão selecionadas no topo da página, ou o detalhamento por competência quando apenas uma empresa está selecionada.</div>
       <div class="form-row">
-        <div class="field"><label>Empresa</label>
-          <select id="fatRelCliente">
-            <option value="all" ${clienteId==='all'?'selected':''}>Todos os clientes</option>
-            ${allClients.map(c=>`<option value="${c.id}" ${clienteId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-          </select>
-        </div>
         <div class="field"><label>Tipo</label>
           <select id="fatRelTipo">
             <option value="ambos" ${tipo==='ambos'?'selected':''}>Vendas + Serviços</option>
@@ -10386,8 +10573,6 @@
             <option value="servicos" ${tipo==='servicos'?'selected':''}>Só Serviços</option>
           </select>
         </div>
-      </div>
-      <div class="form-row">
         <div class="field"><label>Competência inicial</label><input type="month" id="fatRelMesInicio" value="${mesInicio}"/></div>
         <div class="field"><label>Competência final</label><input type="month" id="fatRelMesFim" value="${mesFim}"/></div>
       </div>
@@ -10397,37 +10582,23 @@
   }
 
   function notasControlePanelHtml(){
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
     return `
       <div class="panel-head">
         <h3>Controle de Notas Fiscais - Entrada / Saída / Serviços</h3>
         <button type="button" class="btn-add" id="novaNfBtn">+ Importação de Arquivos</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Este é um controle interno das notas já emitidas pelos sistemas oficiais (emissor de NF-e/NFS-e da prefeitura ou da Sefaz) — o sistema não emite notas fiscais, apenas organiza o que já foi emitido para consulta rápida.</div>
-      <div class="field" style="max-width:360px;">
-        <label>Filtrar por cliente</label>
-        <select id="nfClientSelect" class="filter-select" style="width:100%;">
-          <option value="all" ${state.nfClientFilter==='all'?'selected':''}>Todos os clientes</option>
-          ${allClients.map(c=>`<option value="${c.id}" ${state.nfClientFilter===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-        </select>
-      </div>
-      <div id="nfTableContainer">${notasFiscaisTableHtml(state.nfClientFilter)}</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Este é um controle interno das notas já emitidas pelos sistemas oficiais (emissor de NF-e/NFS-e da prefeitura ou da Sefaz) — o sistema não emite notas fiscais, apenas organiza o que já foi emitido para consulta rápida. Use o painel "Selecionar cliente" no topo da página para filtrar por empresa.</div>
+      <div id="nfTableContainer">${notasFiscaisTableHtml()}</div>
     `;
   }
 
   function notasExportacaoPanelHtml(){
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const empresaAlvo = deptOneSelectedClient();
     return `
       <div class="panel-head"><h3>Exportação em Lote (PDF organizado em pastas)</h3></div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Gera um PDF de cada nota fiscal (Entrada, Saída ou Serviços) desta empresa e agrupa tudo num único arquivo .zip, já organizado em pastas por fornecedor, competência ou número — pronto para extrair no seu computador ou dentro da pasta local do OneDrive (que sincroniza sozinho pra nuvem).</div>
-      <div class="field" style="max-width:360px;">
-        <label>Empresa</label>
-        <select id="nfClientSelect" class="filter-select" style="width:100%;">
-          <option value="all" ${state.nfClientFilter==='all'?'selected':''}>Todos os clientes</option>
-          ${allClients.map(c=>`<option value="${c.id}" ${state.nfClientFilter===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-        </select>
-      </div>
-      ${state.nfClientFilter==='all' ? `<div class="empty">Selecione uma empresa específica no filtro "Empresa" acima para exportar (a exportação é feita empresa por empresa).</div>` : `
+      <div class="form-hint" style="margin:-4px 0 14px;">Gera um PDF de cada nota fiscal (Entrada, Saída ou Serviços) desta empresa e agrupa tudo num único arquivo .zip, já organizado em pastas por fornecedor, competência ou número — pronto para extrair no seu computador ou dentro da pasta local do OneDrive (que sincroniza sozinho pra nuvem). A exportação é feita empresa por empresa — use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
+      ${!empresaAlvo ? deptSelecioneUmaEmpresaHtml('exportar as notas fiscais') : `
+        <div class="form-hint" style="margin:-4px 0 14px; font-weight:700;">Empresa selecionada: ${escapeHtml(clientName(empresaAlvo))}</div>
         <div class="form-row">
           <div class="field"><label>Tipo de operação</label>
             <select id="exportNfTipoOperacao">
@@ -10453,7 +10624,7 @@
 
   function parcelamentosFiltered(){
     return state.parcelamentos.filter(p=>
-      (state.parcClientFilter==='all' || p.clientId===state.parcClientFilter) &&
+      isClientInScope(p.clientId) &&
       (state.parcEsferaFilter==='all' || p.esfera===state.parcEsferaFilter)
     );
   }
@@ -10501,25 +10672,17 @@
 
   function parcelamentosPanelHtml(){
     if(state.parcelamentoFluxoAtivo) return fluxoParcelasPanelHtml();
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
     return `
       <div class="panel-head">
         <h3>Parcelamentos de Impostos — Federal, Estadual e Municipal</h3>
         <button type="button" class="btn-add" id="novoParcBtn">+ Novo parcelamento</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Controle dos parcelamentos ativos de cada cliente, para consulta rápida e para gerar um resumo em PDF a ser enviado ao cliente.</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Controle dos parcelamentos ativos de cada cliente, para consulta rápida e para gerar um resumo em PDF a ser enviado ao cliente. Use o painel "Selecionar cliente" no topo da página para filtrar a lista abaixo.</div>
       <div class="dept-tabs">
         <button type="button" class="dept-tab-btn ${state.parcEsferaFilter==='all'?'active':''}" data-parc-esfera="all">Todas</button>
         ${PARC_ESFERAS.map(e=>`<button type="button" class="dept-tab-btn ${state.parcEsferaFilter===e?'active':''}" data-parc-esfera="${e}">${e}</button>`).join('')}
       </div>
-      <div class="field" style="max-width:360px; margin-top:12px;">
-        <label>Filtrar por cliente</label>
-        <select id="parcClientSelect" class="filter-select" style="width:100%;">
-          <option value="all" ${state.parcClientFilter==='all'?'selected':''}>Todos os clientes</option>
-          ${allClients.map(c=>`<option value="${c.id}" ${state.parcClientFilter===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-        </select>
-      </div>
-      <div id="parcTableContainer">${parcelamentosTableHtml()}</div>
+      <div id="parcTableContainer" style="margin-top:12px;">${parcelamentosTableHtml()}</div>
     `;
   }
 
@@ -10583,10 +10746,10 @@
   }
 
   function impostosPagarTableHtml(){
-    const empresa = state.impostoEmpresaAtiva;
+    const empresa = deptOneSelectedClient();
     let list = state.impostosPagar.slice();
     if(empresa) list = list.filter(i=>i.clientId===empresa);
-    if(!empresa) return `<div class="empty">Selecione uma empresa acima para ver e lançar os impostos dela.</div>`;
+    if(!empresa) return '';
     if(!list.length) return `<div class="empty">Nenhum imposto lançado ainda para esta empresa.</div>`;
     return `
       <table>
@@ -10612,8 +10775,7 @@
   }
 
   function impostosPagarPanelHtml(){
-    const allClients = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-    const empresa = state.impostoEmpresaAtiva;
+    const empresa = deptOneSelectedClient();
     return `
       <div class="panel-head">
         <h3>Impostos a Pagar</h3>
@@ -10622,16 +10784,8 @@
           <button type="button" class="btn-add" id="novoImpostoBtn" ${!empresa?'disabled':''}>+ Novo imposto</button>
         </div>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Controle de impostos a pagar por empresa — tipo, valor a pagar, vencimento, valor pago e data de pagamento. Gere um relatório em PDF individual por empresa.</div>
-      <div class="form-row">
-        <div class="field"><label>Empresa</label>
-          <select id="impostoEmpresaSelect" class="filter-select">
-            <option value="">— Selecione uma empresa —</option>
-            ${allClients.map(c=>`<option value="${c.id}" ${empresa===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      ${empresa ? `<button type="button" class="btn-detail" id="relatorioImpostoBtn" style="margin-bottom:14px;">📄 Gerar Relatório desta Empresa (PDF)</button>` : ''}
+      <div class="form-hint" style="margin:-4px 0 14px;">Controle de impostos a pagar por empresa — tipo, valor a pagar, vencimento, valor pago e data de pagamento. Gere um relatório em PDF individual por empresa. Use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
+      ${!empresa ? deptSelecioneUmaEmpresaHtml('lançar ou ver os impostos') : `<button type="button" class="btn-detail" id="relatorioImpostoBtn" style="margin-bottom:14px;">📄 Gerar Relatório desta Empresa (PDF)</button>`}
       <div id="impostoTableContainer">${impostosPagarTableHtml()}</div>
     `;
   }
@@ -10642,7 +10796,7 @@
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>${d.id ? 'Editar imposto' : 'Novo imposto'} — ${escapeHtml(clientName(state.impostoEmpresaAtiva))}</h3>
+          <h3>${d.id ? 'Editar imposto' : 'Novo imposto'} — ${escapeHtml(clientName(deptOneSelectedClient()))}</h3>
           <form id="impostoForm">
             <div class="field"><label>Tipo de imposto</label>
               <select id="impTipoImposto">${tiposImpostoTodos().map(t=>`<option value="${escapeHtml(t)}" ${t===d.tipoImposto?'selected':''}>${escapeHtml(t)}</option>`).join('')}</select>
@@ -11748,6 +11902,7 @@
   }
 
   const TIPOS_DOCUMENTO_SOCIETARIO = ['Constituição (Contrato Social)', 'Alteração Contratual', 'Baixa (Distrato Social)'];
+  const TIPOS_DOCUMENTO_BAIXA_EMPRESA = ['CNPJ Baixado', 'Extinção de Empresário Individual', 'Distrato Social', 'Certidão de Baixa de CNPJ', 'Orientações Técnicas'];
 
   function documentoSocietarioStatusClass(tipo){
     if(tipo==='Constituição (Contrato Social)') return 'sit-ativa';
@@ -12488,6 +12643,8 @@
       ${state.modal==='ponto' ? pontoModalHtml() : ''}
       ${state.modal==='sindicato' ? sindicatoModalHtml() : ''}
       ${state.modal==='parcelaIndividual' ? parcelaIndividualModalHtml() : ''}
+      ${state.modal==='baixaEmpresa' ? baixaEmpresaModalHtml() : ''}
+      ${state.modal==='baixaDocumento' ? baixaDocumentoModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
@@ -13357,8 +13514,6 @@
         saveNotaFiscal(nf);
       };
     }
-    const nfClientSelect = document.getElementById('nfClientSelect');
-    if(nfClientSelect) nfClientSelect.onchange = (e)=>{ state.nfClientFilter = e.target.value; render(); };
     wireNfDeleteButtons();
 
     const exportNfTipoOperacao = document.getElementById('exportNfTipoOperacao');
@@ -13368,10 +13523,11 @@
     const gerarZipNfBtn = document.getElementById('gerarZipNfBtn');
     if(gerarZipNfBtn){
       gerarZipNfBtn.onclick = async ()=>{
-        if(state.nfClientFilter==='all'){ alert('Selecione uma empresa específica primeiro.'); return; }
+        const empresaAlvo = deptOneSelectedClient();
+        if(!empresaAlvo){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
         gerarZipNfBtn.disabled = true; gerarZipNfBtn.textContent = 'Gerando PDFs...';
         try{
-          await gerarZipNotasFiscais(state.nfClientFilter, state.exportNfTipoOperacao, state.exportNfOrdenacao);
+          await gerarZipNotasFiscais(empresaAlvo, state.exportNfTipoOperacao, state.exportNfOrdenacao);
         }catch(err){
           alert('Não foi possível gerar o arquivo. Tente novamente.');
         }
@@ -13379,9 +13535,7 @@
       };
     }
 
-    // Relatório de Faturamento Mensal
-    const fatRelCliente = document.getElementById('fatRelCliente');
-    if(fatRelCliente) fatRelCliente.onchange = (e)=>{ state.faturamentoRelClienteId = e.target.value; render(); };
+    // Relatório de Faturamento Mensal (usa a seleção de cliente do topo da página)
     const fatRelTipo = document.getElementById('fatRelTipo');
     if(fatRelTipo) fatRelTipo.onchange = (e)=>{ state.faturamentoRelTipo = e.target.value; render(); };
     const fatRelMesInicio = document.getElementById('fatRelMesInicio');
@@ -13469,7 +13623,7 @@
       };
     }
     const novoParcBtn = document.getElementById('novoParcBtn');
-    if(novoParcBtn) novoParcBtn.onclick = ()=>{ state.parcModalData = { esfera: 'Federal' }; state.modal='parc'; render(); };
+    if(novoParcBtn) novoParcBtn.onclick = ()=>{ state.parcModalData = { esfera: 'Federal', clientId: deptOneSelectedClient()||'' }; state.modal='parc'; render(); };
     const parcCancel = document.getElementById('parcCancel');
     if(parcCancel) parcCancel.onclick = ()=>{ state.modal=null; state.parcModalData=null; render(); };
     const parcEsferaSel = document.getElementById('parcEsfera');
@@ -13514,15 +13668,12 @@
     root.querySelectorAll('[data-parc-esfera]').forEach(el=>{
       el.onclick = ()=>{ state.parcEsferaFilter = el.getAttribute('data-parc-esfera'); render(); };
     });
-    const parcClientSelect = document.getElementById('parcClientSelect');
-    if(parcClientSelect) parcClientSelect.onchange = (e)=>{ state.parcClientFilter = e.target.value; updateParcResults(); };
+
 
     // ===== Impostos a Pagar =====
-    const impostoEmpresaSelect = document.getElementById('impostoEmpresaSelect');
-    if(impostoEmpresaSelect) impostoEmpresaSelect.onchange = (e)=>{ state.impostoEmpresaAtiva = e.target.value; render(); };
     const novoImpostoBtn = document.getElementById('novoImpostoBtn');
     if(novoImpostoBtn) novoImpostoBtn.onclick = ()=>{
-      if(!state.impostoEmpresaAtiva){ alert('Selecione uma empresa primeiro.'); return; }
+      if(!deptOneSelectedClient()){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
       state.impostoModalData = {}; state.modal='imposto'; render();
     };
     const impCancel = document.getElementById('impCancel');
@@ -13533,7 +13684,7 @@
         e.preventDefault();
         const i = {
           id: (state.impostoModalData && state.impostoModalData.id) || undefined,
-          clientId: state.impostoEmpresaAtiva,
+          clientId: deptOneSelectedClient(),
           tipoImposto: document.getElementById('impTipoImposto').value,
           valorAPagar: document.getElementById('impValorAPagar').value,
           vencimento: document.getElementById('impVencimento').value,
@@ -13563,7 +13714,7 @@
       el.onclick = ()=>{ if(confirm('Excluir este lançamento de imposto?')) deleteImpostoPagar(el.getAttribute('data-del-imposto')); };
     });
     const relatorioImpostoBtn = document.getElementById('relatorioImpostoBtn');
-    if(relatorioImpostoBtn) relatorioImpostoBtn.onclick = ()=> gerarRelatorioImpostosPDF(state.impostoEmpresaAtiva);
+    if(relatorioImpostoBtn) relatorioImpostoBtn.onclick = ()=> gerarRelatorioImpostosPDF(deptOneSelectedClient());
     const cadastrarTipoImpostoBtn = document.getElementById('cadastrarTipoImpostoBtn');
     if(cadastrarTipoImpostoBtn) cadastrarTipoImpostoBtn.onclick = ()=>{ state.modal = 'tipoImposto'; render(); };
     const tipoImpostoCancel = document.getElementById('tipoImpostoCancel');
@@ -13591,12 +13742,111 @@
       el.onclick = ()=>{ state.legalTab = el.getAttribute('data-legal-tab'); render(); };
     });
 
+    // ===== Serviços Contábeis: abas =====
+    root.querySelectorAll('[data-servicos-tab]').forEach(el=>{
+      el.onclick = ()=>{ state.servicosTab = el.getAttribute('data-servicos-tab'); render(); };
+    });
+
+    // ===== Baixa de Empresas =====
+    const novaBaixaEmpresaBtn = document.getElementById('novaBaixaEmpresaBtn');
+    if(novaBaixaEmpresaBtn) novaBaixaEmpresaBtn.onclick = ()=>{ state.baixaEmpresaModalData = {}; state.modal='baixaEmpresa'; render(); };
+    const beCancel = document.getElementById('beCancel');
+    if(beCancel) beCancel.onclick = ()=>{ state.modal=null; state.baixaEmpresaModalData=null; render(); };
+    const baixaEmpresaForm = document.getElementById('baixaEmpresaForm');
+    if(baixaEmpresaForm){
+      baixaEmpresaForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const b = {
+          id: (state.baixaEmpresaModalData && state.baixaEmpresaModalData.id) || undefined,
+          nomeEmpresa: document.getElementById('beNomeEmpresa').value,
+          cnpj: document.getElementById('beCnpj').value,
+          dataSolicitacao: document.getElementById('beDataSolicitacao').value,
+          status: document.getElementById('beStatus').value,
+          observacoes: document.getElementById('beObservacoes').value,
+        };
+        const submitBtn = baixaEmpresaForm.querySelector('button[type="submit"]');
+        if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
+        const ok = await saveBaixaEmpresa(b);
+        if(!ok){
+          if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Salvar'; }
+          return;
+        }
+        state.modal=null; state.baixaEmpresaModalData=null;
+        render();
+      };
+    }
+    root.querySelectorAll('[data-edit-baixa-empresa]').forEach(el=>{
+      el.onclick = ()=>{
+        const b = state.baixasEmpresas.find(x=>x.id===el.getAttribute('data-edit-baixa-empresa'));
+        if(!b) return;
+        state.baixaEmpresaModalData = Object.assign({}, b);
+        state.modal = 'baixaEmpresa'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-baixa-empresa]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta baixa de empresa e todos os documentos anexados a ela?')) deleteBaixaEmpresa(el.getAttribute('data-del-baixa-empresa')); };
+    });
+    root.querySelectorAll('[data-gerenciar-docs-baixa]').forEach(el=>{
+      el.onclick = ()=>{
+        const id = el.getAttribute('data-gerenciar-docs-baixa');
+        state.baixaEmpresaAtiva = state.baixaEmpresaAtiva===id ? '' : id;
+        render();
+      };
+    });
+    root.querySelectorAll('[data-anexar-doc-baixa]').forEach(el=>{
+      el.onclick = ()=>{
+        const [baixaId, tipo] = el.getAttribute('data-anexar-doc-baixa').split('|');
+        state.baixaDocumentoModalData = { baixaId, tipo };
+        state.modal = 'baixaDocumento'; render();
+      };
+    });
+    const bdCancel = document.getElementById('bdCancel');
+    if(bdCancel) bdCancel.onclick = ()=>{ state.modal=null; state.baixaDocumentoModalData=null; render(); };
+    const baixaDocumentoForm = document.getElementById('baixaDocumentoForm');
+    if(baixaDocumentoForm){
+      baixaDocumentoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const fileInput = document.getElementById('bdArquivoInput');
+        const file = fileInput && fileInput.files && fileInput.files[0];
+        if(!file){ alert('Selecione um arquivo.'); return; }
+        if(file.size > 700*1024){ alert('O arquivo é maior que 700KB — o banco de dados usado aceita no máximo cerca de 1MB por documento (o arquivo cresce ~35% ao ser convertido). Escolha um arquivo menor, ou escaneie em resolução mais baixa / comprima o PDF antes de anexar.'); return; }
+        let arquivoBase64, arquivoNome;
+        try{
+          const buf = await file.arrayBuffer();
+          let binary = '';
+          const bytes = new Uint8Array(buf);
+          for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+          arquivoBase64 = btoa(binary);
+          arquivoNome = file.name;
+        }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); return; }
+        const dmd = state.baixaDocumentoModalData;
+        const existente = state.baixaEmpresaDocumentos.find(d=>d.baixaId===dmd.baixaId && d.tipo===dmd.tipo);
+        const doc = { id: existente?existente.id:undefined, baixaId: dmd.baixaId, tipo: dmd.tipo, arquivoNome, arquivoBase64 };
+        const submitBtn = baixaDocumentoForm.querySelector('button[type="submit"]');
+        if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
+        const ok = await saveBaixaEmpresaDocumento(doc);
+        if(!ok){
+          if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Salvar'; }
+          return;
+        }
+        state.modal=null; state.baixaDocumentoModalData=null;
+        render();
+      };
+    }
+    root.querySelectorAll('[data-del-doc-baixa]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Remover este documento anexado?')) deleteBaixaEmpresaDocumento(el.getAttribute('data-del-doc-baixa')); };
+    });
+    root.querySelectorAll('[data-baixar-doc-baixa]').forEach(el=>{
+      el.onclick = ()=>{
+        const doc = state.baixaEmpresaDocumentos.find(d=>d.id===el.getAttribute('data-baixar-doc-baixa'));
+        if(doc && doc.arquivoBase64) baixarArquivoBase64(doc.arquivoBase64, doc.arquivoNome||'documento');
+      };
+    });
+
     // ===== Obrigações Acessórias =====
-    const obrigacaoEmpresaSelect = document.getElementById('obrigacaoEmpresaSelect');
-    if(obrigacaoEmpresaSelect) obrigacaoEmpresaSelect.onchange = (e)=>{ state.obrigacaoAcessoriaEmpresaAtiva = e.target.value; render(); };
     const novaObrigacaoBtn = document.getElementById('novaObrigacaoBtn');
     if(novaObrigacaoBtn) novaObrigacaoBtn.onclick = ()=>{
-      if(!state.obrigacaoAcessoriaEmpresaAtiva){ alert('Selecione uma empresa primeiro.'); return; }
+      if(!deptOneSelectedClient()){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
       state.obrigacaoAcessoriaModalData = {}; state.modal='obrigacaoAcessoria'; render();
     };
     const obrCancel = document.getElementById('obrCancel');
@@ -13607,7 +13857,7 @@
         e.preventDefault();
         const o = {
           id: (state.obrigacaoAcessoriaModalData && state.obrigacaoAcessoriaModalData.id) || undefined,
-          clientId: state.obrigacaoAcessoriaEmpresaAtiva,
+          clientId: deptOneSelectedClient(),
           nome: document.getElementById('obrNome').value,
           periodicidade: document.getElementById('obrPeriodicidade').value,
           competencia: document.getElementById('obrCompetencia').value,
@@ -13639,11 +13889,9 @@
     });
 
     // ===== Declaração de Faturamento =====
-    const declaracaoEmpresaSelect = document.getElementById('declaracaoEmpresaSelect');
-    if(declaracaoEmpresaSelect) declaracaoEmpresaSelect.onchange = (e)=>{ state.declaracaoEmpresaAtiva = e.target.value; render(); };
     const novaDeclaracaoBtn = document.getElementById('novaDeclaracaoBtn');
     if(novaDeclaracaoBtn) novaDeclaracaoBtn.onclick = ()=>{
-      if(!state.declaracaoEmpresaAtiva){ alert('Selecione uma empresa primeiro.'); return; }
+      if(!deptOneSelectedClient()){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
       state.declaracaoModalData = { competencia: state.competenciaAtiva }; state.modal='declaracao'; render();
     };
     const decCancel = document.getElementById('decCancel');
@@ -13654,7 +13902,7 @@
         e.preventDefault();
         const d = {
           id: (state.declaracaoModalData && state.declaracaoModalData.id) || undefined,
-          clientId: state.declaracaoEmpresaAtiva,
+          clientId: deptOneSelectedClient(),
           competencia: document.getElementById('decCompetencia').value,
           valorDeclarado: document.getElementById('decValorDeclarado').value,
           status: document.getElementById('decStatus').value,
@@ -13798,10 +14046,8 @@
     };
 
     // ===== Sindicatos & CCT =====
-    const sindicatoEmpresaSelect = document.getElementById('sindicatoEmpresaSelect');
-    if(sindicatoEmpresaSelect) sindicatoEmpresaSelect.onchange = (e)=>{ state.sindicatoEmpresaAtiva = e.target.value; render(); };
     const novoSindicatoBtn = document.getElementById('novoSindicatoBtn');
-    if(novoSindicatoBtn) novoSindicatoBtn.onclick = ()=>{ state.sindicatoModalData = { clientId: state.sindicatoEmpresaAtiva||'' }; state.modal='sindicato'; render(); };
+    if(novoSindicatoBtn) novoSindicatoBtn.onclick = ()=>{ state.sindicatoModalData = { clientId: deptOneSelectedClient()||'' }; state.modal='sindicato'; render(); };
     const sindCancel = document.getElementById('sindCancel');
     if(sindCancel) sindCancel.onclick = ()=>{ state.modal=null; state.sindicatoModalData=null; render(); };
     const sindicatoForm = document.getElementById('sindicatoForm');
