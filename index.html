@@ -597,11 +597,14 @@
     fiscalTab: 'notas',
     legalTab: 'contratos',
     servicosTab: 'proposta',
+    painelGeralTab: 'resumo',
     baixasEmpresas: [],
     baixaEmpresaModalData: null,
     baixaEmpresaAtiva: '',
     baixaEmpresaDocumentos: [],
     baixaDocumentoModalData: null,
+    recibosHonorarios: [],
+    reciboHonorarioModalData: null,
     contabilTab: 'plano',
     contabilEmpresaAtiva: '',
     contabilRelSubTab: 'balancete',
@@ -654,6 +657,8 @@
     honorarioEmpresaAtiva: '',
     honorarioModalData: null,
     relatorioGeralHonorariosFiltro: 'pendentes',
+    relatorioGeralHonorariosTodasEmpresas: true,
+    relatorioGeralHonorariosClientesSelecionados: [],
     pagamentoAvulsoModalData: null,
     quitacaoCompetenciaInicio: '',
     quitacaoCompetenciaFim: '',
@@ -2899,6 +2904,7 @@
   const SERVICOS_TABS = [
     {k:'proposta', label:'Proposta Comercial'},
     {k:'honorarios', label:'Honorários'},
+    {k:'recibo-honorarios', label:'Recibo de Honorários'},
     {k:'orientacoes', label:'Orientações'},
     {k:'esporadicos', label:'Serviços Esporádicos'},
     {k:'baixa-empresas', label:'Baixa de Empresas'},
@@ -2908,6 +2914,7 @@
     let tabContent = '';
     if(state.servicosTab==='proposta') tabContent = propostaComercialPanelHtml();
     else if(state.servicosTab==='honorarios') tabContent = honorariosSectionHtml();
+    else if(state.servicosTab==='recibo-honorarios') tabContent = reciboHonorariosPanelHtml();
     else if(state.servicosTab==='orientacoes') tabContent = orientacoesSectionHtml();
     else if(state.servicosTab==='esporadicos') tabContent = servicosEsporadicosSectionHtml();
     else if(state.servicosTab==='baixa-empresas') tabContent = baixaEmpresaPanelHtml();
@@ -3051,9 +3058,12 @@
     });
     // Base sempre no Cadastro de Clientes (não nos honorários já lançados), para que empresas
     // cadastradas mas ainda sem nenhum lançamento também apareçam quando o filtro pedir isso.
-    const clientesBase = filtroStatus==='todas-empresas'
+    const clientesEscopo = state.relatorioGeralHonorariosTodasEmpresas
       ? state.clients.slice()
-      : state.clients.filter(c=>porCliente[c.id] && porCliente[c.id].length);
+      : state.clients.filter(c=>state.relatorioGeralHonorariosClientesSelecionados.includes(c.id));
+    const clientesBase = filtroStatus==='todas-empresas'
+      ? clientesEscopo
+      : clientesEscopo.filter(c=>porCliente[c.id] && porCliente[c.id].length);
     const grupos = clientesBase.map(cliente=>{
       const itens = (porCliente[cliente.id]||[]).slice().sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
       const totalAberto = itens.filter(h=>honorarioStatus(h)!=='Pago').reduce((s,h)=>s+((Number(h.valor)||0)-honorarioValorRecebido(h)),0);
@@ -3073,6 +3083,26 @@
     return `
       <div class="form-section-title">Relatório Geral de Cobranças (todas as empresas)</div>
       <div class="form-hint" style="margin:-4px 0 14px;">Mês a mês, empresa por empresa — mostra de uma vez só quem está com cobrança em aberto ou vencida, qual competência, qual valor e qual vencimento.</div>
+      <div class="panel" style="margin-bottom:16px; background:#F8F9FB;">
+        <div class="panel-head" style="margin-bottom:10px;">
+          <div>
+            <h3 style="margin-bottom:2px; font-size:14px;">Empresas incluídas no relatório</h3>
+            <div class="form-hint" style="margin:0;">Marque "Todas as empresas" para ver tudo junto, ou desmarque e escolha uma ou mais empresas individualmente.</div>
+          </div>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:700; color:var(--ink); margin-bottom:10px; cursor:pointer;">
+          <input type="checkbox" id="relGeralHonorariosTodasCheck" ${state.relatorioGeralHonorariosTodasEmpresas?'checked':''}/> Todas as empresas (${state.clients.length})
+        </label>
+        ${!state.clients.length ? `<div class="form-hint" style="margin:0;">Nenhuma empresa cadastrada ainda.</div>` : `
+          <div style="display:flex; flex-wrap:wrap; gap:10px 20px; ${state.relatorioGeralHonorariosTodasEmpresas?'opacity:.45; pointer-events:none;':''}">
+            ${state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>`
+              <label style="display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink-soft); cursor:pointer;">
+                <input type="checkbox" class="rel-geral-honorarios-client-check" value="${c.id}" ${state.relatorioGeralHonorariosClientesSelecionados.includes(c.id)?'checked':''}/> ${escapeHtml(c.name)}
+              </label>
+            `).join('')}
+          </div>
+        `}
+      </div>
       <div class="field" style="max-width:280px; margin-bottom:14px;">
         <label>Mostrar</label>
         <select id="relatorioGeralHonorariosFiltroSelect" class="filter-select" style="width:100%;">
@@ -3511,68 +3541,232 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Ficha de Registro de Empregado', cliente ? cliente.name : '', cliente ? cliente.logo : '');
-    doc.setFontSize(9);
-    const campo = (label, valor)=>{
-      if(y > 275){ doc.addPage(); y = 20; }
-      doc.setFont('helvetica','bold'); doc.text(label + ':', 14, y);
-      doc.setFont('helvetica','normal');
-      const l = doc.splitTextToSize(String(valor||'—'), pageW-14-55);
-      doc.text(l, 58, y);
-      y += Math.max(l.length*4.6, 6);
-    };
-    const secao = (titulo)=>{
-      if(y > 270){ doc.addPage(); y = 20; }
-      y += 3;
-      doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 5;
-      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(27,58,92);
-      doc.text(titulo, 14, y); y += 6;
-      doc.setTextColor(20,25,30); doc.setFontSize(9);
-    };
-    secao('Dados Pessoais');
-    campo('Nome completo', func.nome);
-    campo('CPF', func.cpf);
-    campo('Data de nascimento', func.dataNascimento ? fmtDate(func.dataNascimento) : '');
-    campo('Nome da mãe', func.nomeMae);
-    campo('Sexo', func.sexo);
-    campo('Raça/Cor', func.racaCor);
-    campo('Grau de instrução', func.grauInstrucao);
-    campo('PIS/NIS', func.pis);
-    campo('CTPS — Número/Série', (func.ctpsNumero||'—') + ' / ' + (func.ctpsSerie||'—'));
+    const mx = 12, cw = pageW - mx*2;
 
-    secao('Endereço');
+    let idade = '';
+    if(func.dataNascimento){
+      const nasc = new Date(func.dataNascimento+'T00:00:00');
+      const hoje = new Date();
+      let a = hoje.getFullYear() - nasc.getFullYear();
+      if(hoje.getMonth()<nasc.getMonth() || (hoje.getMonth()===nasc.getMonth() && hoje.getDate()<nasc.getDate())) a--;
+      idade = String(a) + ' anos';
+    }
     const enderecoCompleto = [func.logradouro, func.numeroEndereco].filter(Boolean).join(', ') +
       (func.bairro ? ' — ' + func.bairro : '') + (func.municipioUf ? ' — ' + func.municipioUf : '') +
       (func.cep ? ' — CEP ' + func.cep : '');
-    campo('Endereço', enderecoCompleto.replace(/^—\s*/,'').replace(/^,\s*/,'') || '');
 
-    secao('Dados do Contrato de Trabalho');
-    campo('Empresa (empregador)', cliente ? (cliente.name + (cliente.doc?' — CNPJ/CPF '+cliente.doc:'')) : '');
-    campo('Cargo/Função', func.cargo);
-    campo('CBO', func.cbo);
-    campo('Categoria eSocial', func.categoriaEsocial);
-    campo('Tipo de contrato', func.tipoContrato);
-    campo('Data de admissão', func.dataAdmissao ? fmtDate(func.dataAdmissao) : '');
-    campo('Jornada de trabalho', func.jornada);
-    campo('Salário base', fmtBRL(func.salarioBase));
-    campo('Dependentes (IRRF)', func.dependentes||0);
-    campo('Status atual', func.status||'Ativo');
+    const secaoTitulo = (doc, y, titulo)=>{
+      doc.setFillColor(225,228,232); doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+      doc.rect(mx, y, cw, 6, 'FD');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(20,25,30);
+      doc.text(titulo, mx+2, y+4.2);
+      return y+6;
+    };
+    const linhaBoxes = (y, fields, h, larguraTotal)=>{
+      h = h || 9;
+      const w0 = larguraTotal!=null ? larguraTotal : cw;
+      let acc = mx;
+      fields.forEach(f=>{
+        const w = w0*f.w;
+        doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+        doc.rect(acc, y, w, h);
+        doc.setFont('helvetica','normal'); doc.setFontSize(6);
+        doc.text(f.label, acc+1.2, y+2.8);
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+        const val = doc.splitTextToSize(String(f.value!=null&&f.value!==''?f.value:'—'), w-2.4);
+        doc.text(val[0]||'—', acc+1.2, y+h-2);
+        acc += w;
+      });
+      return y+h;
+    };
 
-    y += 20;
-    if(y > 260){ doc.addPage(); y = 20; }
-    doc.setDrawColor(140,150,160);
-    doc.line(14, y, 95, y);
-    doc.line(115, y, pageW-14, y);
-    y += 5;
-    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
-    doc.text('Assinatura do Empregador', 14, y);
-    doc.text('Assinatura do Empregado', 115, y);
-    y += 4.5;
-    doc.text(cliente ? cliente.name : '', 14, y);
-    doc.text(func.nome || '', 115, y);
+    // ===== PÁGINA 1 =====
+    let y = 12;
+    doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(20,25,30);
+    doc.text('FICHA DE REGISTRO DE EMPREGADO', mx, y+4);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    doc.text('Ordem: _______', pageW-mx, y+4, {align:'right'});
+    y += 8;
+
+    const fotoW = 26, fotoH = 24;
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+    doc.rect(pageW-mx-fotoW, y, fotoW, fotoH);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(140,150,160);
+    doc.text('FOTOGRAFIA', pageW-mx-fotoW/2, y+fotoH/2-2, {align:'center'});
+    doc.text('3x4', pageW-mx-fotoW/2, y+fotoH/2+3, {align:'center'});
     doc.setTextColor(20,25,30);
 
-    pdfFooterDisclaimer(doc, 'Ficha de Registro de Empregado gerada a partir dos dados cadastrados no sistema. Confira todas as informações antes de arquivar ou apresentar à fiscalização — o sistema não valida automaticamente pendências ou inconsistências cadastrais.');
+    y = secaoTitulo(doc, y, 'DADOS DO FUNCIONÁRIO');
+    const larguraComFoto = cw - fotoW - 4;
+    y = linhaBoxes(y, [
+      {label:'NOME', w:0.60, value:func.nome},
+      {label:'MATRÍCULA', w:0.40, value:func.matricula||func.id.slice(-6).toUpperCase()},
+    ], 9, larguraComFoto);
+    y = linhaBoxes(y, [
+      {label:'IDADE', w:0.20, value:idade},
+      {label:'NACIONALIDADE', w:0.35, value:func.nacionalidade||'Brasileira'},
+      {label:'LOCAL DE NASCIMENTO', w:0.45, value:func.naturalidade},
+    ], 9, larguraComFoto);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'CARACTERÍSTICAS FÍSICAS');
+    y = linhaBoxes(y, [
+      {label:'COR', w:0.85*0.17, value:func.racaCor},
+      {label:'ALT.', w:0.85*0.13, value:func.altura},
+      {label:'PESO', w:0.85*0.13, value:func.peso},
+      {label:'CABELOS', w:0.85*0.19, value:func.cabelos},
+      {label:'OLHOS', w:0.85*0.19, value:func.olhos},
+      {label:'SINAIS PARTICULARES', w:0.85*0.19, value:func.sinaisParticulares},
+    ]);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'QUANDO ESTRANGEIRO');
+    y = linhaBoxes(y, [
+      {label:'DATA DE CHEGADA', w:0.20, value:func.dataChegadaPais?fmtDate(func.dataChegadaPais):''},
+      {label:'CART. MOD. 19', w:0.20, value:func.cartModelo19},
+      {label:'REG. GERAL', w:0.20, value:func.registroGeralEstrangeiro},
+      {label:'NATURALIZADO?', w:0.20, value:func.naturalizado},
+      {label:'CASADO(A) C/ BRASILEIRA(O)?', w:0.20, value:func.casadoComBrasileiro},
+    ]);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'ENDEREÇO');
+    y = linhaBoxes(y, [{label:'ENDEREÇO COMPLETO', w:1, value:enderecoCompleto.replace(/^—\s*/,'').replace(/^,\s*/,'')}]);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'DOCUMENTAÇÃO PESSOAL');
+    y = linhaBoxes(y, [
+      {label:'ESTADO CIVIL', w:0.20, value:func.estadoCivil},
+      {label:'CARGO', w:0.30, value:func.cargo},
+      {label:'CPF', w:0.25, value:func.cpf},
+      {label:'DATA DE NASCIMENTO', w:0.25, value:func.dataNascimento?fmtDate(func.dataNascimento):''},
+    ]);
+    y = linhaBoxes(y, [
+      {label:'CTPS — NÚMERO / SÉRIE', w:0.35, value:(func.ctpsNumero||'—')+' / '+(func.ctpsSerie||'—')},
+      {label:'RG', w:0.30, value:func.rg},
+      {label:'ÓRGÃO EMISSOR', w:0.15, value:func.orgaoEmissorRg},
+      {label:'DEFICIÊNCIA', w:0.20, value:func.deficiencia||'Não'},
+    ]);
+    y = linhaBoxes(y, [
+      {label:'NOME DO PAI', w:0.5, value:func.nomePai},
+      {label:'NOME DA MÃE', w:0.5, value:func.nomeMae},
+    ]);
+
+    pdfFooterDisclaimer(doc, 'Ficha de Registro de Empregado gerada a partir dos dados cadastrados no sistema, no modelo tradicional de ficha/livro de registro. Campos sem informação correspondente no cadastro ficam em branco para preenchimento manual. Confira todas as informações antes de arquivar ou apresentar à fiscalização.');
+
+    // ===== PÁGINA 2 =====
+    doc.addPage();
+    y = 15;
+    y = secaoTitulo(doc, y, 'PROGRAMA DE INTEGRAÇÃO SOCIAL (PIS)');
+    y = linhaBoxes(y, [
+      {label:'CADASTRADO EM', w:0.25, value:''},
+      {label:'SOB Nº', w:0.30, value:func.pis},
+      {label:'DEP. NO BANCO', w:0.25, value:''},
+      {label:'AGÊNCIA', w:0.20, value:''},
+    ]);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'DADOS PARA CÁLCULO');
+    y = linhaBoxes(y, [
+      {label:'ADMISSÃO', w:0.25, value:func.dataAdmissao?fmtDate(func.dataAdmissao):''},
+      {label:'REGISTRO Nº', w:0.15, value:func.matricula||''},
+      {label:'SEÇÃO', w:0.20, value:''},
+      {label:'TIPO DE PAGTO.', w:0.40, value:'Mensal'},
+    ]);
+    y = linhaBoxes(y, [
+      {label:'SALÁRIO INICIAL', w:0.30, value:fmtBRL(func.salarioBase)},
+      {label:'TAREFA/FUNÇÃO', w:0.40, value:func.cargo},
+      {label:'CBO', w:0.30, value:func.cbo},
+    ]);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'SITUAÇÃO PERANTE O FGTS');
+    y = linhaBoxes(y, [
+      {label:'OPTANTE?', w:0.20, value:'Sim'},
+      {label:'DATA DE OPÇÃO', w:0.25, value:func.dataAdmissao?fmtDate(func.dataAdmissao):''},
+      {label:'BANCO DEPOSITÁRIO', w:0.35, value:'Caixa Econômica Federal'},
+      {label:'AGÊNCIA', w:0.20, value:''},
+    ]);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'HORÁRIO DE TRABALHO');
+    y = linhaBoxes(y, [
+      {label:'ENTRADA', w:0.25, value:''},
+      {label:'REFEIÇÃO', w:0.25, value:''},
+      {label:'SAÍDA', w:0.25, value:''},
+      {label:'DESCANSO SEMANAL', w:0.25, value:'Domingo'},
+    ]);
+    y += 3;
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(90,105,120);
+    doc.text('Jornada de trabalho cadastrada: ' + (func.jornada||'—'), mx, y+3);
+    doc.setTextColor(20,25,30);
+    y += 8;
+
+    if(y > 200){ doc.addPage(); y = 15; }
+    const polegarW = 24, polegarH = 24;
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
+    doc.rect(mx, y, polegarW, polegarH);
+    doc.setFontSize(6.5); doc.setTextColor(140,150,160);
+    doc.text('POLEGAR', mx+polegarW/2, y+polegarH/2-2, {align:'center'});
+    doc.text('DIREITO', mx+polegarW/2, y+polegarH/2+3, {align:'center'});
+    doc.setTextColor(20,25,30);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    const declTxt = doc.splitTextToSize('Estou de pleno acordo com as declarações acima que exprimem a verdade.', cw-polegarW-8);
+    doc.text(declTxt, mx+polegarW+6, y+8);
+    y += polegarH + 8;
+
+    doc.setDrawColor(140,150,160);
+    doc.line(mx, y, mx+80, y);
+    doc.line(mx+cw-80, y, mx+cw, y);
+    y += 4.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,105,120);
+    doc.text('Carimbo e visto do empregador', mx, y);
+    doc.text('Assinatura do empregado', mx+cw-80, y);
+    doc.setTextColor(20,25,30);
+    y += 12;
+
+    y = linhaBoxes(y, [
+      {label:'DATA DE SAÍDA', w:0.5, value:func.status==='Desligado'?'Ver Rescisão':''},
+      {label:'CBO', w:0.5, value:func.cbo},
+    ]);
+
+    y += 3;
+    y = secaoTitulo(doc, y, 'DADOS DO EMPREGADOR');
+    y = linhaBoxes(y, [{label:'RAZÃO SOCIAL', w:0.65, value:cliente?cliente.name:''}, {label:'CNPJ', w:0.35, value:cliente?cliente.doc:''}]);
+    y = linhaBoxes(y, [
+      {label:'ENDEREÇO', w:0.5, value:cliente?cliente.address:''},
+      {label:'BAIRRO', w:0.25, value:cliente?cliente.city:''},
+      {label:'CEP', w:0.25, value:''},
+    ]);
+
+    pdfFooterDisclaimer(doc, 'Ficha de Registro de Empregado gerada a partir dos dados cadastrados no sistema, no modelo tradicional de ficha/livro de registro. Campos sem informação correspondente no cadastro ficam em branco para preenchimento manual. Confira todas as informações antes de arquivar ou apresentar à fiscalização.');
+
+    // ===== PÁGINA 3 — Histórico (em branco para preenchimento manual ao longo do vínculo) =====
+    doc.addPage();
+    y = 15;
+    const tabelaVazia = (titulo, colunas, linhasVazias)=>{
+      y = secaoTitulo(doc, y, titulo);
+      const wCol = cw/colunas.length;
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.5);
+      colunas.forEach((c,i)=>{ doc.rect(mx+wCol*i, y, wCol, 5); doc.text(c, mx+wCol*i+1.5, y+3.4); });
+      y += 5;
+      doc.setFont('helvetica','normal');
+      for(let i=0;i<linhasVazias;i++){
+        colunas.forEach((c,ci)=>{ doc.rect(mx+wCol*ci, y, wCol, 6); });
+        y += 6;
+      }
+      y += 4;
+    };
+    tabelaVazia('BENEFICIÁRIOS', ['NOME', 'PARENTESCO', 'DATA DE NASCIMENTO'], 4);
+    tabelaVazia('FÉRIAS — PERÍODO AQUISITIVO, ABONOS E GOZOS', ['PERÍODO AQUISITIVO', 'ABONOS', 'GOZOS'], 4);
+    if(y > 230){ doc.addPage(); y = 15; }
+    tabelaVazia('CONTRIBUIÇÃO SINDICAL', ['PERÍODO', 'SINDICATO', 'VALOR'], 3);
+    tabelaVazia('AFASTAMENTOS', ['DATA DE AFASTAMENTO', 'DATA DE RETORNO'], 3);
+    if(y > 220){ doc.addPage(); y = 15; }
+    tabelaVazia('ACIDENTES DE TRABALHO', ['DATA', 'SALÁRIO'], 3);
+    tabelaVazia('ALTERAÇÕES DE CARGO E SALÁRIO', ['MOTIVO DA ALTERAÇÃO SALARIAL', 'SAL./HORA', 'CARGO'], 4);
+
+    pdfFooterDisclaimer(doc, 'Campos desta página ficam em branco para anotação manual ao longo do vínculo empregatício, conforme o modelo tradicional de ficha/livro de registro de empregados.');
     doc.save('ficha-registro-' + (func.nome||'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
@@ -5924,10 +6118,269 @@
     await loadBaixaEmpresaDocumentos(); render();
   }
 
+  // Recibo de Pagamento de Honorários Contábeis — serve tanto pra empresas cadastradas no
+  // sistema quanto pra empresas avulsas (fora do Cadastro de Clientes), por isso guarda o nome
+  // e o CNPJ/CPF digitados na hora, além do vínculo opcional com um clientId já cadastrado.
+  const FORMAS_PAGAMENTO_RECIBO = ['PIX', 'Transferência Bancária (TED/DOC)', 'Dinheiro', 'Cheque', 'Cartão', 'Boleto', 'Outro'];
+  async function loadRecibosHonorarios(){
+    state.recibosHonorarios = [];
+    try{
+      const keys = await Store.list('recibosHonorarios:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.recibosHonorarios.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.recibosHonorarios.sort((a,b)=>(b.dataPagamento||'').localeCompare(a.dataPagamento||''));
+  }
+  async function saveReciboHonorarios(r){
+    if(!r.id) r.id = uid();
+    try{
+      await Store.set('recibosHonorarios:'+r.id, JSON.stringify(r), true);
+    }catch(e){
+      alert('Não foi possível salvar este recibo.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      return false;
+    }
+    await loadRecibosHonorarios(); render();
+    return true;
+  }
+  async function deleteReciboHonorarios(id){
+    await Store.delete('recibosHonorarios:'+id, true);
+    await loadRecibosHonorarios(); render();
+  }
+  function reciboHonorariosNomeEmpresa(r){
+    if(r.clientId){ const c = state.clients.find(x=>x.id===r.clientId); if(c) return c.name; }
+    return r.nomeAvulso || '—';
+  }
+  function reciboHonorariosDoc(r){
+    if(r.clientId){ const c = state.clients.find(x=>x.id===r.clientId); if(c) return c.doc; }
+    return r.docAvulso || '';
+  }
+  function reciboHonorariosServicosTexto(r){
+    const lista = (r.tiposServico||[]).filter(t=>t!=='Outro');
+    if((r.tiposServico||[]).includes('Outro') && r.tiposServicoOutro) lista.push(r.tiposServicoOutro);
+    return lista.join(', ') || '—';
+  }
+
+  function reciboHonorariosPanelHtml(){
+    const lista = state.recibosHonorarios.slice();
+    return `
+      <div class="panel-head">
+        <h3>Recibo de Pagamento de Honorários Contábeis</h3>
+        <button type="button" class="btn-add" id="novoReciboHonorariosBtn">+ Novo recibo</button>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 16px;">Recibo de quitação de honorários, válido tanto para empresas já cadastradas no sistema quanto para empresas avulsas (fora do Cadastro de Clientes) — basta digitar o nome e o CNPJ/CPF na hora.</div>
+      ${!lista.length ? `<div class="empty">Nenhum recibo emitido ainda.</div>` : `
+        <table>
+          <thead><tr><th>Empresa/Pessoa</th><th>CNPJ/CPF</th><th style="text-align:right">Valor</th><th>Data pagto.</th><th>Forma</th><th></th></tr></thead>
+          <tbody>
+            ${lista.map(r=>`
+              <tr>
+                <td>${escapeHtml(reciboHonorariosNomeEmpresa(r))}${!r.clientId?' <span class="tag sit-outra">avulsa</span>':''}</td>
+                <td>${escapeHtml(reciboHonorariosDoc(r)||'—')}</td>
+                <td style="text-align:right" class="mono">${fmtBRL(r.valor)}</td>
+                <td>${r.dataPagamento?fmtDate(r.dataPagamento):'—'}</td>
+                <td>${escapeHtml(r.formaPagamento||'—')}</td>
+                <td style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <button class="btn-detail" data-pdf-recibo-honorarios="${r.id}">PDF</button>
+                  <button class="btn-sm" data-edit-recibo-honorarios="${r.id}">Editar</button>
+                  <button class="btn-sm danger" data-del-recibo-honorarios="${r.id}">Excluir</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `}
+    `;
+  }
+
+  function reciboHonorarioModalHtml(){
+    const d = state.reciboHonorarioModalData;
+    if(!d) return '';
+    const clientesOrdenados = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const ehAvulsa = !d.clientId;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar recibo' : 'Novo recibo'} de Pagamento de Honorários</h3>
+          <form id="reciboHonorarioForm">
+            <div class="field"><label>Empresa</label>
+              <select id="rhClienteSelect">
+                <option value="" ${ehAvulsa?'selected':''}>— Empresa avulsa (não cadastrada) —</option>
+                ${clientesOrdenados.map(c=>`<option value="${c.id}" ${d.clientId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-row" id="rhAvulsaWrap" style="${ehAvulsa?'':'display:none;'}">
+              <div class="field"><label>Nome da empresa/pessoa</label><input type="text" id="rhNomeAvulso" value="${escapeHtml(d.nomeAvulso||'')}" ${ehAvulsa?'required':''}/></div>
+              <div class="field"><label>CNPJ ou CPF</label><input type="text" id="rhDocAvulso" value="${escapeHtml(d.docAvulso||'')}" placeholder="00.000.000/0000-00 ou 000.000.000-00"/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Valor pago (R$)</label><input type="number" step="0.01" min="0" id="rhValor" value="${d.valor||''}" required/></div>
+              <div class="field"><label>Data de pagamento</label><input type="date" id="rhDataPagamento" value="${d.dataPagamento||todayStr()}" required/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Forma de pagamento</label>
+                <select id="rhFormaPagamento">${FORMAS_PAGAMENTO_RECIBO.map(f=>`<option value="${f}" ${d.formaPagamento===f?'selected':''}>${f}</option>`).join('')}</select>
+              </div>
+              <div class="field"><label>Detalhe (banco, chave PIX, etc.)</label><input type="text" id="rhFormaPagamentoDetalhe" value="${escapeHtml(d.formaPagamentoDetalhe||'')}" placeholder="Ex: PIX via Banco do Brasil, chave (81) 99999-9999"/></div>
+            </div>
+            <div class="field"><label>Serviços executados</label>
+              <div style="display:flex; flex-wrap:wrap; gap:8px 16px; padding:8px 0;">
+                ${TIPOS_SERVICO_SUGERIDOS.map(t=>`
+                  <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--ink-soft); cursor:pointer;">
+                    <input type="checkbox" class="rh-servico-check" value="${t}" ${(d.tiposServico||[]).includes(t)?'checked':''}/> ${t}
+                  </label>
+                `).join('')}
+              </div>
+            </div>
+            <div class="field" id="rhOutroWrap" style="${(d.tiposServico||[]).includes('Outro')?'':'display:none;'}"><label>Especifique o outro serviço</label><input type="text" id="rhTiposServicoOutro" value="${escapeHtml(d.tiposServicoOutro||'')}"/></div>
+            <div class="field"><label>Local de emissão</label><input type="text" id="rhLocalEmissao" value="${escapeHtml(d.localEmissao||'Recife/PE')}"/></div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="rhCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function gerarReciboHonorariosPDF(reciboId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const r = state.recibosHonorarios.find(x=>x.id===reciboId);
+    if(!r){ alert('Recibo não encontrado.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const mx = 20, cw = pageW - mx*2;
+    let y = 30;
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(20,25,30);
+    doc.text('RECIBO DE PAGAMENTO DE HONORÁRIOS CONTÁBEIS', pageW/2, y, {align:'center'});
+    y += 16;
+
+    const nome = reciboHonorariosNomeEmpresa(r);
+    const documento = reciboHonorariosDoc(r);
+    const valorExtenso = valorPorExtenso(Number(r.valor)||0);
+    const formaDetalhe = r.formaPagamentoDetalhe ? ' (' + r.formaPagamentoDetalhe + ')' : '';
+    const servicos = reciboHonorariosServicosTexto(r);
+
+    const texto = 'Recebi da empresa ' + nome + ', inscrita no CNPJ ou CPF sob o nº ' + (documento||'não informado') +
+      ', o valor de ' + fmtBRL(r.valor) + ' (' + valorExtenso + ') referente aos serviços de ' + servicos +
+      ', pago(s) via ' + (r.formaPagamento||'—') + formaDetalhe +
+      ', pelo qual damos plena, geral e irrevogável quitação da importância ora recebida, para nada mais reclamar a esse título, nos termos do art. 320 e seguintes do Código Civil Brasileiro (Lei nº 10.406/2002).';
+
+    doc.setFont('helvetica','normal'); doc.setFontSize(11.5);
+    const linhas = doc.splitTextToSize(texto, cw);
+    doc.text(linhas, mx, y, {align:'justify', maxWidth:cw});
+    y += linhas.length*6.5 + 20;
+
+    if(y > 240){ doc.addPage(); y = 30; }
+    const dataLocal = (r.localEmissao||'') + ', ' + dataPorExtenso(r.dataPagamento || todayStr()) + '.';
+    doc.setFontSize(11);
+    doc.text(dataLocal, pageW/2, y, {align:'center'});
+    y += 28;
+
+    doc.setDrawColor(20,25,30); doc.setLineWidth(0.3);
+    doc.line(pageW/2-45, y, pageW/2+45, y);
+    y += 5;
+    doc.setFontSize(10);
+    doc.text('JP Consultoria Contábil', pageW/2, y, {align:'center'});
+    y += 5;
+    doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Assinatura / Dados do recebedor', pageW/2, y, {align:'center'});
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Recibo gerado a partir dos dados registrados no sistema. A quitação aqui declarada refere-se exclusivamente ao valor e aos serviços descritos neste documento — confira os dados antes de assinar ou entregar ao pagador.');
+    doc.save('recibo-honorarios-' + nome.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (r.dataPagamento||'').replace(/-/g,'') + '.pdf');
+  }
+
   function baixaEmpresaStatusClass(status){
     if(status==='Concluída') return 'sit-ativa';
     if(status==='Cancelada') return 'sit-baixada';
     return 'sit-pendente';
+  }
+
+  function gerarRelatorioBaixaEmpresaPDF(baixaId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const b = state.baixasEmpresas.find(x=>x.id===baixaId);
+    if(!b){ alert('Baixa de empresa não encontrada.'); return; }
+    const docsB = state.baixaEmpresaDocumentos.filter(d=>d.baixaId===baixaId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const mx = 12, cw = pageW - mx*2;
+    let y = pdfHeader(doc, 'Relatório de Baixa de Empresa', b.nomeEmpresa||'—');
+
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    [
+      ['Empresa', b.nomeEmpresa],
+      ['CNPJ', b.cnpj],
+      ['Data de solicitação', b.dataSolicitacao?fmtDate(b.dataSolicitacao):'—'],
+      ['Data de conclusão', b.dataConclusao?fmtDate(b.dataConclusao):'—'],
+      ['Status do serviço', b.status||'Em andamento'],
+      ['Forma de envio das informações ao cliente', b.formaEnvioCliente||'—'],
+    ].forEach(([label,val])=>{ doc.text(String(label)+': '+String(val||'—'), mx, y); y += 6.5; });
+    y += 2;
+
+    if(b.pendenciaDocumentos){
+      doc.setFont('helvetica','bold'); doc.text('Pendência de documentos:', mx, y); y += 6;
+      doc.setFont('helvetica','normal');
+      const pendLines = doc.splitTextToSize(b.pendenciaDocumentos, cw);
+      doc.text(pendLines, mx, y); y += pendLines.length*4.6 + 4;
+    }
+    if(b.observacoes){
+      doc.setFont('helvetica','bold'); doc.text('Observações:', mx, y); y += 6;
+      doc.setFont('helvetica','normal');
+      const obsLines = doc.splitTextToSize(b.observacoes, cw);
+      doc.text(obsLines, mx, y); y += obsLines.length*4.6 + 4;
+    }
+
+    y += 3;
+    doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+    doc.text('Documentos', mx, y); y += 6;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+
+    const todosDocs = TIPOS_DOCUMENTO_BAIXA_EMPRESA.concat(
+      docsB.filter(d=>!TIPOS_DOCUMENTO_BAIXA_EMPRESA.includes(d.tipo)).map(d=>d.tipo)
+    );
+    const rowH = 7;
+    const wNome = cw*0.55, wArquivo = cw*0.30, wStatus = cw*0.15;
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+    doc.setFillColor(232,235,240);
+    [['DOCUMENTO', mx, wNome], ['ARQUIVO', mx+wNome, wArquivo], ['SITUAÇÃO', mx+wNome+wArquivo, wStatus]].forEach(([label,x,w])=>{
+      doc.rect(x, y, w, rowH-2, 'F');
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(x, y, w, rowH-2, 'S');
+      doc.text(label, x+1.5, y+3.5);
+    });
+    y += rowH-2;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    todosDocs.forEach(tipo=>{
+      if(y > 270){ doc.addPage(); y = 20; }
+      const docAnexado = docsB.find(d=>d.tipo===tipo);
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      doc.rect(mx, y, wNome, rowH); doc.rect(mx+wNome, y, wArquivo, rowH); doc.rect(mx+wNome+wArquivo, y, wStatus, rowH);
+      const nomeLines = doc.splitTextToSize(tipo, wNome-3);
+      doc.text(nomeLines[0], mx+1.5, y+4.5);
+      doc.text(docAnexado ? doc.splitTextToSize(docAnexado.arquivoNome||'—', wArquivo-3)[0] : '—', mx+wNome+1.5, y+4.5);
+      if(docAnexado) doc.setTextColor(22,140,90); else doc.setTextColor(180,60,50);
+      doc.text(docAnexado ? 'Anexado' : 'Pendente', mx+wNome+wArquivo+1.5, y+4.5);
+      doc.setTextColor(20,25,30);
+      y += rowH;
+    });
+
+    y += 15;
+    if(y > 260){ doc.addPage(); y = 20; }
+    doc.setDrawColor(140,150,160);
+    doc.line(mx, y, mx+80, y);
+    y += 4.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,105,120);
+    doc.text('Data e assinatura do responsável', mx, y);
+    doc.setTextColor(20,25,30);
+
+    pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos dados registrados no sistema para este serviço de baixa de empresa. Confira as informações e a documentação antes de finalizar ou enviar ao cliente.');
+    doc.save('relatorio-baixa-empresa-' + (b.nomeEmpresa||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function baixaEmpresaPanelHtml(){
@@ -5937,23 +6390,27 @@
         <h3>Baixa de Empresas</h3>
         <button type="button" class="btn-add" id="novaBaixaEmpresaBtn">+ Nova baixa de empresa</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 16px;">Serviço avulso — não precisa escolher um cliente cadastrado, já que costuma ser esporádico. Anexe aqui o CNPJ Baixado, a Extinção de Empresário Individual, o Distrato Social, a Certidão de Baixa de CNPJ e as Orientações Técnicas.</div>
+      <div class="form-hint" style="margin:-4px 0 16px;">Serviço avulso — não precisa escolher um cliente cadastrado, já que costuma ser esporádico. Anexe aqui o CNPJ Baixado, a Extinção de Empresário Individual, o Distrato Social, a Certidão de Baixa de CNPJ, as Orientações Técnicas e outros documentos que precisar.</div>
       ${!lista.length ? `<div class="empty">Nenhuma baixa de empresa registrada ainda.</div>` : `
         <div class="cc-list">
           ${lista.map(b=>{
             const docsB = state.baixaEmpresaDocumentos.filter(d=>d.baixaId===b.id);
-            const qtdAnexados = docsB.length;
+            const qtdFixosAnexados = TIPOS_DOCUMENTO_BAIXA_EMPRESA.filter(tipo=>docsB.some(d=>d.tipo===tipo)).length;
+            const docsExtras = docsB.filter(d=>!TIPOS_DOCUMENTO_BAIXA_EMPRESA.includes(d.tipo));
             return `
             <div class="cc-row" style="flex-direction:column; align-items:stretch; gap:8px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
                 <div class="cr-main">
                   <div class="cr-title">${escapeHtml(b.nomeEmpresa||'—')} <span class="tag ${baixaEmpresaStatusClass(b.status)}" style="margin-left:6px;">${escapeHtml(b.status||'Em andamento')}</span></div>
-                  <div class="cr-meta">${b.cnpj?'CNPJ '+escapeHtml(b.cnpj):'—'} · Solicitado em ${b.dataSolicitacao?fmtDate(b.dataSolicitacao):'—'}</div>
+                  <div class="cr-meta">${b.cnpj?'CNPJ '+escapeHtml(b.cnpj):'—'} · Solicitado em ${b.dataSolicitacao?fmtDate(b.dataSolicitacao):'—'}${b.dataConclusao?' · Concluído em '+fmtDate(b.dataConclusao):''}</div>
+                  ${b.formaEnvioCliente ? `<div class="cr-meta">Envio ao cliente: ${escapeHtml(b.formaEnvioCliente)}</div>` : ''}
+                  ${b.pendenciaDocumentos ? `<div class="cr-meta" style="color:#b45309;">⚠️ Pendência: ${escapeHtml(b.pendenciaDocumentos)}</div>` : ''}
                   ${b.observacoes ? `<div class="cr-meta">${escapeHtml(b.observacoes)}</div>` : ''}
-                  <div class="cr-meta">📎 ${qtdAnexados} de ${TIPOS_DOCUMENTO_BAIXA_EMPRESA.length} documentos anexados</div>
+                  <div class="cr-meta">📎 ${qtdFixosAnexados} de ${TIPOS_DOCUMENTO_BAIXA_EMPRESA.length} documentos fixos${docsExtras.length?' + '+docsExtras.length+' documento(s) extra(s)':''} anexados</div>
                 </div>
                 <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap;">
-                  <button type="button" class="btn-detail" data-gerenciar-docs-baixa="${b.id}">${state.baixaEmpresaAtiva===b.id?'Fechar documentos':'Gerenciar documentos'}</button>
+                  <button type="button" class="btn-detail" data-gerenciar-docs-baixa="${b.id}">${state.baixaEmpresaAtiva===b.id?'Fechar documentos':'Ver / anexar documentos'}</button>
+                  <button type="button" class="btn-detail" data-relatorio-baixa-empresa="${b.id}">📄 Gerar relatório</button>
                   <button type="button" class="btn-sm" data-edit-baixa-empresa="${b.id}">Editar</button>
                   <button type="button" class="btn-sm danger" data-del-baixa-empresa="${b.id}">Excluir</button>
                 </div>
@@ -5968,27 +6425,30 @@
 
   function baixaEmpresaDocumentosHtml(baixaId){
     const docsB = state.baixaEmpresaDocumentos.filter(d=>d.baixaId===baixaId);
+    const docsExtras = docsB.filter(d=>!TIPOS_DOCUMENTO_BAIXA_EMPRESA.includes(d.tipo));
+    const linhaDoc = (tipo, doc)=>`
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:#F8F9FB; border:1px solid var(--line); border-radius:8px; padding:8px 10px;">
+        <div style="font-size:12.5px;">
+          <strong>${escapeHtml(tipo)}</strong>
+          ${doc ? `<span style="color:var(--ink-soft);"> — 📎 ${escapeHtml(doc.arquivoNome||'arquivo anexado')}</span>` : `<span style="color:var(--ink-soft);"> — sem arquivo anexado</span>`}
+        </div>
+        <div style="display:flex; gap:6px; flex-shrink:0;">
+          ${doc ? `
+            ${/\.pdf$/i.test(doc.arquivoNome||'') ? `<button type="button" class="btn-detail" data-visualizar-doc-baixa="${doc.id}">Visualizar</button>` : ''}
+            <button type="button" class="btn-detail" data-baixar-doc-baixa="${doc.id}">Baixar</button>
+            <button type="button" class="btn-sm danger" data-del-doc-baixa="${doc.id}">Remover</button>
+          ` : `<button type="button" class="btn-sm" data-anexar-doc-baixa="${baixaId}|${escapeHtml(tipo)}">Anexar arquivo</button>`}
+        </div>
+      </div>
+    `;
     return `
       <div style="border-top:1px solid var(--line); margin-top:6px; padding-top:10px;">
         <div style="font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Documentos da baixa</div>
         <div style="display:flex; flex-direction:column; gap:6px;">
-          ${TIPOS_DOCUMENTO_BAIXA_EMPRESA.map(tipo=>{
-            const doc = docsB.find(d=>d.tipo===tipo);
-            return `
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:#F8F9FB; border:1px solid var(--line); border-radius:8px; padding:8px 10px;">
-              <div style="font-size:12.5px;">
-                <strong>${escapeHtml(tipo)}</strong>
-                ${doc ? `<span style="color:var(--ink-soft);"> — 📎 ${escapeHtml(doc.arquivoNome||'arquivo anexado')}</span>` : `<span style="color:var(--ink-soft);"> — sem arquivo anexado</span>`}
-              </div>
-              <div style="display:flex; gap:6px; flex-shrink:0;">
-                ${doc ? `
-                  <button type="button" class="btn-detail" data-baixar-doc-baixa="${doc.id}">Baixar</button>
-                  <button type="button" class="btn-sm danger" data-del-doc-baixa="${doc.id}">Remover</button>
-                ` : `<button type="button" class="btn-sm" data-anexar-doc-baixa="${baixaId}|${escapeHtml(tipo)}">Anexar arquivo</button>`}
-              </div>
-            </div>
-          `;}).join('')}
+          ${TIPOS_DOCUMENTO_BAIXA_EMPRESA.map(tipo=>linhaDoc(tipo, docsB.find(d=>d.tipo===tipo))).join('')}
+          ${docsExtras.map(d=>linhaDoc(d.tipo, d)).join('')}
         </div>
+        <button type="button" class="btn-sm" data-anexar-outro-doc-baixa="${baixaId}" style="margin-top:10px;">+ Anexar outro documento</button>
       </div>
     `;
   }
@@ -6013,6 +6473,20 @@
                 <option value="Cancelada" ${d.status==='Cancelada'?'selected':''}>Cancelada</option>
               </select>
             </div>
+            <div class="form-row">
+              <div class="field"><label>Data de conclusão</label><input type="date" id="beDataConclusao" value="${d.dataConclusao||''}"/></div>
+              <div class="field"><label>Forma de envio ao cliente</label>
+                <select id="beFormaEnvio">
+                  <option value="" ${!d.formaEnvioCliente?'selected':''}>— Selecione —</option>
+                  <option value="E-mail" ${d.formaEnvioCliente==='E-mail'?'selected':''}>E-mail</option>
+                  <option value="WhatsApp" ${d.formaEnvioCliente==='WhatsApp'?'selected':''}>WhatsApp</option>
+                  <option value="Presencial" ${d.formaEnvioCliente==='Presencial'?'selected':''}>Presencial</option>
+                  <option value="Correios" ${d.formaEnvioCliente==='Correios'?'selected':''}>Correios</option>
+                  <option value="Outro" ${d.formaEnvioCliente==='Outro'?'selected':''}>Outro</option>
+                </select>
+              </div>
+            </div>
+            <div class="field"><label>Pendência de documentos (se houver)</label><input type="text" id="bePendenciaDocumentos" value="${escapeHtml(d.pendenciaDocumentos||'')}" placeholder="Ex: aguardando Distrato Social assinado"/></div>
             <div class="field"><label>Observações</label><input type="text" id="beObservacoes" value="${escapeHtml(d.observacoes||'')}"/></div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="beCancel">Cancelar</button>
@@ -6027,11 +6501,13 @@
   function baixaDocumentoModalHtml(){
     const d = state.baixaDocumentoModalData;
     if(!d) return '';
+    const ehCustom = !d.tipo;
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>Anexar — ${escapeHtml(d.tipo)}</h3>
+          <h3>${ehCustom ? 'Anexar outro documento' : 'Anexar — ' + escapeHtml(d.tipo)}</h3>
           <form id="baixaDocumentoForm">
+            ${ehCustom ? `<div class="field"><label>Nome do documento</label><input type="text" id="bdNomeCustom" placeholder="Ex: Procuração, Balanço de Encerramento..." required/></div>` : ''}
             <div class="attach-box">
               <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo (PDF ou Word)</label>
               <input type="file" id="bdArquivoInput" accept=".pdf,.doc,.docx" required/>
@@ -7992,6 +8468,7 @@
     await loadDocumentosSocietarios();
     await loadBaixasEmpresas();
     await loadBaixaEmpresaDocumentos();
+    await loadRecibosHonorarios();
     await loadInscricoes();
     await loadAlvaras();
     await loadProcessosFiscais();
@@ -8872,8 +9349,28 @@
     `;
   }
 
+  const PAINEL_GERAL_TABS = [
+    {k:'resumo', label:'Resumo'},
+    {k:'calendario', label:'Calendário de Obrigações'},
+    {k:'informativo-rf', label:'Informativo RF'},
+    {k:'mensagens', label:'Mensagens'},
+    {k:'comunicados', label:'Comunicados'},
+  ];
   function renderCentroControle(){
     const allClientsSorted = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    if(!PAINEL_GERAL_TABS.some(t=>t.k===state.painelGeralTab)) state.painelGeralTab = 'resumo';
+    let tabContent = '';
+    if(state.painelGeralTab==='resumo') tabContent = `
+      <div class="cc-grid">
+        ${impostosCardHtml()}
+        ${folhaCardHtml()}
+      </div>
+      ${certificadosNotificacoesPanelHtml()}
+    `;
+    else if(state.painelGeralTab==='calendario') tabContent = calendarioHtml();
+    else if(state.painelGeralTab==='informativo-rf') tabContent = informativoRFHtml();
+    else if(state.painelGeralTab==='mensagens') tabContent = mensagensPanelHtml();
+    else if(state.painelGeralTab==='comunicados') tabContent = comunicadosPanelHtml();
     return `
       <div class="panel">
         <div class="cc-header">
@@ -8892,20 +9389,11 @@
             </div>
           </div>
         </div>
-        <div class="cc-grid">
-          ${impostosCardHtml()}
-          ${folhaCardHtml()}
+        <div class="dp-tabs">
+          ${PAINEL_GERAL_TABS.map(t=>`<button type="button" class="dp-tab-btn ${state.painelGeralTab===t.k?'active':''}" data-painel-geral-tab="${t.k}">${t.label}</button>`).join('')}
         </div>
-        ${certificadosNotificacoesPanelHtml()}
-        <div class="form-section-title" style="margin-top:8px;">Calendário de Obrigações</div>
-        ${calendarioHtml()}
-        <div class="form-section-title"></div>
-        ${informativoRFHtml()}
-        <div class="form-section-title"></div>
-        ${mensagensPanelHtml()}
-        <div class="form-section-title"></div>
-        ${comunicadosPanelHtml()}
       </div>
+      <div class="panel">${tabContent}</div>
     `;
   }
 
@@ -12645,6 +13133,7 @@
       ${state.modal==='parcelaIndividual' ? parcelaIndividualModalHtml() : ''}
       ${state.modal==='baixaEmpresa' ? baixaEmpresaModalHtml() : ''}
       ${state.modal==='baixaDocumento' ? baixaDocumentoModalHtml() : ''}
+      ${state.modal==='reciboHonorario' ? reciboHonorarioModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
@@ -13742,6 +14231,11 @@
       el.onclick = ()=>{ state.legalTab = el.getAttribute('data-legal-tab'); render(); };
     });
 
+    // ===== Painel Geral: abas =====
+    root.querySelectorAll('[data-painel-geral-tab]').forEach(el=>{
+      el.onclick = ()=>{ state.painelGeralTab = el.getAttribute('data-painel-geral-tab'); render(); };
+    });
+
     // ===== Serviços Contábeis: abas =====
     root.querySelectorAll('[data-servicos-tab]').forEach(el=>{
       el.onclick = ()=>{ state.servicosTab = el.getAttribute('data-servicos-tab'); render(); };
@@ -13762,6 +14256,9 @@
           cnpj: document.getElementById('beCnpj').value,
           dataSolicitacao: document.getElementById('beDataSolicitacao').value,
           status: document.getElementById('beStatus').value,
+          dataConclusao: document.getElementById('beDataConclusao').value,
+          formaEnvioCliente: document.getElementById('beFormaEnvio').value,
+          pendenciaDocumentos: document.getElementById('bePendenciaDocumentos').value,
           observacoes: document.getElementById('beObservacoes').value,
         };
         const submitBtn = baixaEmpresaForm.querySelector('button[type="submit"]');
@@ -13786,6 +14283,9 @@
     root.querySelectorAll('[data-del-baixa-empresa]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir esta baixa de empresa e todos os documentos anexados a ela?')) deleteBaixaEmpresa(el.getAttribute('data-del-baixa-empresa')); };
     });
+    root.querySelectorAll('[data-relatorio-baixa-empresa]').forEach(el=>{
+      el.onclick = ()=> gerarRelatorioBaixaEmpresaPDF(el.getAttribute('data-relatorio-baixa-empresa'));
+    });
     root.querySelectorAll('[data-gerenciar-docs-baixa]').forEach(el=>{
       el.onclick = ()=>{
         const id = el.getAttribute('data-gerenciar-docs-baixa');
@@ -13800,12 +14300,98 @@
         state.modal = 'baixaDocumento'; render();
       };
     });
+    root.querySelectorAll('[data-anexar-outro-doc-baixa]').forEach(el=>{
+      el.onclick = ()=>{
+        const baixaId = el.getAttribute('data-anexar-outro-doc-baixa');
+        state.baixaDocumentoModalData = { baixaId, tipo: '' };
+        state.modal = 'baixaDocumento'; render();
+      };
+    });
+    root.querySelectorAll('[data-visualizar-doc-baixa]').forEach(el=>{
+      el.onclick = ()=>{
+        const doc = state.baixaEmpresaDocumentos.find(d=>d.id===el.getAttribute('data-visualizar-doc-baixa'));
+        if(doc && doc.arquivoBase64) visualizarArquivoBase64(doc.arquivoBase64, doc.arquivoNome||'documento.pdf');
+      };
+    });
+
+    // ===== Recibo de Pagamento de Honorários Contábeis =====
+    const novoReciboHonorariosBtn = document.getElementById('novoReciboHonorariosBtn');
+    if(novoReciboHonorariosBtn) novoReciboHonorariosBtn.onclick = ()=>{ state.reciboHonorarioModalData = { tiposServico: [] }; state.modal='reciboHonorario'; render(); };
+    const rhCancel = document.getElementById('rhCancel');
+    if(rhCancel) rhCancel.onclick = ()=>{ state.modal=null; state.reciboHonorarioModalData=null; render(); };
+    const rhClienteSelect = document.getElementById('rhClienteSelect');
+    const rhAvulsaWrap = document.getElementById('rhAvulsaWrap');
+    if(rhClienteSelect) rhClienteSelect.onchange = (e)=>{ if(rhAvulsaWrap) rhAvulsaWrap.style.display = e.target.value ? 'none' : ''; };
+    root.querySelectorAll('.rh-servico-check').forEach(el=>{
+      el.onchange = ()=>{
+        const outroWrap = document.getElementById('rhOutroWrap');
+        const outroMarcado = root.querySelector('.rh-servico-check[value="Outro"]');
+        if(outroWrap) outroWrap.style.display = (outroMarcado && outroMarcado.checked) ? '' : 'none';
+      };
+    });
+    const reciboHonorarioForm = document.getElementById('reciboHonorarioForm');
+    if(reciboHonorarioForm){
+      reciboHonorarioForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const clientId = document.getElementById('rhClienteSelect').value;
+        const tiposServico = Array.from(root.querySelectorAll('.rh-servico-check:checked')).map(el=>el.value);
+        if(!tiposServico.length){ alert('Marque ao menos um serviço executado.'); return; }
+        const r = {
+          id: (state.reciboHonorarioModalData && state.reciboHonorarioModalData.id) || undefined,
+          clientId: clientId || null,
+          nomeAvulso: document.getElementById('rhNomeAvulso') ? document.getElementById('rhNomeAvulso').value : '',
+          docAvulso: document.getElementById('rhDocAvulso') ? document.getElementById('rhDocAvulso').value : '',
+          valor: document.getElementById('rhValor').value,
+          dataPagamento: document.getElementById('rhDataPagamento').value,
+          formaPagamento: document.getElementById('rhFormaPagamento').value,
+          formaPagamentoDetalhe: document.getElementById('rhFormaPagamentoDetalhe').value,
+          tiposServico,
+          tiposServicoOutro: document.getElementById('rhTiposServicoOutro') ? document.getElementById('rhTiposServicoOutro').value : '',
+          localEmissao: document.getElementById('rhLocalEmissao').value,
+        };
+        if(!clientId && !r.nomeAvulso){ alert('Selecione uma empresa cadastrada ou preencha o nome da empresa avulsa.'); return; }
+        const submitBtn = reciboHonorarioForm.querySelector('button[type="submit"]');
+        if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
+        const ok = await saveReciboHonorarios(r);
+        if(!ok){
+          if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Salvar'; }
+          return;
+        }
+        state.modal=null; state.reciboHonorarioModalData=null;
+        render();
+      };
+    }
+    root.querySelectorAll('[data-edit-recibo-honorarios]').forEach(el=>{
+      el.onclick = ()=>{
+        const r = state.recibosHonorarios.find(x=>x.id===el.getAttribute('data-edit-recibo-honorarios'));
+        if(!r) return;
+        state.reciboHonorarioModalData = Object.assign({}, r);
+        state.modal = 'reciboHonorario'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-recibo-honorarios]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este recibo?')) deleteReciboHonorarios(el.getAttribute('data-del-recibo-honorarios')); };
+    });
+    root.querySelectorAll('[data-pdf-recibo-honorarios]').forEach(el=>{
+      el.onclick = ()=> gerarReciboHonorariosPDF(el.getAttribute('data-pdf-recibo-honorarios'));
+    });
     const bdCancel = document.getElementById('bdCancel');
     if(bdCancel) bdCancel.onclick = ()=>{ state.modal=null; state.baixaDocumentoModalData=null; render(); };
     const baixaDocumentoForm = document.getElementById('baixaDocumentoForm');
     if(baixaDocumentoForm){
       baixaDocumentoForm.onsubmit = async (e)=>{
         e.preventDefault();
+        const dmd = state.baixaDocumentoModalData;
+        let tipoFinal = dmd.tipo;
+        if(!tipoFinal){
+          const nomeCustomInput = document.getElementById('bdNomeCustom');
+          tipoFinal = nomeCustomInput ? nomeCustomInput.value.trim() : '';
+          if(!tipoFinal){ alert('Digite um nome para o documento.'); return; }
+          if(TIPOS_DOCUMENTO_BAIXA_EMPRESA.includes(tipoFinal) || state.baixaEmpresaDocumentos.some(d=>d.baixaId===dmd.baixaId && d.tipo===tipoFinal)){
+            alert('Já existe um documento com esse nome nesta baixa. Escolha outro nome, ou anexe pelo campo correspondente se for um dos tipos fixos.');
+            return;
+          }
+        }
         const fileInput = document.getElementById('bdArquivoInput');
         const file = fileInput && fileInput.files && fileInput.files[0];
         if(!file){ alert('Selecione um arquivo.'); return; }
@@ -13819,9 +14405,8 @@
           arquivoBase64 = btoa(binary);
           arquivoNome = file.name;
         }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); return; }
-        const dmd = state.baixaDocumentoModalData;
-        const existente = state.baixaEmpresaDocumentos.find(d=>d.baixaId===dmd.baixaId && d.tipo===dmd.tipo);
-        const doc = { id: existente?existente.id:undefined, baixaId: dmd.baixaId, tipo: dmd.tipo, arquivoNome, arquivoBase64 };
+        const existente = state.baixaEmpresaDocumentos.find(d=>d.baixaId===dmd.baixaId && d.tipo===tipoFinal);
+        const doc = { id: existente?existente.id:undefined, baixaId: dmd.baixaId, tipo: tipoFinal, arquivoNome, arquivoBase64 };
         const submitBtn = baixaDocumentoForm.querySelector('button[type="submit"]');
         if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
         const ok = await saveBaixaEmpresaDocumento(doc);
@@ -14280,6 +14865,17 @@
     if(relatorioGeralHonorariosFiltroSelect){
       relatorioGeralHonorariosFiltroSelect.onchange = (e)=>{ state.relatorioGeralHonorariosFiltro = e.target.value; render(); };
     }
+    const relGeralHonorariosTodasCheck = document.getElementById('relGeralHonorariosTodasCheck');
+    if(relGeralHonorariosTodasCheck){
+      relGeralHonorariosTodasCheck.onchange = (e)=>{ state.relatorioGeralHonorariosTodasEmpresas = e.target.checked; render(); };
+    }
+    root.querySelectorAll('.rel-geral-honorarios-client-check').forEach(el=>{
+      el.onchange = ()=>{
+        const checked = Array.from(root.querySelectorAll('.rel-geral-honorarios-client-check:checked')).map(x=>x.value);
+        state.relatorioGeralHonorariosClientesSelecionados = checked;
+        render();
+      };
+    });
     const pdfRelatorioGeralHonorariosBtn = document.getElementById('pdfRelatorioGeralHonorariosBtn');
     if(pdfRelatorioGeralHonorariosBtn){
       pdfRelatorioGeralHonorariosBtn.onclick = ()=> gerarPdfRelatorioGeralHonorarios(state.relatorioGeralHonorariosFiltro);
