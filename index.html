@@ -6250,13 +6250,15 @@
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const r = state.recibosHonorarios.find(x=>x.id===reciboId);
     if(!r){ alert('Recibo não encontrado.'); return; }
+    const cliente = r.clientId ? state.clients.find(c=>c.id===r.clientId) : null;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
     const mx = 20, cw = pageW - mx*2;
-    let y = 30;
 
-    doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(20,25,30);
+    let y = pdfHeader(doc, 'Recibo de Pagamento de Honorários Contábeis', reciboHonorariosNomeEmpresa(r), cliente ? cliente.logo : '');
+    y += 8;
+    doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(20,25,30);
     doc.text('RECIBO DE PAGAMENTO DE HONORÁRIOS CONTÁBEIS', pageW/2, y, {align:'center'});
     y += 16;
 
@@ -8760,6 +8762,31 @@
 
   function escapeHtml(s){
     return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // Cor principal do sistema (escolhida pelo usuário) — muda o menu lateral, cabeçalhos, abas
+  // ativas e botões principais. Guarda no localStorage (preferência do navegador/dispositivo,
+  // não é dado compartilhado da empresa) e reaplica sozinha ao carregar o sistema.
+  const COR_SISTEMA_PADRAO = '#1B3A5C';
+  function sombrearCor(hex, percent){
+    hex = String(hex||'').replace('#','');
+    if(hex.length!==6) return '#1B3A5C';
+    let r = parseInt(hex.substring(0,2),16), g = parseInt(hex.substring(2,4),16), b = parseInt(hex.substring(4,6),16);
+    r = Math.min(255, Math.max(0, Math.round(r*(100+percent)/100)));
+    g = Math.min(255, Math.max(0, Math.round(g*(100+percent)/100)));
+    b = Math.min(255, Math.max(0, Math.round(b*(100+percent)/100)));
+    const toHex = n=>n.toString(16).padStart(2,'0');
+    return '#'+toHex(r)+toHex(g)+toHex(b);
+  }
+  function aplicarCorSistema(hex){
+    if(!/^#[0-9a-fA-F]{6}$/.test(hex)) hex = COR_SISTEMA_PADRAO;
+    document.documentElement.style.setProperty('--navy', hex);
+    document.documentElement.style.setProperty('--navy-deep', sombrearCor(hex, -32));
+    document.documentElement.style.setProperty('--navy-soft', sombrearCor(hex, 15));
+    try{ localStorage.setItem('corSistemaJP', hex); }catch(e){}
+  }
+  function corSistemaSalva(){
+    try{ return localStorage.getItem('corSistemaJP') || COR_SISTEMA_PADRAO; }catch(e){ return COR_SISTEMA_PADRAO; }
   }
 
   function ascendGraphic(){
@@ -13113,6 +13140,13 @@
               <h1>${viewTitle()}</h1>
               <div class="date">${new Date().toLocaleDateString('pt-BR',{weekday:'long', day:'2-digit', month:'long', year:'numeric'})}</div>
             </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <label for="corSistemaInput" class="btn-sm" style="display:flex; align-items:center; gap:6px; cursor:pointer; margin:0;" title="Mudar a cor do sistema">
+                🎨 Cor do sistema
+                <input type="color" id="corSistemaInput" value="${corSistemaSalva()}" style="width:22px; height:22px; padding:0; border:none; border-radius:4px; cursor:pointer; vertical-align:middle;"/>
+              </label>
+              <button type="button" class="btn-sm" id="corSistemaResetBtn" title="Voltar para a cor padrão">Padrão</button>
+            </div>
           </div>
           ${content}
         </div>
@@ -13155,6 +13189,15 @@
       ${state.modal==='sitFiscal' ? sitFiscalModalHtml() : ''}
       ${state.modal==='relatorioView' ? relatorioViewModalHtml() : ''}
     `;
+
+    const corSistemaInput = document.getElementById('corSistemaInput');
+    if(corSistemaInput) corSistemaInput.oninput = (e)=>{ aplicarCorSistema(e.target.value); };
+    const corSistemaResetBtn = document.getElementById('corSistemaResetBtn');
+    if(corSistemaResetBtn) corSistemaResetBtn.onclick = ()=>{
+      aplicarCorSistema(COR_SISTEMA_PADRAO);
+      const input = document.getElementById('corSistemaInput');
+      if(input) input.value = COR_SISTEMA_PADRAO;
+    };
 
     root.querySelectorAll('[data-nav]').forEach(el=>{
       el.onclick = async ()=>{
@@ -16697,6 +16740,7 @@
   }
 
   (async function boot(){
+    try{ aplicarCorSistema(corSistemaSalva()); }catch(e){}
     render(); // show the loading screen immediately while we connect to storage
     await initStore();
     trySession();
