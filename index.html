@@ -11,7 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&family=Great+Vibes&display=swap" rel="stylesheet">
 
 <style>
   :root{
@@ -6241,7 +6241,7 @@
     `;
   }
 
-  function gerarReciboHonorariosPDF(reciboId){
+  async function gerarReciboHonorariosPDF(reciboId){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const r = state.recibosHonorarios.find(x=>x.id===reciboId);
     if(!r){ alert('Recibo não encontrado.'); return; }
@@ -6273,17 +6273,25 @@
     doc.text(linhas, mx, y, {align:'justify', maxWidth:cw});
     y += linhas.length*6.5 + 20;
 
-    if(y > 240){ doc.addPage(); y = 30; }
+    if(y > 220){ doc.addPage(); y = 30; }
     const dataLocal = (r.localEmissao||'') + ', ' + dataPorExtenso(r.dataPagamento || todayStr()) + '.';
     doc.setFontSize(11);
     doc.text(dataLocal, pageW/2, y, {align:'center'});
-    y += 28;
+    y += 12;
+
+    const nomeAssinante = 'JP Consultoria Contábil';
+    const assinaturaImg = await gerarAssinaturaCursivaBase64(nomeAssinante);
+    if(assinaturaImg){
+      const imgW = 70, imgH = 17.5;
+      doc.addImage(assinaturaImg, 'PNG', pageW/2 - imgW/2, y - imgH + 4, imgW, imgH);
+    }
+    y += 20;
 
     doc.setDrawColor(20,25,30); doc.setLineWidth(0.3);
     doc.line(pageW/2-45, y, pageW/2+45, y);
     y += 5;
     doc.setFontSize(10);
-    doc.text('JP Consultoria Contábil', pageW/2, y, {align:'center'});
+    doc.text(nomeAssinante, pageW/2, y, {align:'center'});
     y += 5;
     doc.setFontSize(8.5); doc.setTextColor(90,105,120);
     doc.text('Assinatura / Dados do recebedor', pageW/2, y, {align:'center'});
@@ -8763,6 +8771,27 @@
   }
   function corSistemaSalva(){
     try{ return localStorage.getItem('corSistemaJP') || COR_SISTEMA_PADRAO; }catch(e){ return COR_SISTEMA_PADRAO; }
+  }
+
+  // Gera uma "assinatura" com letras cursivas (imagem PNG em base64) pra colocar em recibos e
+  // documentos, já que o jsPDF não desenha texto com fontes de fantasia/script diretamente.
+  async function gerarAssinaturaCursivaBase64(nome){
+    try{
+      if(document.fonts && document.fonts.load){
+        await document.fonts.load("52px 'Great Vibes'");
+        await document.fonts.ready;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = 640; canvas.height = 160;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle = '#1B3A5C';
+      ctx.font = "52px 'Great Vibes', 'Brush Script MT', cursive";
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.fillText(nome, canvas.width/2, canvas.height/2);
+      return canvas.toDataURL('image/png');
+    }catch(e){ return null; }
   }
 
   function ascendGraphic(){
@@ -14326,7 +14355,11 @@
       el.onclick = ()=>{ if(confirm('Excluir este recibo?')) deleteReciboHonorarios(el.getAttribute('data-del-recibo-honorarios')); };
     });
     root.querySelectorAll('[data-pdf-recibo-honorarios]').forEach(el=>{
-      el.onclick = ()=> gerarReciboHonorariosPDF(el.getAttribute('data-pdf-recibo-honorarios'));
+      el.onclick = async ()=>{
+        el.disabled = true; const original = el.textContent; el.textContent = 'Gerando...';
+        await gerarReciboHonorariosPDF(el.getAttribute('data-pdf-recibo-honorarios'));
+        el.disabled = false; el.textContent = original;
+      };
     });
     const bdCancel = document.getElementById('bdCancel');
     if(bdCancel) bdCancel.onclick = ()=>{ state.modal=null; state.baixaDocumentoModalData=null; render(); };
