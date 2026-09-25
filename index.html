@@ -734,7 +734,7 @@
     proposta: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z" stroke-linejoin="round"/><path d="M14 3v5h5M9 13h6M9 17h4" stroke-linecap="round"/></svg>',
   };
 
-  const DEPARTMENTS = ['Departamento Pessoal', 'Fiscal', 'Contábil', 'Legal'];
+  const DEPARTMENTS = ['Departamento Pessoal', 'Fiscal', 'Contábil', 'Legal', 'Setor Financeiro', 'Serviços Contábeis'];
   function deptClass(dep){
     if(dep==='Departamento Pessoal') return 'dept-pessoal';
     if(dep==='Fiscal') return 'dept-fiscal';
@@ -8878,6 +8878,8 @@
     'depto-fiscal': 'Fiscal',
     'depto-contabil': 'Contábil',
     'depto-legal': 'Legal',
+    'lancamentos': 'Setor Financeiro',
+    'servicos-contabeis': 'Serviços Contábeis',
   };
 
   function userHasDeptAccess(user, deptName){
@@ -8894,8 +8896,8 @@
       {k:'depto-fiscal', label:'Departamento Fiscal', subtitle:'XMLs e Impostos', icon:ICONS.fiscalDoc, dept:'Fiscal'},
       {k:'depto-contabil', label:'Departamento Contábil', subtitle:'Livro Diário, Balanço e DRE', icon:ICONS.contabilBook, dept:'Contábil'},
       {k:'depto-legal', label:'Departamento Legal', subtitle:'Contratos e Processos', icon:ICONS.legalScale, dept:'Legal'},
-      {k:'lancamentos', label:'Setor Financeiro', subtitle:'Fluxo e Lançamentos', icon:ICONS.lanc},
-      {k:'servicos-contabeis', label:'Serviços Contábeis', subtitle:'Propostas e Honorários', icon:ICONS.proposta},
+      {k:'lancamentos', label:'Setor Financeiro', subtitle:'Fluxo e Lançamentos', icon:ICONS.lanc, dept:'Setor Financeiro'},
+      {k:'servicos-contabeis', label:'Serviços Contábeis', subtitle:'Propostas e Honorários', icon:ICONS.proposta, dept:'Serviços Contábeis'},
       {k:'relatorios', label:'Relatórios', subtitle:'Gráficos e resumos', icon:ICONS.relatorios},
     ].filter(it => !it.dept || userHasDeptAccess(state.user, it.dept));
     if(state.user.role==='admin'){
@@ -13017,6 +13019,16 @@
     const root = document.getElementById('jp-root');
     let content = '';
     if(state.view==='dashboard') content = renderDashboard();
+    else if(state.view==='lancamentos'){
+      content = userHasDeptAccess(state.user, 'Setor Financeiro')
+        ? renderLancamentos()
+        : `<div class="panel"><div class="empty">Você não tem acesso ao Setor Financeiro. Peça a um administrador para liberar.</div></div>`;
+    }
+    else if(state.view==='servicos-contabeis'){
+      content = userHasDeptAccess(state.user, 'Serviços Contábeis')
+        ? renderServicosContabeis()
+        : `<div class="panel"><div class="empty">Você não tem acesso a Serviços Contábeis. Peça a um administrador para liberar.</div></div>`;
+    }
     else if(DEPT_VIEW_MAP[state.view]){
       if(userHasDeptAccess(state.user, DEPT_VIEW_MAP[state.view])){
         state.deptTab = DEPT_VIEW_MAP[state.view];
@@ -13025,9 +13037,7 @@
         content = `<div class="panel"><div class="empty">Você não tem acesso a este departamento. Peça a um administrador para liberar.</div></div>`;
       }
     }
-    else if(state.view==='lancamentos') content = renderLancamentos();
     else if(state.view==='clientes') content = renderClientes();
-    else if(state.view==='servicos-contabeis') content = renderServicosContabeis();
     else if(state.view==='relatorios') content = renderRelatorios();
     else if(state.view==='admin') content = renderAdmin();
 
