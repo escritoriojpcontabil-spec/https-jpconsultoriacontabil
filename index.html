@@ -953,6 +953,68 @@
   // A tabela padrão de 2026 vem embutida (montada a partir das constantes acima); o escritório pode
   // cadastrar novas tabelas (ex.: 2027) na aba "Tabelas INSS / IRRF" — em empate de vigência, a do
   // escritório prevalece sobre a embutida.
+  // ===== Pró-labore conforme eSocial: empregador, beneficiário e categoria =====
+  // Categorias de contribuinte individual (Tabela 01 do eSocial) usadas no pró-labore. Para sócio e
+  // empresário individual o correto é a 723; a 722 é para diretor não empregado sem FGTS. Atenção:
+  // depois do S-2300 o eSocial NÃO aceita trocar a categoria (é preciso enviar S-2399 e cadastrar de novo).
+  const CATEGORIAS_ESOCIAL_PROLABORE = {
+    '723': '723 — Contribuinte individual: empresário, sócio e membro de conselho de administração ou fiscal',
+    '722': '722 — Contribuinte individual: diretor não empregado, sem FGTS',
+  };
+  const TIPOS_BENEFICIARIO_PROLABORE = ['Sócio', 'Empresário individual'];
+  function validarCpf(v){
+    const c = String(v==null?'':v).replace(/\D/g,'');
+    if(c.length !== 11 || /^(\d)\1{10}$/.test(c)) return false;
+    for(let t=9; t<11; t++){
+      let soma = 0;
+      for(let i=0;i<t;i++) soma += Number(c[i]) * (t + 1 - i);
+      const dv = ((soma * 10) % 11) % 10;
+      if(dv !== Number(c[t])) return false;
+    }
+    return true;
+  }
+  function validarCnpj(v){
+    const c = String(v==null?'':v).replace(/\D/g,'');
+    if(c.length !== 14 || /^(\d)\1{13}$/.test(c)) return false;
+    const calc = (n)=>{
+      let soma = 0, peso = n - 7;
+      for(let i=0;i<n;i++){ soma += Number(c[i]) * peso--; if(peso < 2) peso = 9; }
+      const r = soma % 11; return r < 2 ? 0 : 11 - r;
+    };
+    return calc(12) === Number(c[12]) && calc(13) === Number(c[13]);
+  }
+  function formatarCpf(v){
+    const c = String(v==null?'':v).replace(/\D/g,'');
+    return c.length===11 ? c.slice(0,3)+'.'+c.slice(3,6)+'.'+c.slice(6,9)+'-'+c.slice(9) : String(v||'');
+  }
+  function formatarCnpj(v){
+    const c = String(v==null?'':v).replace(/\D/g,'');
+    return c.length===14 ? c.slice(0,2)+'.'+c.slice(2,5)+'.'+c.slice(5,8)+'/'+c.slice(8,12)+'-'+c.slice(12) : String(v||'');
+  }
+  function formatarInscricao(tipo, v){ return tipo==='CPF' ? formatarCpf(v) : formatarCnpj(v); }
+  // Empregador (identificação que vai no eSocial) a partir do cadastro da empresa.
+  function empregadorDoCliente(c){
+    if(!c) return { empTipoInsc:'CNPJ', empNrInsc:'', empNome:'' };
+    const digitos = String(c.doc||'').replace(/\D/g,'');
+    const tipo = digitos.length===11 ? 'CPF' : 'CNPJ';
+    return { empTipoInsc: tipo, empNrInsc: formatarInscricao(tipo, digitos), empNome: c.name||'' };
+  }
+  // CPF de um sócio cadastrado — só usa se estiver completo (a Receita costuma devolver mascarado).
+  function cpfCompletoDoSocio(s){
+    const d = String((s && s.cpf) || '').replace(/\D/g,'');
+    return d.length===11 ? formatarCpf(d) : '';
+  }
+  // Confere os dados do eSocial de um pró-labore; devolve '' se OK ou a mensagem do problema.
+  function erroDadosEsocialProlabore(d){
+    if(!CATEGORIAS_ESOCIAL_PROLABORE[d.categoriaEsocial]) return 'Escolha a categoria eSocial.';
+    if(!d.beneficiarioNome || !String(d.beneficiarioNome).trim()) return d.tipoBeneficiario==='Empresário individual' ? 'Informe o nome do empresário individual.' : 'Selecione o sócio.';
+    if(!validarCpf(d.beneficiarioCpf)) return 'CPF do beneficiário inválido ou incompleto — o eSocial exige o CPF completo (o cadastro da Receita costuma trazer mascarado).';
+    if(!String(d.empregadorNome||'').trim()) return 'Informe a razão social / nome do empregador.';
+    const tipoOk = d.empregadorTipoInsc==='CPF' ? validarCpf(d.empregadorNrInsc) : validarCnpj(d.empregadorNrInsc);
+    if(!tipoOk) return 'Número de inscrição do empregador inválido (' + (d.empregadorTipoInsc==='CPF' ? 'CPF' : 'CNPJ') + ').';
+    return '';
+  }
+
   function tabelaFolhaPadrao2026(){
     return {
       id:'padrao-2026', embutida:true,
@@ -4104,7 +4166,13 @@
       doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Composição por categoria', mx, y); y += 3;
       const colsCat = [{label:'ITEM', w:cw*0.45}, {label:'QUANTIDADE', w:cw*0.18, align:'right'}, {label:'TOTAL DA FOLHA', w:cw*0.18, align:'right'}, {label:'LÍQUIDO A PAGAR', w:cw*0.19, align:'right'}];
       y = tabelaHeader(colsCat, y);
-      if(pList.length) y = tabelaRow(colsCat, ['Diretor não empregado sem FGTS (Pró-labore)', pList.length, fmtBRL(totProBruto), fmtBRL(totProLiquido)], y);
+      if(pList.length){
+        const cats = Array.from(new Set(pList.map(p=>p.categoriaEsocial).filter(Boolean)));
+        const rotuloPl = cats.length===1 && cats[0]==='723' ? 'Pró-labore — empresário/sócio (cat. 723, sem FGTS)'
+          : cats.length===1 && cats[0]==='722' ? 'Pró-labore — diretor não empregado (cat. 722, sem FGTS)'
+          : 'Pró-labore — contribuinte individual (sem FGTS)';
+        y = tabelaRow(colsCat, [rotuloPl, pList.length, fmtBRL(totProBruto), fmtBRL(totProLiquido)], y);
+      }
       if(fList.length) y = tabelaRow(colsCat, ['Empregado (CLT)', fList.length, fmtBRL(totFolhaBruto), fmtBRL(totFolhaLiquido)], y);
       y += 6;
 
@@ -4520,7 +4588,16 @@
     const pageW = doc.internal.pageSize.getWidth();
     let y = pdfHeader(doc, 'Recibo de Pró-labore', cliente ? cliente.name : '', cliente ? cliente.logo : '');
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-    doc.text('Sócio(a): ' + (pl.socioNome||'—'), 14, y); y+=6;
+    const tabPl = tabelaFolhaVigente(pl.competencia);
+    const rotuloBenef = pl.tipoBeneficiario==='Empresário individual' ? 'Empresário(a) individual' : 'Sócio(a)';
+    if(pl.empregadorNrInsc || pl.empregadorNome){
+      doc.text('Empregador: ' + (pl.empregadorNome || (cliente?cliente.name:'—')) + (pl.empregadorNrInsc ? ' — ' + (pl.empregadorTipoInsc||'CNPJ') + ' ' + pl.empregadorNrInsc : ''), 14, y); y+=6;
+    }
+    doc.text(rotuloBenef + ': ' + (pl.socioNome||'—') + (pl.beneficiarioCpf ? ' — CPF ' + pl.beneficiarioCpf : ''), 14, y); y+=6;
+    if(pl.categoriaEsocial && CATEGORIAS_ESOCIAL_PROLABORE[pl.categoriaEsocial]){
+      const catLinhas = doc.splitTextToSize('Categoria eSocial: ' + CATEGORIAS_ESOCIAL_PROLABORE[pl.categoriaEsocial], pageW-28);
+      doc.text(catLinhas, 14, y); y += catLinhas.length*4.6 + 1.4;
+    }
     doc.text('Competência: ' + monthLabel(pl.competencia) + '/' + (pl.competencia||'').slice(0,4), 14, y); y+=10;
 
     const linha = (label, valor, negrito)=>{
@@ -4531,7 +4608,7 @@
     };
     doc.setDrawColor(200,200,200); doc.line(14, y-4, pageW-14, y-4); y+=1;
     linha('Pró-labore (bruto)', pl.bruto);
-    linha('(-) INSS (11%, contribuinte individual)', -Math.abs(pl.inss||0));
+    linha('(-) INSS (' + pctBR(tabPl.prolabore.aliquota) + '%, contribuinte individual)', -Math.abs(pl.inss||0));
     linha('(-) IRRF', -Math.abs(pl.irrf||0));
     doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y+=6;
     linha('LÍQUIDO', pl.liquido, true);
@@ -4550,10 +4627,10 @@
     y += 14;
     doc.line(14, y, 100, y);
     y += 4.5;
-    doc.text('Assinatura do(a) sócio(a) — ' + (pl.socioNome||''), 14, y);
+    doc.text('Assinatura do(a) ' + (pl.tipoBeneficiario==='Empresário individual' ? 'empresário(a) individual' : 'sócio(a)') + ' — ' + (pl.socioNome||''), 14, y);
     doc.setTextColor(20,25,30);
 
-    pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema (INSS 11% fixo de contribuinte individual + tabela de IRRF vigentes em 2026). Não substitui a apuração oficial nem a guia de recolhimento DAS/GPS.');
+    pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema (INSS de contribuinte individual + tabela de IRRF, conforme a tabela de INSS/IRRF vigente na competência — ' + tabPl.nome + '). Não substitui a apuração oficial, os eventos do eSocial nem a guia de recolhimento DAS/GPS.');
     doc.save('recibo-prolabore-' + (pl.socioNome||'socio').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (pl.competencia||'') + '.pdf');
   }
 
@@ -9201,6 +9278,12 @@
       produtosMonofasicos: state.produtosMonofasicos,
       ncmMonofasicoCustom: state.ncmMonofasicoCustom,
       tabelasFolha: state.tabelasFolha,
+      prolabores: state.prolabores,
+      decimosTerceiros: state.decimosTerceiros,
+      pontoRegistros: state.pontoRegistros,
+      sindicatos: state.sindicatos,
+      parcelasIndividuais: state.parcelasIndividuais,
+      recibosHonorarios: state.recibosHonorarios,
       inscricoes: state.inscricoes,
       alvaras: state.alvaras,
       processosFiscais: state.processosFiscais,
@@ -9272,6 +9355,12 @@
       {key:'produtosMonofasicos', prefix:'produtosmonofasicos:', idField:'id'},
       {key:'ncmMonofasicoCustom', prefix:'ncmmonofasicocustom:', idField:'id'},
       {key:'tabelasFolha', prefix:'tabelasfolha:', idField:'id'},
+      {key:'prolabores', prefix:'prolabores:', idField:'id'},
+      {key:'decimosTerceiros', prefix:'decimosterceiros:', idField:'id'},
+      {key:'pontoRegistros', prefix:'pontoregistros:', idField:'id'},
+      {key:'sindicatos', prefix:'sindicatos:', idField:'id'},
+      {key:'parcelasIndividuais', prefix:'parcelasindividuais:', idField:'id'},
+      {key:'recibosHonorarios', prefix:'recibosHonorarios:', idField:'id'},
       {key:'inscricoes', prefix:'inscricoes:', idField:'id'},
       {key:'alvaras', prefix:'alvaras:', idField:'id'},
       {key:'processosFiscais', prefix:'processosfiscais:', idField:'id'},
@@ -12372,39 +12461,70 @@
         </table>
       ` : `<div class="empty">Nenhuma folha calculada nesta competência${state.deptAllClients?'':' para as empresas selecionadas'}.</div>`}
 
-      <div class="form-section-title">Pró-labore dos Sócios</div>
-      <div class="form-hint" style="margin:-4px 0 12px;">Remuneração do(s) sócio(s)/administrador(es), se houver. Diferente do funcionário CLT: INSS de contribuinte individual (11% fixo, sem FGTS).</div>
+      <div class="form-section-title">Pró-labore — sócio ou empresário individual (eSocial)</div>
+      ${(function(){
+        const pf = state.prolaboreFormData || {};
+        const tb = tabelaFolhaVigente(state.competenciaAtiva);
+        const clientePl = state.clients.find(c=>c.id===pf.clientId);
+        const socios = (clientePl && Array.isArray(clientePl.socios)) ? clientePl.socios : [];
+        const tipoBenef = pf.tipoBeneficiario || 'Sócio';
+        const categoria = pf.categoriaEsocial || '723';
+        const empTipo = pf.empTipoInsc || 'CNPJ';
+        const ehEI = tipoBenef === 'Empresário individual';
+        const campoBeneficiario = ehEI
+          ? `<div class="field"><label>Nome do empresário individual</label><input type="text" id="plBenefNome" value="${escapeHtml(pf.benefNome||'')}" placeholder="Titular da empresa"/></div>`
+          : (!pf.clientId
+              ? `<div class="field"><label>Sócio</label><select id="plSocioNome" disabled><option value="">Selecione a empresa primeiro</option></select></div>`
+              : !socios.length
+                ? `<div class="field"><label>Sócio</label><select id="plSocioNome" disabled><option value="">Nenhum sócio cadastrado nesta empresa</option></select></div>`
+                : `<div class="field"><label>Sócio</label><select id="plSocioNome">
+                    <option value="">— Selecione —</option>
+                    ${socios.map(s=>`<option value="${escapeHtml(s.nome)}" ${s.nome===pf.socioNome?'selected':''}>${escapeHtml(s.nome)}${s.cargo?' — '+escapeHtml(s.cargo):''}${s.percentual?' ('+escapeHtml(String(s.percentual))+'%)':''}</option>`).join('')}
+                  </select></div>`);
+        return `
+      <div class="form-hint" style="margin:-4px 0 12px;">Retirada de pró-labore de contribuinte individual: INSS de ${pctBR(tb.prolabore.aliquota)}% (tabela em uso: ${escapeHtml(tb.nome)}), sem FGTS. Informe o <strong>empregador</strong> e o <strong>beneficiário</strong> como serão declarados no eSocial (eventos S-2300 e S-1200).</div>
       <div class="form-row">
         <div class="field"><label>Empresa</label>
           <select id="plEmpresa">
             <option value="">— Selecione —</option>
-            ${clientesDisponiveis.map(c=>`<option value="${c.id}" ${c.id===(state.prolaboreFormData.clientId||'')?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+            ${clientesDisponiveis.map(c=>`<option value="${c.id}" ${c.id===(pf.clientId||'')?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>Sócio</label>
-          ${(function(){
-            const clientePl = state.clients.find(c=>c.id===state.prolaboreFormData.clientId);
-            const socios = (clientePl && Array.isArray(clientePl.socios)) ? clientePl.socios : [];
-            if(!state.prolaboreFormData.clientId){
-              return `<select id="plSocioNome" disabled><option value="">Selecione a empresa primeiro</option></select>`;
-            }
-            if(!socios.length){
-              return `<select id="plSocioNome" disabled><option value="">Nenhum sócio cadastrado nesta empresa</option></select>`;
-            }
-            return `<select id="plSocioNome">
-              <option value="">— Selecione —</option>
-              ${socios.map(s=>`<option value="${escapeHtml(s.nome)}" ${s.nome===state.prolaboreFormData.socioNome?'selected':''}>${escapeHtml(s.nome)}${s.cargo?' — '+escapeHtml(s.cargo):''}${s.percentual?' ('+escapeHtml(String(s.percentual))+'%)':''}</option>`).join('')}
-            </select>`;
-          })()}
+        <div class="field"><label>Tipo de beneficiário</label>
+          <select id="plTipoBenef">${TIPOS_BENEFICIARIO_PROLABORE.map(t=>`<option value="${t}" ${t===tipoBenef?'selected':''}>${t}</option>`).join('')}</select>
         </div>
       </div>
-      ${!state.prolaboreFormData.clientId ? '' : ((state.clients.find(c=>c.id===state.prolaboreFormData.clientId)||{}).socios||[]).length ? '' : `<div class="form-hint" style="margin:-8px 0 12px; color:var(--warn, #b45309);">Essa empresa ainda não tem sócios cadastrados. Vá em Cadastro de Clientes → editar esta empresa → "Sócios e administradores" para adicionar.</div>`}
       <div class="form-row">
-        <div class="field"><label>Valor do pró-labore (R$)</label><input type="number" step="0.01" min="0" id="plValor" value="${state.prolaboreFormData.valor||''}"/></div>
-        <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="plDependentes" value="${state.prolaboreFormData.dependentes||0}"/></div>
+        ${campoBeneficiario}
+        <div class="field"><label>CPF do beneficiário</label><input type="text" id="plBenefCpf" value="${escapeHtml(pf.benefCpf||'')}" placeholder="000.000.000-00"/></div>
+      </div>
+      ${(pf.clientId && !ehEI && !socios.length) ? `<div class="form-hint" style="margin:-8px 0 12px; color:var(--warn, #b45309);">Essa empresa ainda não tem sócios cadastrados. Vá em Cadastro de Clientes → editar esta empresa → "Sócios e administradores" para adicionar — ou escolha "Empresário individual".</div>` : ''}
+      <div class="form-hint" style="margin:-4px 0 12px;">O CPF vindo da Receita costuma chegar mascarado — digite o CPF completo do beneficiário, pois o eSocial exige.</div>
+      <div class="form-section-title" style="font-size:12px;">Empregador (eSocial)</div>
+      <div class="form-row">
+        <div class="field"><label>Tipo de inscrição</label>
+          <select id="plEmpTipoInsc"><option value="CNPJ" ${empTipo==='CNPJ'?'selected':''}>CNPJ</option><option value="CPF" ${empTipo==='CPF'?'selected':''}>CPF</option></select>
+        </div>
+        <div class="field"><label>Nº de inscrição do empregador</label><input type="text" id="plEmpNrInsc" value="${escapeHtml(pf.empNrInsc||'')}" placeholder="${empTipo==='CPF'?'000.000.000-00':'00.000.000/0000-00'}"/></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Razão social / nome do empregador</label><input type="text" id="plEmpNome" value="${escapeHtml(pf.empNome||'')}"/></div>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Vem do cadastro da empresa ao escolhê-la. Para empresário individual, o empregador é a própria empresa individual (CNPJ) e o beneficiário é o titular.</div>
+      <div class="form-row">
+        <div class="field"><label>Categoria eSocial</label>
+          <select id="plCategoria">${Object.keys(CATEGORIAS_ESOCIAL_PROLABORE).map(k=>`<option value="${k}" ${k===categoria?'selected':''}>${escapeHtml(CATEGORIAS_ESOCIAL_PROLABORE[k])}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Início da retirada / do cadastro (opcional)</label><input type="date" id="plDataInicio" value="${escapeHtml(pf.dataInicio||'')}"/></div>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 12px; color:var(--warn, #b45309);">Para sócio e empresário individual use a categoria <strong>723</strong>. Atenção: depois de enviado o S-2300, o eSocial <strong>não aceita trocar a categoria</strong> — seria preciso enviar o S-2399 e cadastrar de novo.</div>
+      <div class="form-row">
+        <div class="field"><label>Valor do pró-labore (R$)</label><input type="number" step="0.01" min="0" id="plValor" value="${pf.valor||''}"/></div>
+        <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="plDependentes" value="${pf.dependentes||0}"/></div>
       </div>
       <button type="button" class="btn-calc" id="calcProLaboreBtn">Calcular e Salvar</button>
-      <div id="prolaboreResult"></div>
+      <div id="prolaboreResult"></div>`;
+      })()}
       ${(function(){ const tb = tabelaFolhaVigente(state.competenciaAtiva); return `<div class="legis-note">INSS do pró-labore: ${String(tb.prolabore.aliquota).replace('.',',')}% fixo sobre o valor (teto do INSS geral de ${fmtBRL(inssTeto(tb))}), conforme Lei 8.212/91 — não usa a tabela progressiva do empregado nem tem FGTS. IRRF segue a mesma tabela do rendimento do trabalho. Tabela em uso: <strong>${escapeHtml(tb.nome)}</strong> — veja/edite em "Tabelas INSS / IRRF".</div>`; })()}
 
       ${(function(){
@@ -12416,7 +12536,10 @@
             <tbody>
               ${lista.map(p=>`
                 <tr>
-                  <td>${escapeHtml(p.socioNome||'—')}</td>
+                  <td>${escapeHtml(p.socioNome||'—')}${p.tipoBeneficiario==='Empresário individual' ? ' <span class="tag sit-outra">Empresário individual</span>' : ''}
+                    ${p.categoriaEsocial || p.beneficiarioCpf ? `<div style="font-size:11px; color:var(--ink-soft);">${p.categoriaEsocial?'Cat. '+escapeHtml(p.categoriaEsocial):''}${p.categoriaEsocial&&p.beneficiarioCpf?' · ':''}${p.beneficiarioCpf?'CPF '+escapeHtml(p.beneficiarioCpf):''}</div>` : ''}
+                    ${p.empregadorNrInsc ? `<div style="font-size:11px; color:var(--ink-soft);">Empregador: ${escapeHtml(p.empregadorTipoInsc||'')} ${escapeHtml(p.empregadorNrInsc)}</div>` : ''}
+                  </td>
                   <td>${escapeHtml(clientName(p.clientId))}</td>
                   <td style="text-align:right" class="mono">${fmtBRL(p.bruto)}</td>
                   <td style="text-align:right" class="mono">${fmtBRL(p.inss)}</td>
@@ -17232,36 +17355,80 @@
       el.onclick = ()=>{ if(confirm('Excluir esta folha calculada?')) deleteFolha(el.getAttribute('data-del-folha')); };
     });
 
-    // Pró-labore
-    ['plEmpresa','plSocioNome','plValor','plDependentes'].forEach(id=>{
-      const el = document.getElementById(id);
-      if(!el) return;
-      const key = { plEmpresa:'clientId', plSocioNome:'socioNome', plValor:'valor', plDependentes:'dependentes' }[id];
-      if(id === 'plEmpresa'){
-        el.onchange = (e)=>{ state.prolaboreFormData = Object.assign({}, state.prolaboreFormData, { clientId: e.target.value, socioNome: '' }); render(); };
-      } else {
-        el.oninput = el.onchange = (e)=>{ state.prolaboreFormData = Object.assign({}, state.prolaboreFormData, { [key]: e.target.value }); };
-      }
+    // Pró-labore (empregador e beneficiário conforme eSocial)
+    const plSet = (patch)=>{ state.prolaboreFormData = Object.assign({}, state.prolaboreFormData, patch); };
+    const plEl = (id)=> document.getElementById(id);
+    const plSociosDe = (clientId)=>{ const c = state.clients.find(x=>x.id===clientId); return (c && Array.isArray(c.socios)) ? c.socios : []; };
+    // campos de digitação: só guardam o valor (sem re-render)
+    [['plValor','valor'],['plDependentes','dependentes'],['plBenefNome','benefNome'],['plBenefCpf','benefCpf'],['plEmpNrInsc','empNrInsc'],['plEmpNome','empNome'],['plCategoria','categoriaEsocial'],['plDataInicio','dataInicio']].forEach(([id,key])=>{
+      const el = plEl(id); if(!el) return;
+      el.oninput = el.onchange = (e)=>{ plSet({ [key]: e.target.value }); };
     });
+    const plEmpresaEl = plEl('plEmpresa');
+    if(plEmpresaEl) plEmpresaEl.onchange = (e)=>{
+      const c = state.clients.find(x=>x.id===e.target.value);
+      const emp = empregadorDoCliente(c);
+      const socios = plSociosDe(e.target.value);
+      const ehEI = (state.prolaboreFormData.tipoBeneficiario || 'Sócio') === 'Empresário individual';
+      const unico = (ehEI && socios.length===1) ? socios[0] : null;
+      plSet({ clientId: e.target.value, socioNome:'', benefNome: unico ? unico.nome : '', benefCpf: unico ? cpfCompletoDoSocio(unico) : '',
+        empTipoInsc: emp.empTipoInsc, empNrInsc: emp.empNrInsc, empNome: emp.empNome });
+      render();
+    };
+    const plTipoBenefEl = plEl('plTipoBenef');
+    if(plTipoBenefEl) plTipoBenefEl.onchange = (e)=>{
+      const socios = plSociosDe(state.prolaboreFormData.clientId);
+      const unico = (e.target.value==='Empresário individual' && socios.length===1) ? socios[0] : null;
+      plSet({ tipoBeneficiario: e.target.value, socioNome:'', benefNome: unico ? unico.nome : '', benefCpf: unico ? cpfCompletoDoSocio(unico) : '', categoriaEsocial:'723' });
+      render();
+    };
+    const plSocioEl = plEl('plSocioNome');
+    if(plSocioEl) plSocioEl.onchange = (e)=>{
+      const s = plSociosDe(state.prolaboreFormData.clientId).find(x=>x.nome===e.target.value);
+      plSet({ socioNome: e.target.value, benefCpf: s ? cpfCompletoDoSocio(s) : '' });
+      render();
+    };
+    const plEmpTipoEl = plEl('plEmpTipoInsc');
+    if(plEmpTipoEl) plEmpTipoEl.onchange = (e)=>{ plSet({ empTipoInsc: e.target.value }); render(); };
+
     const calcProLaboreBtn = document.getElementById('calcProLaboreBtn');
     if(calcProLaboreBtn){
       calcProLaboreBtn.onclick = async ()=>{
-        const clientId = document.getElementById('plEmpresa').value;
-        const socioNome = document.getElementById('plSocioNome').value;
-        const valor = parseFloat(document.getElementById('plValor').value)||0;
-        const dependentes = parseInt(document.getElementById('plDependentes').value)||0;
-        if(!clientId || !socioNome || !valor){ alert('Preencha empresa, nome do sócio e valor do pró-labore.'); return; }
+        const clientId = plEl('plEmpresa').value;
+        const tipoBeneficiario = plEl('plTipoBenef').value;
+        const ehEI = tipoBeneficiario === 'Empresário individual';
+        const beneficiarioNome = ehEI ? plEl('plBenefNome').value.trim() : (plEl('plSocioNome') ? plEl('plSocioNome').value : '');
+        const valor = parseFloat(plEl('plValor').value)||0;
+        const dependentes = parseInt(plEl('plDependentes').value)||0;
+        if(!clientId || !valor){ alert('Preencha a empresa e o valor do pró-labore.'); return; }
+        const dadosEsocial = {
+          tipoBeneficiario, categoriaEsocial: plEl('plCategoria').value,
+          beneficiarioNome, beneficiarioCpf: plEl('plBenefCpf').value.trim(),
+          empregadorTipoInsc: plEl('plEmpTipoInsc').value, empregadorNrInsc: plEl('plEmpNrInsc').value.trim(), empregadorNome: plEl('plEmpNome').value.trim(),
+          dataInicio: plEl('plDataInicio').value,
+        };
+        const erroEsocial = erroDadosEsocialProlabore(dadosEsocial);
+        if(erroEsocial){ alert(erroEsocial); return; }
+        dadosEsocial.beneficiarioCpf = formatarCpf(dadosEsocial.beneficiarioCpf);
+        dadosEsocial.empregadorNrInsc = formatarInscricao(dadosEsocial.empregadorTipoInsc, dadosEsocial.empregadorNrInsc);
         const competencia = document.getElementById('folhaCompetencia').value || state.competenciaAtiva;
         const r = calcProLabore(valor, dependentes, competencia);
+        const tb = tabelaFolhaVigente(competencia);
+        const abaixoDoMinimo = tb.salarioMinimo && valor < tb.salarioMinimo;
         document.getElementById('prolaboreResult').innerHTML = `
           <div class="payroll-result">
             <div class="pr-line"><span>Pró-labore (bruto)</span><span>${fmtBRL(r.bruto)}</span></div>
-            <div class="pr-line neg"><span>(-) INSS (11%)</span><span>${fmtBRL(r.inss)}</span></div>
+            <div class="pr-line neg"><span>(-) INSS (${pctBR(tb.prolabore.aliquota)}%)</span><span>${fmtBRL(r.inss)}</span></div>
             <div class="pr-line neg"><span>(-) IRRF</span><span>${fmtBRL(r.irrf)}</span></div>
             <div class="pr-line total"><span>Líquido</span><span>${fmtBRL(r.liquido)}</span></div>
           </div>
+          ${abaixoDoMinimo ? `<div class="form-hint" style="color:var(--warn, #b45309);">Atenção: o valor está abaixo do salário mínimo de referência (${fmtBRL(tb.salarioMinimo)}). Em regra, o salário de contribuição do contribuinte individual não pode ser inferior ao salário mínimo — confira a complementação do INSS.</div>` : ''}
         `;
-        const prolaboreData = { clientId, socioNome, competencia, dependentes, bruto:r.bruto, inss:r.inss, irrf:r.irrf, liquido:r.liquido };
+        const prolaboreData = Object.assign(
+          { clientId, socioNome: beneficiarioNome, competencia, dependentes, bruto:r.bruto, inss:r.inss, irrf:r.irrf, liquido:r.liquido },
+          { tipoBeneficiario: dadosEsocial.tipoBeneficiario, categoriaEsocial: dadosEsocial.categoriaEsocial, beneficiarioNome: dadosEsocial.beneficiarioNome, beneficiarioCpf: dadosEsocial.beneficiarioCpf,
+            empregadorTipoInsc: dadosEsocial.empregadorTipoInsc, empregadorNrInsc: dadosEsocial.empregadorNrInsc, empregadorNome: dadosEsocial.empregadorNome, dataInicio: dadosEsocial.dataInicio }
+        );
         await saveProlabore(prolaboreData);
         const resultado = await gerarLancamentosProLabore(prolaboreData);
         if(resultado.ok){
