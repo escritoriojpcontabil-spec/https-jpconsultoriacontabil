@@ -605,6 +605,16 @@
     baixaDocumentoModalData: null,
     recibosHonorarios: [],
     reciboHonorarioModalData: null,
+    produtosMonofasicos: [],
+    ncmMonofasicoCustom: [],
+    tabelasFolha: [],
+    tabelaFolhaModalData: null,
+    tabelaFolhaVerId: '',
+    tabelaFolhaSimulador: { valor:'', dependentes:0 },
+    monofasicoCompetencia: '',
+    monoItemModalData: null,
+    monoColarModalData: null,
+    monoRegraModalData: null,
     contabilTab: 'plano',
     contabilEmpresaAtiva: '',
     contabilRelSubTab: 'balancete',
@@ -935,38 +945,130 @@
   const FGTS_ALIQUOTA = 0.08;
 
   function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
+  function round4(n){ return Math.round((Number(n)||0) * 10000) / 10000; }
 
-  function calcINSS(salarioBruto){
-    const sal = Math.min(Math.max(salarioBruto,0), TETO_INSS_2026);
-    let total = 0;
-    for(const f of INSS_FAIXAS_2026){
-      if(sal > f.min){
-        total += (Math.min(sal, f.max) - f.min) * f.aliq;
+  // ---- Tabelas de INSS e IRRF editáveis, com vigência ----
+  // Cada tabela vale a partir de uma competência (AAAA-MM). Os cálculos de folha, férias, 13º, rescisão
+  // e pró-labore usam a tabela mais recente cuja vigência começa em ou antes da competência calculada.
+  // A tabela padrão de 2026 vem embutida (montada a partir das constantes acima); o escritório pode
+  // cadastrar novas tabelas (ex.: 2027) na aba "Tabelas INSS / IRRF" — em empate de vigência, a do
+  // escritório prevalece sobre a embutida.
+  function tabelaFolhaPadrao2026(){
+    return {
+      id:'padrao-2026', embutida:true,
+      nome:'Tabela 2026 (padrão do sistema)', vigenciaInicio:'2026-01',
+      salarioMinimo: SALARIO_MINIMO_2026,
+      fonte:'INSS: Portaria Interministerial MPS/MF nº 13/2026. IRRF: tabela mensal vigente (Lei 15.191/2025) + redução da Lei 15.270/2025 (isenção efetiva até R$ 5.000).',
+      inss:{ faixas: INSS_FAIXAS_2026.map(f=>({ ate:f.max, aliq:round4(f.aliq*100) })) },
+      prolabore:{ aliquota: round4(INSS_ALIQUOTA_PROLABORE*100) },
+      irrf:{
+        faixas: IRRF_FAIXAS_2026.map(f=>({ ate: isFinite(f.max) ? f.max : null, aliq:round4(f.aliq*100), deducao:f.deduz })),
+        deducaoDependente: IRRF_DEDUCAO_DEPENDENTE_2026,
+        descontoSimplificado: 607.20, aplicarSimplificado: false,
+        redutor:{ ativo:true, isencaoAte:5000, reducaoAte:7350, a:978.62, b:0.133145 },
+      },
+    };
+  }
+  // Confere se uma tabela tem estrutura utilizável (protege os cálculos de tabelas mal preenchidas).
+  // Devolve '' quando está tudo certo, ou a mensagem do primeiro problema encontrado.
+  function tabelaFolhaErro(t){
+    try{
+      if(!t) return 'Tabela vazia.';
+      if(!/^\d{4}-\d{2}$/.test(t.vigenciaInicio||'')) return 'Informe a vigência (mês/ano em que a tabela começa a valer).';
+      const fi = t.inss && t.inss.faixas, fr = t.irrf && t.irrf.faixas;
+      if(!Array.isArray(fi) || !fi.length) return 'A tabela do INSS precisa de ao menos uma faixa.';
+      if(!Array.isArray(fr) || !fr.length) return 'A tabela do IRRF precisa de ao menos uma faixa.';
+      let ant = 0;
+      for(let i=0;i<fi.length;i++){
+        if(!(Number(fi[i].ate) > ant)) return 'INSS, faixa ' + (i+1) + ': o limite "até" deve ser um valor maior que o da faixa anterior.';
+        if(!(Number(fi[i].aliq) >= 0)) return 'INSS, faixa ' + (i+1) + ': informe a alíquota.';
+        ant = Number(fi[i].ate);
       }
+      ant = 0;
+      for(let i=0;i<fr.length;i++){
+        const f = fr[i], ultima = i===fr.length-1;
+        if(!(Number(f.aliq) >= 0)) return 'IRRF, faixa ' + (i+1) + ': informe a alíquota.';
+        if(!(Number(f.deducao) >= 0)) return 'IRRF, faixa ' + (i+1) + ': informe a parcela a deduzir (0 se não houver).';
+        const semLimite = (f.ate===null || f.ate===undefined || f.ate==='');
+        if(semLimite){ if(!ultima) return 'IRRF, faixa ' + (i+1) + ': só a última faixa pode ficar sem limite.'; }
+        else { if(!(Number(f.ate) > ant)) return 'IRRF, faixa ' + (i+1) + ': o limite "até" deve ser maior que o da faixa anterior.'; ant = Number(f.ate); }
+      }
+      if(!(fr[fr.length-1].ate===null || fr[fr.length-1].ate===undefined || fr[fr.length-1].ate==='')) return 'IRRF: a última faixa deve ficar sem limite superior.';
+      if(!(Number(t.irrf.deducaoDependente) >= 0)) return 'IRRF: informe a dedução por dependente.';
+      if(!t.prolabore || !(Number(t.prolabore.aliquota) >= 0)) return 'Informe a alíquota do INSS do pró-labore.';
+      const r = t.irrf.redutor;
+      if(r && r.ativo){
+        if(!(Number(r.isencaoAte) > 0) || !(Number(r.reducaoAte) > Number(r.isencaoAte))) return 'Redutor do IRRF: o limite de "redução parcial até" deve ser maior que o de "isenção até".';
+        if(!(Number(r.a) >= 0) || !(Number(r.b) >= 0)) return 'Redutor do IRRF: informe a constante e o coeficiente da fórmula.';
+      }
+      return '';
+    }catch(e){ return 'Tabela com estrutura inválida.'; }
+  }
+  function tabelaFolhaValida(t){ return !tabelaFolhaErro(t); }
+  function competenciaChave(c){
+    const m = String(c||'').match(/^(\d{4})-(\d{2})/);
+    return m ? m[1]+'-'+m[2] : todayStr().slice(0,7);
+  }
+  function tabelaFolhaVigente(competencia){
+    const comp = competenciaChave(competencia);
+    const todas = [tabelaFolhaPadrao2026()].concat((state.tabelasFolha||[]).filter(tabelaFolhaValida));
+    let melhor = null;
+    todas.forEach(t=>{
+      if(t.vigenciaInicio > comp) return;
+      if(!melhor || t.vigenciaInicio > melhor.vigenciaInicio || (t.vigenciaInicio===melhor.vigenciaInicio && !t.embutida)) melhor = t;
+    });
+    return melhor || tabelaFolhaPadrao2026();
+  }
+  function inssTeto(tab){ const f = tab.inss.faixas; return Number(f[f.length-1].ate); }
+
+  function calcINSS(salarioBruto, tab){
+    tab = tab || tabelaFolhaVigente();
+    const sal = Math.min(Math.max(salarioBruto,0), inssTeto(tab));
+    let total = 0, min = 0;
+    for(const f of tab.inss.faixas){
+      if(sal > min) total += (Math.min(sal, Number(f.ate)) - min) * (Number(f.aliq)/100);
+      min = Number(f.ate);
     }
     return round2(total);
   }
 
-  function calcIRRFTradicional(baseCalculo){
+  function calcIRRFTradicional(baseCalculo, tab){
+    tab = tab || tabelaFolhaVigente();
     const base = Math.max(baseCalculo, 0);
-    for(const f of IRRF_FAIXAS_2026){
-      if(base <= f.max){
-        return round2(Math.max(0, base*f.aliq - f.deduz));
+    for(const f of tab.irrf.faixas){
+      const semLimite = (f.ate===null || f.ate===undefined || f.ate==='');
+      if(semLimite || base <= Number(f.ate)){
+        return round2(Math.max(0, base*(Number(f.aliq)/100) - Number(f.deducao)));
       }
     }
     return 0;
   }
 
-  // Aplica o redutor de 2026 (Lei 15.270/2025) sobre o rendimento bruto mensal:
-  // isenção total até R$5.000, redução parcial até R$7.350, tabela cheia acima disso.
-  function calcIRRF(baseCalculo, rendimentoBruto){
-    const irTrad = calcIRRFTradicional(baseCalculo);
-    if(rendimentoBruto <= 5000) return 0;
+  // Aplica o redutor da tabela (em 2026: Lei 15.270/2025 — isenção total até R$5.000 de rendimento
+  // bruto mensal, redução parcial até R$7.350, tabela cheia acima disso).
+  function calcIRRF(baseCalculo, rendimentoBruto, tab){
+    tab = tab || tabelaFolhaVigente();
+    const irTrad = calcIRRFTradicional(baseCalculo, tab);
+    const r = tab.irrf.redutor;
+    if(!r || !r.ativo) return irTrad;
+    if(rendimentoBruto <= Number(r.isencaoAte)) return 0;
     let redutor = 0;
-    if(rendimentoBruto <= 7350){
-      redutor = Math.max(0, 978.62 - 0.133145*rendimentoBruto);
+    if(rendimentoBruto <= Number(r.reducaoAte)){
+      redutor = Math.max(0, Number(r.a) - Number(r.b)*rendimentoBruto);
     }
     return round2(Math.max(0, irTrad - redutor));
+  }
+
+  // Base de cálculo do IRRF: rendimento bruto menos as deduções legais (INSS + dependentes). Se a
+  // tabela marcar "aplicar desconto simplificado", usa o simplificado quando ele for maior que as
+  // deduções legais (o que for mais vantajoso). Com o simplificado desligado, o resultado é o de sempre.
+  function baseIrrfCalculo(bruto, inss, dependentes, tab){
+    tab = tab || tabelaFolhaVigente();
+    const dep = Number(dependentes)||0;
+    const legais = (Number(inss)||0) + dep*Number(tab.irrf.deducaoDependente);
+    const simpl = Number(tab.irrf.descontoSimplificado)||0;
+    if(tab.irrf.aplicarSimplificado && simpl > legais) return bruto - simpl;
+    return bruto - inss - dep*Number(tab.irrf.deducaoDependente);
   }
 
   function calcFGTS(salarioBruto){ return round2(salarioBruto * FGTS_ALIQUOTA); }
@@ -975,25 +1077,28 @@
   // progressiva do empregado), com teto do INSS geral; sem FGTS (sócio não tem direito).
   // IRRF segue a mesma tabela/redutor 2026 do rendimento do trabalho.
   const INSS_ALIQUOTA_PROLABORE = 0.11;
-  function calcINSSProLabore(valor){
-    const base = Math.min(Math.max(Number(valor)||0,0), TETO_INSS_2026);
-    return round2(base * INSS_ALIQUOTA_PROLABORE);
+  function calcINSSProLabore(valor, tab){
+    tab = tab || tabelaFolhaVigente();
+    const base = Math.min(Math.max(Number(valor)||0,0), inssTeto(tab));
+    return round2(base * (Number(tab.prolabore.aliquota)/100));
   }
-  function calcProLabore(valor, dependentes){
+  function calcProLabore(valor, dependentes, competencia){
+    const tab = tabelaFolhaVigente(competencia);
     const bruto = round2(Number(valor)||0);
-    const inss = calcINSSProLabore(bruto);
-    const baseIrrf = bruto - inss - (Number(dependentes)||0)*IRRF_DEDUCAO_DEPENDENTE_2026;
-    const irrf = calcIRRF(baseIrrf, bruto);
+    const inss = calcINSSProLabore(bruto, tab);
+    const baseIrrf = baseIrrfCalculo(bruto, inss, dependentes, tab);
+    const irrf = calcIRRF(baseIrrf, bruto, tab);
     const liquido = round2(bruto - inss - irrf);
     return { bruto, inss, irrf, liquido };
   }
 
   // Folha de pagamento mensal de um funcionário.
-  function calcFolha(salarioBase, outrosProventos, dependentes, outrosDescontos){
+  function calcFolha(salarioBase, outrosProventos, dependentes, outrosDescontos, competencia){
+    const tab = tabelaFolhaVigente(competencia);
     const bruto = round2((Number(salarioBase)||0) + (Number(outrosProventos)||0));
-    const inss = calcINSS(bruto);
-    const baseIrrf = bruto - inss - (Number(dependentes)||0)*IRRF_DEDUCAO_DEPENDENTE_2026;
-    const irrf = calcIRRF(baseIrrf, bruto);
+    const inss = calcINSS(bruto, tab);
+    const baseIrrf = baseIrrfCalculo(bruto, inss, dependentes, tab);
+    const irrf = calcIRRF(baseIrrf, bruto, tab);
     const descontosExtra = Number(outrosDescontos)||0;
     const liquido = round2(bruto - inss - irrf - descontosExtra);
     const fgts = calcFGTS(bruto);
@@ -1001,20 +1106,22 @@
   }
 
   // Cálculo de férias (Art. 129 a 145 da CLT).
-  function calc13Salario(salarioBase, avos, dependentes){
+  function calc13Salario(salarioBase, avos, dependentes, competencia){
+    const tab = tabelaFolhaVigente(competencia);
     const sal = Number(salarioBase)||0;
     const av = Math.min(Math.max(Number(avos)||0, 0), 12);
     const totalBruto = round2((sal/12)*av);
     const primeiraParcela = round2(totalBruto/2);
-    const inss = calcINSS(totalBruto);
-    const baseIrrf = totalBruto - inss - (Number(dependentes)||0)*IRRF_DEDUCAO_DEPENDENTE_2026;
-    const irrf = calcIRRF(baseIrrf, totalBruto);
+    const inss = calcINSS(totalBruto, tab);
+    const baseIrrf = baseIrrfCalculo(totalBruto, inss, dependentes, tab);
+    const irrf = calcIRRF(baseIrrf, totalBruto, tab);
     const segundaParcela = round2(totalBruto - primeiraParcela - inss - irrf);
     const liquidoTotal = round2(totalBruto - inss - irrf);
     return { totalBruto, primeiraParcela, segundaParcela, inss, irrf, liquidoTotal };
   }
 
-  function calcFerias(salarioBase, diasGozo, diasVendidos, dependentes){
+  function calcFerias(salarioBase, diasGozo, diasVendidos, dependentes, competencia){
+    const tab = tabelaFolhaVigente(competencia);
     const sal = Number(salarioBase)||0;
     const gozo = Math.min(Math.max(Number(diasGozo)||0, 0), 30);
     const vendidos = Math.min(Math.max(Number(diasVendidos)||0, 0), 10);
@@ -1025,9 +1132,9 @@
     const tercoAbono = round2(valorAbono/3);
     // INSS e IRRF incidem sobre férias gozadas + 1/3; o abono pecuniário (dias vendidos) é isento.
     const baseTributavel = round2(valorFeriasGozo + tercoGozo);
-    const inss = calcINSS(baseTributavel);
-    const baseIrrf = baseTributavel - inss - (Number(dependentes)||0)*IRRF_DEDUCAO_DEPENDENTE_2026;
-    const irrf = calcIRRF(baseIrrf, baseTributavel);
+    const inss = calcINSS(baseTributavel, tab);
+    const baseIrrf = baseIrrfCalculo(baseTributavel, inss, dependentes, tab);
+    const irrf = calcIRRF(baseIrrf, baseTributavel, tab);
     const totalBruto = round2(valorFeriasGozo + tercoGozo + valorAbono + tercoAbono);
     const totalLiquido = round2(totalBruto - inss - irrf);
     return { valorFeriasGozo, tercoGozo, valorAbono, tercoAbono, baseTributavel, inss, irrf, totalBruto, totalLiquido };
@@ -1108,9 +1215,10 @@
     // Verbas que sofrem retenção de INSS/IRRF: saldo de salário + 13º proporcional (férias são isentas de INSS,
     // mas o IRRF sobre férias segue a mesma lógica do cálculo de férias em folha à parte).
     const baseInss = round2(saldoSalario + decimoTerceiroProporcional);
-    const inss = calcINSS(baseInss);
-    const baseIrrf = baseInss - inss - dep*IRRF_DEDUCAO_DEPENDENTE_2026;
-    const irrf = calcIRRF(baseIrrf, baseInss);
+    const tab = tabelaFolhaVigente(params.competencia);
+    const inss = calcINSS(baseInss, tab);
+    const baseIrrf = baseIrrfCalculo(baseInss, inss, dep, tab);
+    const irrf = calcIRRF(baseIrrf, baseInss, tab);
 
     const totalBruto = round2(
       saldoSalario + feriasVencidasVal + tercoFeriasVencidas + feriasProporcionais + tercoFeriasProporcionais +
@@ -4367,7 +4475,7 @@
       doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text(fmtBRL(folha.bruto), mx+wFgts3-1.5, y+7, {align:'right'});
       doc.text(fmtBRL(folha.fgts), mx+wFgts3*2-1.5, y+7, {align:'right'});
-      const baseIR = round2((Number(folha.bruto)||0) - (Number(folha.inss)||0) - (func?(Number(func.dependentes)||0)*IRRF_DEDUCAO_DEPENDENTE_2026:0));
+      const baseIR = round2(baseIrrfCalculo(Number(folha.bruto)||0, Number(folha.inss)||0, func ? func.dependentes : 0, tabelaFolhaVigente(folha.competencia)));
       doc.text(fmtBRL(baseIR), mx+wFgts3*3-1.5, y+7, {align:'right'});
       y += 8;
 
@@ -5152,6 +5260,598 @@
     if(!root) return '';
     const els = root.getElementsByTagName(tagName);
     return els.length ? (els[0].textContent || '').trim() : '';
+  }
+
+  // ===== Separador de Produtos Monofásicos (PIS/Pasep e Cofins) =====
+  // Base legal: Lei 10.147/2000 (medicamentos, perfumaria e higiene pessoal), Lei 13.097/2015 arts. 14
+  // a 36 + Decreto 8.442/2015 (bebidas frias), Lei 10.485/2002 (veículos, máquinas e pneus), Lei
+  // 9.718/1998 e Lei 10.560/2002 (combustíveis) — conforme as Tabelas 4.3.10 e 4.3.11 da
+  // EFD-Contribuições (SPED / Receita Federal).
+  // ATENÇÃO: esta lista embutida é um RESUMO. A própria Receita avisa nas tabelas que a ausência de um
+  // NCM não significa que ele não possa receber o tratamento, e as tabelas são atualizadas de tempos em
+  // tempos. Por isso existem 3 resultados possíveis (monofásico / a conferir / fora do regime), as regras
+  // personalizadas do escritório e o ajuste manual por produto.
+  const MONOFASICO_VERSAO_TABELAS = 'Tabelas 4.3.10 e 4.3.11 da EFD-Contribuições (SPED/Receita Federal), versão 1.25 de 30/03/2026';
+  const MONOFASICO_REGRAS = [
+    // ---- Combustíveis (Tab. 4.3.10 grupo 100 / 4.3.11) ----
+    {grupo:'Combustíveis', descricao:'Gasolina (exceto de aviação)', prefixos:['27101259'], base:'Lei 9.718/1998, art. 4º — Tab. 4.3.10, cód. 101', tratamento:'monofasico'},
+    {grupo:'Combustíveis', descricao:'Óleo diesel', prefixos:['27101921'], base:'Lei 9.718/1998, art. 4º — Tab. 4.3.10, cód. 102', tratamento:'monofasico'},
+    {grupo:'Combustíveis', descricao:'Gás liquefeito de petróleo (GLP)', prefixos:['27111910'], base:'Lei 9.718/1998, art. 4º — Tab. 4.3.10, cód. 103', tratamento:'monofasico'},
+    {grupo:'Combustíveis', descricao:'Querosene de aviação', prefixos:['27101911'], base:'Lei 10.560/2002, art. 2º — Tab. 4.3.10, cód. 104', tratamento:'monofasico'},
+    {grupo:'Combustíveis', descricao:'Álcool etílico (inclusive para fins carburantes) — posição 22.07', prefixos:['2207'], base:'Lei 9.718/1998, art. 5º (regime por unidade de medida)', tratamento:'conferir', nota:'Confira o item exato na Tab. 4.3.10/4.3.11: o tratamento depende do produto e do elo da cadeia.'},
+    // ---- Medicamentos (Lei 10.147/2000, art. 1º, I, "a" — Tab. 4.3.10, cód. 201) ----
+    {grupo:'Medicamentos e produtos farmacêuticos', descricao:'Produtos farmacêuticos das posições/itens do art. 1º da Lei 10.147/2000 (30.01, 30.03, 30.04 e itens/códigos do cap. 30 relacionados)',
+      prefixos:['3001','3003','3004','3002101','3002102','3002103','3002201','3002202','3006301','3006302','30029020','30029092','30029099','30051010','30066000'],
+      excecoes:['30039056','30049046'],
+      base:'Lei 10.147/2000, art. 1º, I, "a" — Tab. 4.3.10, cód. 201', tratamento:'conferir',
+      nota:'Além do NCM, o enquadramento do medicamento depende da lista da CMED (negativa / positiva / neutra). Confirme na CMED e ajuste o produto manualmente. Ficam de fora os códigos 3003.90.56 e 3004.90.46.'},
+    // ---- Perfumaria, toucador e higiene pessoal (Lei 10.147/2000, art. 1º, I, "b" — cód. 202) ----
+    {grupo:'Perfumaria, toucador e higiene pessoal', descricao:'Perfumes, águas de colônia, maquiagem, produtos para cabelos, desodorantes e afins (posições 33.03, 33.04, 33.05 e 33.07)', prefixos:['3303','3304','3305','3307'], base:'Lei 10.147/2000, art. 1º, I, "b" — Tab. 4.3.10, cód. 202', tratamento:'monofasico', nota:'A posição 33.06 (higiene bucal) não faz parte da lista.'},
+    {grupo:'Perfumaria, toucador e higiene pessoal', descricao:'Sabões — NCM 3401.20.10', prefixos:['34012010'], base:'Lei 10.147/2000, art. 1º, I, "b" — Tab. 4.3.10, cód. 202', tratamento:'monofasico'},
+    {grupo:'Perfumaria, toucador e higiene pessoal', descricao:'Escovas de dentes — NCM 9603.21.00', prefixos:['96032100'], base:'Lei 10.147/2000, art. 1º, I, "b" — Tab. 4.3.10, cód. 202', tratamento:'monofasico'},
+    {grupo:'Perfumaria, toucador e higiene pessoal', descricao:'Sabões/sabonetes de toucador — NCM 3401.11.90', prefixos:['34011190'], base:'Lei 10.147/2000, art. 1º, I, "b" — Tab. 4.3.10, cód. 202', tratamento:'conferir', nota:'A lei exclui o "Ex 01" do 3401.11.90 — o NCM sozinho não permite ver se o produto é Ex 01.'},
+    // ---- Bebidas frias (Lei 13.097/2015 arts. 14 a 36; Decreto 8.442/2015) ----
+    {grupo:'Bebidas frias', descricao:'Água mineral natural ou gaseificada — NCM 2201.10.00', prefixos:['22011000'], base:'Lei 13.097/2015, arts. 14 a 36 e Decreto 8.442/2015 — Tab. 4.3.10/4.3.11 (cód. 4xx)', tratamento:'monofasico'},
+    {grupo:'Bebidas frias', descricao:'Refrigerantes e águas adicionadas de açúcar/aromatizadas — NCM 2202.10.00', prefixos:['22021000'], base:'Lei 13.097/2015, arts. 14 a 36 e Decreto 8.442/2015 — Tab. 4.3.10/4.3.11', tratamento:'monofasico'},
+    {grupo:'Bebidas frias', descricao:'Cervejas de malte e chope — NCM 2203.00.00', prefixos:['22030000'], base:'Lei 13.097/2015, arts. 14 a 36 e Decreto 8.442/2015 — Tab. 4.3.10/4.3.11', tratamento:'monofasico'},
+    {grupo:'Bebidas frias', descricao:'Cerveja sem álcool e outras bebidas não alcoólicas — NCM 2202.91 e 2202.99', prefixos:['220291','220299'], base:'Lei 13.097/2015, art. 14, parágrafo único', tratamento:'conferir', nota:'Nas posições 22.01/22.02 a lei alcança exclusivamente água, refrigerantes, chás, refrescos, cerveja sem álcool, repositores hidroeletrolíticos, bebidas energéticas e compostos líquidos com inositol, glucoronolactona, taurina ou cafeína.'},
+    {grupo:'Bebidas frias', descricao:'Preparações compostas para elaboração de bebidas — NCM 2106.90.10 (Ex 02)', prefixos:['21069010'], base:'Lei 13.097/2015 / Lei 10.833/2003, art. 58-I', tratamento:'conferir', nota:'Só o Ex 02 (preparações compostas para elaboração de bebida) entra no regime.'},
+    {grupo:'Bebidas frias', descricao:'Gelo — NCM 2201.90.00', prefixos:['22019000'], base:'Lei 13.097/2015, art. 14, parágrafo único; Solução de Consulta Cosit nº 464/2017', tratamento:'nao', nota:'O gelo fica fora do regime monofásico.'},
+    // ---- Veículos, máquinas e pneus (Lei 10.485/2002) ----
+    {grupo:'Veículos', descricao:'Veículos automotores (posições 87.01 a 87.06)', prefixos:['8701','8702','8703','8704','8705','8706'], base:'Lei 10.485/2002, art. 1º — Tab. 4.3.10, cód. 301', tratamento:'monofasico', nota:'Para veículos usados adquiridos para revenda, confira o tratamento específico antes de segregar.'},
+    {grupo:'Máquinas e implementos', descricao:'Máquinas, implementos e partes (7309, 7310.29, 7612.90.12, 8424.81, 84.29, 8430.69.90, 84.32 a 84.37 e 8716.20.00)', prefixos:['7309','731029','76129012','842481','8429','84306990','8432','8433','8434','8435','8436','8437','87162000'], base:'Lei 10.485/2002, art. 1º', tratamento:'conferir', nota:'Partes só entram quando forem implementos agrícolas ou constarem dos Anexos I e II da Lei 10.485/2002.'},
+    {grupo:'Pneus e câmaras de ar', descricao:'Pneus novos de borracha (40.11) e câmaras de ar de borracha (40.13)', prefixos:['4011','4013'], base:'Lei 10.485/2002, art. 5º — Tab. 4.3.10, cód. 304', tratamento:'monofasico'},
+    // ---- Autopeças: lista extensa (Anexos I e II) — cadastrar os NCMs em "NCMs personalizados" ----
+    {grupo:'Autopeças', descricao:'Autopeças dos Anexos I e II da Lei 10.485/2002 (lista extensa — cadastre os NCMs em "NCMs personalizados")', prefixos:[], base:'Lei 10.485/2002, Anexos I e II — Tab. 4.3.10, cód. 302 e 303', tratamento:'monofasico', nota:'A lista oficial é longa e não está embutida: cadastre os NCMs conforme os Anexos I e II da lei.'},
+  ];
+
+  function ncmDigits(v){ return String(v==null?'':v).replace(/\D/g,''); }
+  function fmtNcm(v){
+    const d = ncmDigits(v);
+    if(!d) return '—';
+    if(d.length <= 4) return d;
+    if(d.length <= 6) return d.slice(0,4)+'.'+d.slice(4);
+    return d.slice(0,4)+'.'+d.slice(4,6)+'.'+d.slice(6);
+  }
+  function todasRegrasMonofasico(){
+    const custom = (state.ncmMonofasicoCustom||[]).map(c=>({
+      grupo: c.grupo||'Regras do escritório', descricao: c.descricao||('NCM '+fmtNcm(c.ncm)),
+      prefixos: [ncmDigits(c.ncm)].filter(Boolean), excecoes: [],
+      base: c.base||'Regra cadastrada pelo escritório', tratamento: c.tratamento||'monofasico',
+      nota: c.nota||'', custom:true, id:c.id,
+    }));
+    return MONOFASICO_REGRAS.concat(custom);
+  }
+  // Classifica um NCM. A regra de prefixo MAIS ESPECÍFICO vence (assim uma regra personalizada de 8
+  // dígitos consegue refinar uma regra geral de 4 dígitos). Exceções da lei derrubam a regra.
+  function classificarNcmMonofasico(ncm){
+    const n = ncmDigits(ncm);
+    if(n.length < 4) return { status:'invalido', motivo:'NCM ausente ou incompleto' };
+    let melhor = null, melhorLen = -1;
+    todasRegrasMonofasico().forEach(r=>{
+      if((r.excecoes||[]).some(e=>n.startsWith(e))) return;
+      (r.prefixos||[]).forEach(p=>{ if(p && n.startsWith(p) && p.length > melhorLen){ melhor = r; melhorLen = p.length; } });
+    });
+    if(!melhor) return { status:'nao', motivo:'NCM fora das listas de incidência monofásica' };
+    const status = melhor.tratamento==='monofasico' ? 'monofasico' : (melhor.tratamento==='nao' ? 'nao' : 'conferir');
+    return { status, regra: melhor };
+  }
+  // Classificação efetiva de uma linha: o ajuste manual do contador (ovr) vale mais que a automática.
+  function classeMonofasicaItem(item){
+    if(item && item.ovr==='monofasico') return { status:'monofasico', manual:true, regra:classificarNcmMonofasico(item.ncm).regra };
+    if(item && item.ovr==='nao') return { status:'nao', manual:true };
+    return classificarNcmMonofasico(item ? item.ncm : '');
+  }
+
+  // Lê os ITENS (NCM, descrição, valor) de uma NF-e/NFC-e. Só entram itens de venda (CFOP 5.1xx, 5.40x,
+  // 6.1xx, 6.40x, 7.1xx, 7.40x) — devoluções de compra, remessas etc. não são receita de venda.
+  function parseItensNfeXml(xmlText){
+    let doc;
+    try{ doc = new DOMParser().parseFromString(xmlText, 'application/xml'); }
+    catch(e){ return { ok:false, error:'Arquivo ilegível.' }; }
+    if(doc.getElementsByTagName('parsererror').length) return { ok:false, error:'XML inválido ou corrompido.' };
+    const infNFe = doc.getElementsByTagName('infNFe')[0];
+    if(!infNFe) return { ok:false, error:'Não é uma NF-e/NFC-e (tag infNFe não encontrada).' };
+    const ideEl = infNFe.getElementsByTagName('ide')[0];
+    const dhEmi = getTagText(ideEl, 'dhEmi') || getTagText(ideEl, 'dEmi');
+    const emitEl = infNFe.getElementsByTagName('emit')[0];
+    const cStat = getTagText(doc.getElementsByTagName('infProt')[0], 'cStat');
+    const itens = []; let foraDeVenda = 0;
+    const dets = infNFe.getElementsByTagName('det');
+    for(let i=0;i<dets.length;i++){
+      const prod = dets[i].getElementsByTagName('prod')[0];
+      if(!prod) continue;
+      const cfop = getTagText(prod, 'CFOP');
+      if(!/^(5|6|7)(1\d\d|40\d)$/.test(cfop)){ foraDeVenda++; continue; }
+      const vProd = parseFloat(getTagText(prod, 'vProd')) || 0;
+      const vDesc = parseFloat(getTagText(prod, 'vDesc')) || 0;
+      itens.push({ ncm: getTagText(prod, 'NCM'), descricao: getTagText(prod, 'xProd'), valor: Math.round((vProd - vDesc)*100)/100 });
+    }
+    return {
+      ok:true,
+      chave: (infNFe.getAttribute('Id')||'').replace(/^NFe/i,''),
+      competencia: dhEmi ? dhEmi.slice(0,7) : '',
+      emitDoc: getTagText(emitEl, 'CNPJ') || getTagText(emitEl, 'CPF'),
+      cancelada: (cStat==='101' || cStat==='151' || cStat==='135'),
+      tpNF: getTagText(ideEl, 'tpNF'),
+      itens, foraDeVenda,
+    };
+  }
+
+  // ---- Dados do separador: um documento por empresa + competência (mês) ----
+  // { id: clientId_AAAA-MM, clientId, competencia, itens:[{id,ncm,descricao,valor,ovr,origem}], chaves:[chaves NF-e já lidas] }
+  // 'chaves' evita contar duas vezes a mesma nota se o mesmo XML for importado de novo.
+  async function loadProdutosMonofasicos(){
+    state.produtosMonofasicos = [];
+    try{
+      const keys = await Store.list('produtosmonofasicos:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.produtosMonofasicos.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+  }
+  async function loadNcmMonofasicoCustom(){
+    state.ncmMonofasicoCustom = [];
+    try{
+      const keys = await Store.list('ncmmonofasicocustom:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.ncmMonofasicoCustom.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.ncmMonofasicoCustom.sort((a,b)=>String(a.ncm||'').localeCompare(String(b.ncm||'')));
+  }
+  function monoDocId(clientId, competencia){ return clientId + '_' + competencia; }
+  function monoDocDe(clientId, competencia){ return state.produtosMonofasicos.find(d=>d.id===monoDocId(clientId, competencia)) || null; }
+  function monoNovoDoc(clientId, competencia){ return { id: monoDocId(clientId, competencia), clientId, competencia, itens:[], chaves:[] }; }
+  // Grava um documento (sem re-renderizar). Devolve true/false.
+  async function persistirDocMonofasico(doc){
+    const json = JSON.stringify(doc);
+    if(json.length > 900000){
+      alert('Esta competência ficou grande demais para o banco de dados (limite ~1MB por documento). Divida a importação ou consolide itens parecidos.');
+      return false;
+    }
+    try{ await Store.set('produtosmonofasicos:'+doc.id, json, true); }
+    catch(e){ alert('Não foi possível salvar os produtos.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido')); return false; }
+    return true;
+  }
+  async function salvarDocMonofasicoERecarregar(doc){
+    const ok = await persistirDocMonofasico(doc);
+    await loadProdutosMonofasicos(); render();
+    return ok;
+  }
+  function monoChaveItem(ncm, descricao){ return ncmDigits(ncm) + '|' + String(descricao||'').trim().toLowerCase(); }
+  // Junta itens ao documento: mesmo NCM + mesma descrição => soma os valores (mantém o ajuste manual).
+  function monoMesclarItens(doc, novos, origem){
+    let qtd = 0;
+    novos.forEach(n=>{
+      const chave = monoChaveItem(n.ncm, n.descricao);
+      const existente = doc.itens.find(i=>monoChaveItem(i.ncm, i.descricao)===chave);
+      if(existente){ existente.valor = round2((Number(existente.valor)||0) + (Number(n.valor)||0)); }
+      else{ doc.itens.push({ id: uid(), ncm: ncmDigits(n.ncm), descricao: String(n.descricao||'').trim(), valor: round2(Number(n.valor)||0), ovr: '', origem: origem||'manual' }); }
+      qtd++;
+    });
+    return qtd;
+  }
+  function parseValorBR(s){
+    let v = String(s==null?'':s).trim().replace(/[R$\s]/g,'');
+    if(!v) return 0;
+    if(v.includes(',')) v = v.replace(/\./g,'').replace(',','.');
+    const n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
+  }
+  // Lista colada (planilha/ERP): uma linha por produto — NCM ; Descrição ; Valor (separados por ; ou TAB).
+  function parseListaColadaMonofasico(texto){
+    const itens = [], erros = [];
+    String(texto||'').split(/\r?\n/).forEach((linha, idx)=>{
+      if(!linha.trim()) return;
+      const partes = linha.split(/\t|;/).map(p=>p.trim());
+      const ncm = ncmDigits(partes[0]);
+      if(!ncm){
+        if(idx===0) return; // cabeçalho ("NCM;Descrição;Valor")
+        erros.push('Linha ' + (idx+1) + ': NCM não encontrado — "' + linha.slice(0,40) + '"'); return;
+      }
+      itens.push({ ncm, descricao: partes[1] || 'Produto NCM ' + fmtNcm(ncm), valor: parseValorBR(partes[2]) });
+    });
+    return { itens, erros };
+  }
+  // Importa vários XMLs de NF-e/NFC-e de VENDA da empresa selecionada.
+  async function importarXmlsMonofasico(files, clientId){
+    const cliente = state.clients.find(c=>c.id===clientId);
+    const docEmpresa = ncmDigits(cliente ? cliente.doc : '');
+    const r = { lidas:0, notas:0, itens:0, duplicadas:0, canceladas:0, outroEmitente:0, naoSaida:0, invalidas:0, itensForaDeVenda:0, competencias:{} };
+    const docs = {}; // competência -> documento em edição
+    for(const f of files){
+      r.lidas++;
+      let texto = '';
+      try{ texto = await f.text(); }catch(e){ r.invalidas++; continue; }
+      const p = parseItensNfeXml(texto);
+      if(!p.ok){ r.invalidas++; continue; }
+      if(p.cancelada){ r.canceladas++; continue; }
+      if(p.tpNF === '0'){ r.naoSaida++; continue; }
+      if(docEmpresa.length >= 11 && ncmDigits(p.emitDoc) !== docEmpresa){ r.outroEmitente++; continue; }
+      if(!p.competencia){ r.invalidas++; continue; }
+      if(!docs[p.competencia]) docs[p.competencia] = monoDocDe(clientId, p.competencia) ? JSON.parse(JSON.stringify(monoDocDe(clientId, p.competencia))) : monoNovoDoc(clientId, p.competencia);
+      const doc = docs[p.competencia];
+      if(p.chave && doc.chaves.includes(p.chave)){ r.duplicadas++; continue; }
+      r.itensForaDeVenda += p.foraDeVenda;
+      if(p.chave) doc.chaves.push(p.chave);
+      r.itens += monoMesclarItens(doc, p.itens, 'xml');
+      r.notas++;
+      r.competencias[p.competencia] = (r.competencias[p.competencia]||0) + 1;
+    }
+    for(const comp of Object.keys(docs)){
+      const ok = await persistirDocMonofasico(docs[comp]);
+      if(!ok) delete r.competencias[comp];
+    }
+    await loadProdutosMonofasicos();
+    return r;
+  }
+  function empresaTemAtividadeComercio(c){
+    if(!c) return null;
+    const txt = ((c.mainActivity||'') + ' ' + (c.secondaryActivities||'')).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+    if(!txt.trim()) return null;
+    return /comercio|varejista|atacadista|revenda|distribuidor|farmacia|drogaria|supermercado|mercearia|posto de combustiveis|loja/.test(txt);
+  }
+  // Totais por classificação de uma lista de itens.
+  function monoResumo(itens){
+    const r = { total:0, monofasico:0, conferir:0, nao:0, invalido:0, porGrupo:{} };
+    (itens||[]).forEach(i=>{
+      const v = Number(i.valor)||0;
+      const c = classeMonofasicaItem(i);
+      r.total += v; r[c.status] += v;
+      if(c.status==='monofasico'){
+        const g = (c.regra && c.regra.grupo) || (i.ovr==='monofasico' ? 'Confirmado manualmente' : 'Outros');
+        r.porGrupo[g] = (r.porGrupo[g]||0) + v;
+      }
+    });
+    ['total','monofasico','conferir','nao','invalido'].forEach(k=>{ r[k] = round2(r[k]); });
+    Object.keys(r.porGrupo).forEach(g=>{ r.porGrupo[g] = round2(r.porGrupo[g]); });
+    return r;
+  }
+
+  // ---- Ações de gravação ----
+  function monoCopiaDoc(empresaId, comp){
+    const base = monoDocDe(empresaId, comp);
+    return base ? JSON.parse(JSON.stringify(base)) : monoNovoDoc(empresaId, comp);
+  }
+  async function monoSalvarItem(empresaId, comp, d){
+    const doc = monoCopiaDoc(empresaId, comp);
+    if(d.id){
+      const it = doc.itens.find(i=>i.id===d.id);
+      if(it){ it.ncm = ncmDigits(d.ncm); it.descricao = String(d.descricao||'').trim(); it.valor = round2(Number(d.valor)||0); it.ovr = d.ovr||''; }
+    } else {
+      monoMesclarItens(doc, [{ ncm:d.ncm, descricao:d.descricao, valor:d.valor }], 'manual');
+      const it = doc.itens.find(i=>monoChaveItem(i.ncm, i.descricao)===monoChaveItem(d.ncm, d.descricao));
+      if(it && d.ovr) it.ovr = d.ovr;
+    }
+    return salvarDocMonofasicoERecarregar(doc);
+  }
+  async function monoExcluirItem(empresaId, comp, itemId){
+    const doc = monoCopiaDoc(empresaId, comp);
+    doc.itens = doc.itens.filter(i=>i.id!==itemId);
+    return salvarDocMonofasicoERecarregar(doc);
+  }
+  async function monoDefinirAjuste(empresaId, comp, itemId, ovr){
+    const doc = monoCopiaDoc(empresaId, comp);
+    const it = doc.itens.find(i=>i.id===itemId);
+    if(it) it.ovr = ovr || '';
+    return salvarDocMonofasicoERecarregar(doc);
+  }
+  async function monoLimparCompetencia(empresaId, comp){
+    try{ await Store.delete('produtosmonofasicos:'+monoDocId(empresaId, comp), true); }catch(e){}
+    await loadProdutosMonofasicos(); render();
+  }
+  async function saveNcmMonofasicoCustom(c){
+    if(!c.id) c.id = uid();
+    try{ await Store.set('ncmmonofasicocustom:'+c.id, JSON.stringify(c), true); }
+    catch(e){ alert('Não foi possível salvar a regra.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido')); return false; }
+    await loadNcmMonofasicoCustom(); render();
+    return true;
+  }
+  async function deleteNcmMonofasicoCustom(id){
+    try{ await Store.delete('ncmmonofasicocustom:'+id, true); }catch(e){}
+    await loadNcmMonofasicoCustom(); render();
+  }
+
+  // ---- Tela ----
+  function monoPct(v, total){ return total ? ((v/total)*100).toFixed(1).replace('.',',') + '%' : '0,0%'; }
+  function monoStatusTag(c){
+    if(c.status==='monofasico') return `<span class="tag sit-ativa">Monofásico${c.manual?' (confirmado)':''}</span>`;
+    if(c.status==='conferir') return `<span class="tag sit-pendente">A conferir</span>`;
+    if(c.status==='invalido') return `<span class="tag sit-baixada">NCM inválido</span>`;
+    return `<span class="tag sit-outra">Tributação normal</span>`;
+  }
+  const MONO_LIMITE_LINHAS = 400;
+
+  function monofasicosPanelHtml(){
+    const empresaId = deptOneSelectedClient();
+    const cabecalho = `
+      <div class="panel-head"><h3>Separador de Produtos Monofásicos (PIS/Pasep e Cofins)</h3></div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Para empresas que vendem produtos (comércio). Nos produtos monofásicos o PIS/Pasep e a Cofins são cobrados uma única vez, no início da cadeia (fábrica ou importador) — por alíquotas diferenciadas ou por unidade de medida — e a revenda sai com alíquota zero (CST 04 na EFD-Contribuições). Este separador classifica cada produto pelo <strong>NCM</strong>, conforme as Tabelas 4.3.10 e 4.3.11 da EFD-Contribuições (SPED/Receita Federal), para você segregar essa receita: no <strong>Simples Nacional</strong>, informando-a separadamente no PGDAS-D (o PIS/Cofins deixa de compor o DAS sobre ela); nos demais regimes, usando o CST 04.</div>
+      <div class="legis-note" style="margin-bottom:14px;">⚠️ <strong>Vale para competências até 12/2026.</strong> A partir de 01/2027 o PIS e a Cofins são extintos e substituídos pela CBS (LC 214/2025) — este separador precisará ser revisto para esse período. A lista de NCMs embutida é um resumo das tabelas oficiais (${escapeHtml(MONOFASICO_VERSAO_TABELAS)}): a própria Receita alerta que a ausência de um NCM na tabela não impede o tratamento — por isso há o resultado "A conferir", as regras personalizadas e o ajuste manual por produto.</div>
+    `;
+    if(!empresaId) return cabecalho + deptSelecioneUmaEmpresaHtml('separar os produtos monofásicos');
+
+    const cliente = state.clients.find(c=>c.id===empresaId);
+    const comp = state.monofasicoCompetencia || state.competenciaAtiva;
+    const doc = monoDocDe(empresaId, comp);
+    const itens = doc ? doc.itens : [];
+    const res = monoResumo(itens);
+    const comercio = empresaTemAtividadeComercio(cliente);
+    const avisoComercio = comercio===true
+      ? `<span class="tag sit-ativa">Atividade de comércio identificada no cadastro</span>`
+      : comercio===false
+        ? `<span class="tag sit-pendente">Não identifiquei atividade de comércio no cadastro</span> <span style="font-size:12px; color:var(--ink-soft);">— este separador serve a empresas que vendem produtos; confira antes de usar.</span>`
+        : `<span class="tag sit-outra">Cadastro sem descrição de atividade</span> <span style="font-size:12px; color:var(--ink-soft);">— confirme se a empresa vende produtos.</span>`;
+
+    const ordem = { monofasico:0, conferir:1, invalido:2, nao:3 };
+    const linhas = itens.map(i=>({ item:i, cls:classeMonofasicaItem(i) }))
+      .sort((a,b)=> (ordem[a.cls.status]-ordem[b.cls.status]) || ((Number(b.item.valor)||0)-(Number(a.item.valor)||0)));
+    const linhasVisiveis = linhas.slice(0, MONO_LIMITE_LINHAS);
+    const grupos = Object.keys(res.porGrupo).sort((a,b)=>res.porGrupo[b]-res.porGrupo[a]);
+
+    return cabecalho + `
+      <div class="form-hint" style="margin:0 0 6px; font-weight:700;">Empresa: ${escapeHtml(cliente ? cliente.name : '—')}</div>
+      <div style="margin-bottom:14px;">${avisoComercio}</div>
+      <div class="form-row">
+        <div class="field"><label>Competência (mês das vendas)</label><input type="month" id="monoCompetencia" value="${comp}"/></div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+        <button type="button" class="btn-add" id="monoNovoItemBtn">+ Adicionar produto</button>
+        <button type="button" class="btn-detail" id="monoColarBtn">Colar lista (NCM; Descrição; Valor)</button>
+        <button type="button" class="btn-detail" id="monoXmlBtn">Importar XML de NF-e / NFC-e</button>
+        <input type="file" id="monoXmlInput" accept=".xml,text/xml,application/xml" multiple style="display:none"/>
+        <button type="button" class="btn-detail" id="monoPdfBtn">📄 Relatório (PDF)</button>
+        ${doc ? `<button type="button" class="btn-sm danger" id="monoLimparBtn">Limpar esta competência</button>` : ''}
+      </div>
+      <div class="form-hint" style="margin:0 0 16px;">O XML importado traz só as <strong>vendas</strong> da empresa (CFOP 5.1xx/5.40x/6.1xx/6.40x/7.1xx): devoluções, remessas, notas canceladas e notas de outros emitentes são ignoradas, e a mesma nota nunca é contada duas vezes. Devoluções de venda recebidas devem ser lançadas à mão, com valor negativo.</div>
+
+      <div class="form-section-title" style="margin-top:0;">Resumo — ${monthLabel(comp)}/${comp.slice(0,4)}</div>
+      <div class="cc-list">
+        <div class="cc-row"><div class="cr-main"><div class="cr-title">Total de vendas lançadas</div><div class="cr-meta">${itens.length} linha(s) de produto</div></div><span class="tag sit-outra">${fmtBRL(res.total)}</span></div>
+        <div class="cc-row"><div class="cr-main"><div class="cr-title">Receita monofásica — segregar</div><div class="cr-meta">${monoPct(res.monofasico, res.total)} do total · confirmada pelo NCM (ou ajuste manual)</div></div><span class="tag sit-ativa">${fmtBRL(res.monofasico)}</span></div>
+        <div class="cc-row"><div class="cr-main"><div class="cr-title">A conferir</div><div class="cr-meta">${monoPct(res.conferir, res.total)} do total · NCM candidato que exige verificação (ex.: lista da CMED) — não entra na segregação até você confirmar</div></div><span class="tag sit-pendente">${fmtBRL(res.conferir)}</span></div>
+        <div class="cc-row"><div class="cr-main"><div class="cr-title">Tributação normal (fora do regime monofásico)</div><div class="cr-meta">${monoPct(res.nao, res.total)} do total</div></div><span class="tag sit-outra">${fmtBRL(res.nao)}</span></div>
+        ${res.invalido ? `<div class="cc-row"><div class="cr-main"><div class="cr-title">Sem NCM válido</div><div class="cr-meta">Corrija o NCM desses produtos para classificá-los</div></div><span class="tag sit-baixada">${fmtBRL(res.invalido)}</span></div>` : ''}
+      </div>
+      ${grupos.length ? `<div class="form-hint" style="margin:10px 0 0;"><strong>Receita monofásica por grupo:</strong> ${grupos.map(g=>escapeHtml(g)+' — '+fmtBRL(res.porGrupo[g])).join(' · ')}</div>` : ''}
+
+      <div class="form-section-title">Produtos da competência</div>
+      ${!itens.length ? `<div class="empty">Nenhum produto lançado nesta competência. Importe os XMLs de venda, cole uma lista ou adicione manualmente.</div>` : `
+        <table>
+          <thead><tr><th>NCM</th><th>Produto</th><th>Classificação</th><th>Enquadramento / base legal</th><th style="text-align:right">Valor</th><th>Ajuste manual</th><th></th></tr></thead>
+          <tbody>
+            ${linhasVisiveis.map(({item:i, cls})=>`
+              <tr>
+                <td class="mono" style="white-space:nowrap;">${fmtNcm(i.ncm)}</td>
+                <td>${escapeHtml(i.descricao||'—')}</td>
+                <td>${monoStatusTag(cls)}</td>
+                <td style="font-size:11.5px; color:var(--ink-soft); max-width:300px;">${
+                  cls.status==='invalido' ? escapeHtml(cls.motivo||'') :
+                  cls.regra ? '<strong>'+escapeHtml(cls.regra.grupo)+'</strong><br/>'+escapeHtml(cls.regra.base||'')+(cls.regra.nota?'<br/><em>'+escapeHtml(cls.regra.nota)+'</em>':'') :
+                  escapeHtml(cls.motivo||'')
+                }</td>
+                <td style="text-align:right" class="mono">${fmtBRL(i.valor)}</td>
+                <td>
+                  <select data-mono-ajuste="${i.id}" style="font-size:12px;">
+                    <option value="" ${!i.ovr?'selected':''}>Automática</option>
+                    <option value="monofasico" ${i.ovr==='monofasico'?'selected':''}>Confirmar monofásico</option>
+                    <option value="nao" ${i.ovr==='nao'?'selected':''}>Não é monofásico</option>
+                  </select>
+                </td>
+                <td style="white-space:nowrap;"><button class="btn-sm" data-mono-editar="${i.id}">Editar</button> <button class="btn-sm danger" data-mono-excluir="${i.id}">Excluir</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        ${linhas.length > MONO_LIMITE_LINHAS ? `<div class="form-hint" style="margin-top:8px;">Mostrando ${MONO_LIMITE_LINHAS} de ${linhas.length} linhas (as de maior relevância primeiro). Os totais e o relatório em PDF consideram todas.</div>` : ''}
+      `}
+
+      <details style="margin-top:22px;">
+        <summary style="cursor:pointer; font-weight:700; font-size:14px;">Regras e base legal usadas · NCMs personalizados</summary>
+        <div class="form-hint" style="margin:10px 0;">Fontes oficiais:
+          <a href="https://www.sped.fazenda.gov.br/spedtabelas/AppConsulta/publico/aspx/ConsultaTabelasExternas.aspx?CodSistema=SpedPisCofins" target="_blank" rel="noopener">Portal SPED Tabelas (Sistema PIS/Cofins)</a> ·
+          <a href="http://sped.rfb.gov.br/arquivo/show/1638" target="_blank" rel="noopener">Tabela 4.3.10 (v1.25)</a> ·
+          <a href="http://www.planalto.gov.br/ccivil_03/leis/l10147.htm" target="_blank" rel="noopener">Lei 10.147/2000</a> ·
+          <a href="https://www.planalto.gov.br/ccivil_03/leis/2002/l10485compilado.htm" target="_blank" rel="noopener">Lei 10.485/2002 (Anexos I e II — autopeças)</a>.
+          Quando a Receita atualizar a tabela ou você precisar de um NCM que não está aqui (por exemplo, as autopeças dos Anexos I e II), cadastre uma regra personalizada — o NCM mais específico sempre prevalece.</div>
+        <button type="button" class="btn-add" id="monoNovaRegraBtn" style="margin-bottom:12px;">+ Nova regra personalizada</button>
+        <table>
+          <thead><tr><th>Grupo</th><th>Regra</th><th>NCMs</th><th>Tratamento</th><th>Base legal</th><th></th></tr></thead>
+          <tbody>
+            ${todasRegrasMonofasico().map(r=>`
+              <tr>
+                <td>${escapeHtml(r.grupo)}${r.custom?' <span class="tag sit-outra">do escritório</span>':''}</td>
+                <td style="font-size:12px;">${escapeHtml(r.descricao)}${r.excecoes && r.excecoes.length ? '<br/><em style="color:var(--ink-soft);">Exceto: '+r.excecoes.map(fmtNcm).join(', ')+'</em>' : ''}${r.nota?'<br/><em style="color:var(--ink-soft);">'+escapeHtml(r.nota)+'</em>':''}</td>
+                <td class="mono" style="font-size:11px; max-width:220px;">${r.prefixos.length ? r.prefixos.map(fmtNcm).join(', ') : '—'}</td>
+                <td>${r.tratamento==='monofasico' ? '<span class="tag sit-ativa">Monofásico</span>' : r.tratamento==='nao' ? '<span class="tag sit-outra">Fora do regime</span>' : '<span class="tag sit-pendente">A conferir</span>'}</td>
+                <td style="font-size:11.5px; color:var(--ink-soft);">${escapeHtml(r.base||'')}</td>
+                <td>${r.custom ? `<button class="btn-sm danger" data-mono-del-regra="${r.id}">Excluir</button>` : ''}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </details>
+    `;
+  }
+
+  function monoItemModalHtml(){
+    const d = state.monoItemModalData;
+    if(!d) return '';
+    const auto = classificarNcmMonofasico(d.ncm);
+    const autoTxt = !ncmDigits(d.ncm) ? 'Informe o NCM para ver a classificação automática.' :
+      (auto.status==='monofasico' ? 'Automática: Monofásico — ' + auto.regra.grupo :
+       auto.status==='conferir' ? 'Automática: A conferir — ' + auto.regra.grupo :
+       auto.status==='invalido' ? 'Automática: ' + auto.motivo : 'Automática: Tributação normal');
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar produto' : 'Adicionar produto'}</h3>
+          <form id="monoItemForm">
+            <div class="form-row">
+              <div class="field"><label>NCM</label><input type="text" id="monoItemNcm" value="${escapeHtml(d.ncm?fmtNcm(d.ncm):'')}" placeholder="0000.00.00" required/></div>
+              <div class="field"><label>Valor vendido (R$)</label><input type="number" step="0.01" id="monoItemValor" value="${d.valor!=null?d.valor:''}" required/></div>
+            </div>
+            <div class="field"><label>Descrição do produto</label><input type="text" id="monoItemDescricao" value="${escapeHtml(d.descricao||'')}"/></div>
+            <div class="form-hint" id="monoItemPreview" style="margin:-6px 0 12px;">${escapeHtml(autoTxt)}</div>
+            <div class="field"><label>Classificação</label>
+              <select id="monoItemOvr">
+                <option value="" ${!d.ovr?'selected':''}>Automática (pelo NCM)</option>
+                <option value="monofasico" ${d.ovr==='monofasico'?'selected':''}>Confirmar como monofásico</option>
+                <option value="nao" ${d.ovr==='nao'?'selected':''}>Não é monofásico</option>
+              </select>
+            </div>
+            <div class="form-hint" style="margin:-6px 0 12px;">Valores negativos servem para devoluções de venda.</div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="monoItemCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function monoColarModalHtml(){
+    if(!state.monoColarModalData) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Colar lista de produtos</h3>
+          <form id="monoColarForm">
+            <div class="form-hint" style="margin:0 0 10px;">Uma linha por produto, no formato <strong>NCM ; Descrição ; Valor</strong> (separe com ponto e vírgula ou TAB — dá para copiar direto de uma planilha). Valores no padrão brasileiro (1.234,56). Produtos com o mesmo NCM e a mesma descrição são somados.</div>
+            <div class="field"><textarea id="monoColarTexto" rows="10" style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:12px;" placeholder="3303.00.10; Perfume masculino 100ml; 1.250,00&#10;2202.10.00; Refrigerante cola 2L; 830,50&#10;1905.90.90; Biscoito recheado; 410,00" required></textarea></div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="monoColarCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Importar lista</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function monoRegraModalHtml(){
+    const d = state.monoRegraModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Nova regra personalizada de NCM</h3>
+          <form id="monoRegraForm">
+            <div class="form-row">
+              <div class="field"><label>NCM (ou início do NCM)</label><input type="text" id="monoRegraNcm" placeholder="Ex: 8708.30.90 ou 4016" required/></div>
+              <div class="field"><label>Tratamento</label>
+                <select id="monoRegraTratamento">
+                  <option value="monofasico">Monofásico</option>
+                  <option value="conferir">A conferir</option>
+                  <option value="nao">Fora do regime</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Grupo</label><input type="text" id="monoRegraGrupo" placeholder="Ex: Autopeças" required/></div>
+              <div class="field"><label>Descrição</label><input type="text" id="monoRegraDescricao" placeholder="Ex: Pastilhas de freio"/></div>
+            </div>
+            <div class="field"><label>Base legal</label><input type="text" id="monoRegraBase" placeholder="Ex: Lei 10.485/2002, Anexo I"/></div>
+            <div class="field"><label>Observação (opcional)</label><input type="text" id="monoRegraNota"/></div>
+            <div class="form-hint" style="margin:-4px 0 12px;">Um NCM completo (8 dígitos) sempre prevalece sobre uma regra geral de menos dígitos.</div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="monoRegraCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar regra</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  // Relatório para o cliente / apoio à segregação de receita (PGDAS-D ou EFD-Contribuições).
+  function gerarRelatorioMonofasicoPDF(empresaId, comp){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const cliente = state.clients.find(c=>c.id===empresaId);
+    const d0 = monoDocDe(empresaId, comp);
+    const itens = d0 ? d0.itens : [];
+    if(!itens.length){ alert('Não há produtos lançados nesta competência.'); return; }
+    const res = monoResumo(itens);
+    const agrega = (status)=>{
+      const m = {};
+      itens.forEach(i=>{
+        const c = classeMonofasicaItem(i);
+        if(c.status!==status) return;
+        const k = ncmDigits(i.ncm);
+        if(!m[k]) m[k] = { ncm:k, grupo:(c.regra && c.regra.grupo) || 'Ajuste manual', exemplo:i.descricao||'', qtd:0, valor:0 };
+        m[k].qtd++; m[k].valor += Number(i.valor)||0;
+      });
+      return Object.values(m).sort((a,b)=>b.valor-a.valor);
+    };
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const mx = 12, cw = pageW - mx*2, rowH = 6.5;
+    let y = pdfHeader(doc, 'Segregação de Receitas — Produtos Monofásicos', cliente ? cliente.name : '—', cliente ? cliente.logo : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('Competência: ' + monthLabel(comp) + '/' + comp.slice(0,4) + (cliente && cliente.doc ? '   ·   CNPJ/CPF: ' + cliente.doc : ''), mx, y);
+    y += 9;
+
+    // Tabela em grade: y = topo da linha; cada linha ocupa [y, y+rowH]. Margem de segurança para o rodapé.
+    const tabela = (titulo, colunas, linhas)=>{
+      if(y > 200){ doc.addPage(); y = 15; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
+      doc.text(titulo, mx, y); y += 4;
+      let acc = mx;
+      const cols = colunas.map(c=>{ const x0 = acc, wmm = cw*c.w; acc += wmm; return Object.assign({}, c, {x0, wmm}); });
+      const cabecalho = ()=>{
+        doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(20,25,30);
+        cols.forEach(c=>{
+          doc.setFillColor(232,235,240); doc.rect(c.x0, y, c.wmm, rowH, 'F');
+          doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0, y, c.wmm, rowH, 'S');
+          doc.text(c.label, c.align==='right' ? c.x0+c.wmm-1.5 : c.x0+1.5, y+rowH-2, c.align ? {align:c.align} : undefined);
+        });
+        y += rowH; doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      };
+      cabecalho();
+      linhas.forEach(l=>{
+        if(y + rowH > 218){ doc.addPage(); y = 15; cabecalho(); }
+        doc.setDrawColor(210,210,210); doc.setLineWidth(0.15); doc.setTextColor(20,25,30);
+        cols.forEach((c,i)=>{
+          doc.rect(c.x0, y, c.wmm, rowH, 'S');
+          const txt = doc.splitTextToSize(String(l[i]), c.wmm-3)[0] || '';
+          doc.text(txt, c.align==='right' ? c.x0+c.wmm-1.5 : c.x0+1.5, y+rowH-2, c.align ? {align:c.align} : undefined);
+        });
+        y += rowH;
+      });
+      y += 7;
+    };
+
+    const linhasResumo = [
+      ['Total de vendas lançadas', fmtBRL(res.total), '100,0%'],
+      ['Receita monofásica — segregar', fmtBRL(res.monofasico), monoPct(res.monofasico, res.total)],
+      ['A conferir (não entra na segregação até confirmar)', fmtBRL(res.conferir), monoPct(res.conferir, res.total)],
+      ['Tributação normal (fora do regime monofásico)', fmtBRL(res.nao), monoPct(res.nao, res.total)],
+    ];
+    if(res.invalido) linhasResumo.push(['Sem NCM válido', fmtBRL(res.invalido), monoPct(res.invalido, res.total)]);
+    tabela('Resumo', [{label:'CLASSIFICAÇÃO', w:0.58}, {label:'VALOR', w:0.22, align:'right'}, {label:'% DO TOTAL', w:0.20, align:'right'}], linhasResumo);
+
+    const colsNcm = [{label:'NCM', w:0.13}, {label:'GRUPO — PRODUTO (EXEMPLO)', w:0.55}, {label:'QTD.', w:0.07, align:'right'}, {label:'VALOR', w:0.25, align:'right'}];
+    const mono = agrega('monofasico');
+    if(mono.length) tabela('Receita monofásica por NCM (PIS/Pasep e Cofins cobrados na origem)', colsNcm, mono.map(m=>[fmtNcm(m.ncm), m.grupo + ' — ' + m.exemplo, String(m.qtd), fmtBRL(m.valor)]));
+    const conf = agrega('conferir');
+    if(conf.length) tabela('Produtos a conferir (exigem verificação adicional)', colsNcm, conf.map(m=>[fmtNcm(m.ncm), m.grupo + ' — ' + m.exemplo, String(m.qtd), fmtBRL(m.valor)]));
+
+    if(y > 190){ doc.addPage(); y = 15; }
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(20,25,30);
+    doc.text('Como usar', mx, y); y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    const orient = doc.splitTextToSize('Simples Nacional: informe a receita monofásica separadamente no PGDAS-D (revenda de mercadorias com tributação monofásica de PIS/Pasep e Cofins), de modo que essas contribuições não componham o DAS sobre ela. Lucro presumido/real: registre a revenda dos produtos monofásicos com CST 04 (operação tributável monofásica — revenda a alíquota zero) na EFD-Contribuições.', cw);
+    doc.text(orient, mx, y);
+
+    pdfFooterDisclaimer(doc, 'Classificação automática pelo NCM, com base nas Tabelas 4.3.10 e 4.3.11 da EFD-Contribuições (SPED/Receita Federal) e nas Leis 10.147/2000, 13.097/2015 e 10.485/2002. Itens "a conferir" dependem de verificação adicional (ex.: lista da CMED). Válido para competências até 12/2026 — a partir de 01/2027 o PIS/Cofins é substituído pela CBS (LC 214/2025). Confira antes de utilizar.');
+    doc.save('segregacao-monofasico-' + (cliente ? cliente.name : 'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + comp.replace('-','') + '.pdf');
   }
 
   // Nomes sugeridos para as abas mais comuns do Plano de Contas Referencial oficial (ECF/RFB).
@@ -8455,6 +9155,9 @@
     await loadBaixasEmpresas();
     await loadBaixaEmpresaDocumentos();
     await loadRecibosHonorarios();
+    await loadProdutosMonofasicos();
+    await loadNcmMonofasicoCustom();
+    await loadTabelasFolha();
     await loadInscricoes();
     await loadAlvaras();
     await loadProcessosFiscais();
@@ -8495,6 +9198,9 @@
       documentosSocietarios: state.documentosSocietarios,
       baixasEmpresas: state.baixasEmpresas,
       baixaEmpresaDocumentos: state.baixaEmpresaDocumentos,
+      produtosMonofasicos: state.produtosMonofasicos,
+      ncmMonofasicoCustom: state.ncmMonofasicoCustom,
+      tabelasFolha: state.tabelasFolha,
       inscricoes: state.inscricoes,
       alvaras: state.alvaras,
       processosFiscais: state.processosFiscais,
@@ -8563,6 +9269,9 @@
       {key:'documentosSocietarios', prefix:'documentossocietarios:', idField:'id'},
       {key:'baixasEmpresas', prefix:'baixasempresas:', idField:'id'},
       {key:'baixaEmpresaDocumentos', prefix:'baixaempresadocumentos:', idField:'id'},
+      {key:'produtosMonofasicos', prefix:'produtosmonofasicos:', idField:'id'},
+      {key:'ncmMonofasicoCustom', prefix:'ncmmonofasicocustom:', idField:'id'},
+      {key:'tabelasFolha', prefix:'tabelasfolha:', idField:'id'},
       {key:'inscricoes', prefix:'inscricoes:', idField:'id'},
       {key:'alvaras', prefix:'alvaras:', idField:'id'},
       {key:'processosFiscais', prefix:'processosfiscais:', idField:'id'},
@@ -11696,7 +12405,7 @@
       </div>
       <button type="button" class="btn-calc" id="calcProLaboreBtn">Calcular e Salvar</button>
       <div id="prolaboreResult"></div>
-      <div class="legis-note">INSS do pró-labore: 11% fixo sobre o valor (teto do INSS geral de ${fmtBRL(TETO_INSS_2026)}), conforme Lei 8.212/91 — não usa a tabela progressiva do empregado nem tem FGTS. IRRF segue a mesma tabela e redutor 2026 do rendimento do trabalho.</div>
+      ${(function(){ const tb = tabelaFolhaVigente(state.competenciaAtiva); return `<div class="legis-note">INSS do pró-labore: ${String(tb.prolabore.aliquota).replace('.',',')}% fixo sobre o valor (teto do INSS geral de ${fmtBRL(inssTeto(tb))}), conforme Lei 8.212/91 — não usa a tabela progressiva do empregado nem tem FGTS. IRRF segue a mesma tabela do rendimento do trabalho. Tabela em uso: <strong>${escapeHtml(tb.nome)}</strong> — veja/edite em "Tabelas INSS / IRRF".</div>`; })()}
 
       ${(function(){
         const lista = state.prolabores.filter(p=>p.competencia===state.competenciaAtiva && isClientInScope(p.clientId));
@@ -11951,9 +12660,270 @@
     `;
   }
 
+  // ===== Tabelas INSS / IRRF (aba do Departamento Pessoal) =====
+  async function loadTabelasFolha(){
+    state.tabelasFolha = [];
+    try{
+      const keys = await Store.list('tabelasfolha:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.tabelasFolha.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.tabelasFolha.sort((a,b)=>String(b.vigenciaInicio||'').localeCompare(String(a.vigenciaInicio||'')));
+  }
+  async function saveTabelaFolha(t){
+    if(!t.id) t.id = uid();
+    try{ await Store.set('tabelasfolha:'+t.id, JSON.stringify(t), true); }
+    catch(e){ alert('Não foi possível salvar a tabela.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido')); return false; }
+    await loadTabelasFolha(); render();
+    return true;
+  }
+  async function deleteTabelaFolha(id){
+    try{ await Store.delete('tabelasfolha:'+id, true); }catch(e){}
+    if(state.tabelaFolhaVerId===id) state.tabelaFolhaVerId = '';
+    await loadTabelasFolha(); render();
+  }
+  function tabelasFolhaTodas(){
+    return [tabelaFolhaPadrao2026()].concat(state.tabelasFolha||[])
+      .sort((a,b)=> String(b.vigenciaInicio||'').localeCompare(String(a.vigenciaInicio||'')) || ((a.embutida?1:0)-(b.embutida?1:0)));
+  }
+  // Parcela a deduzir "equivalente" de cada faixa progressiva do INSS (para quem calcula pela fórmula
+  // valor × alíquota − parcela). É só informativa: o sistema calcula faixa a faixa.
+  function inssParcelasADeduzir(faixas){
+    let ded = 0;
+    return faixas.map((f,i)=>{
+      if(i>0) ded += Number(faixas[i-1].ate) * (Number(f.aliq) - Number(faixas[i-1].aliq)) / 100;
+      return round2(ded);
+    });
+  }
+  function pctBR(v){ return String(round4(v)).replace('.', ','); }
+  function vigenciaLabel(v){ return /^\d{4}-\d{2}$/.test(v||'') ? v.slice(5,7)+'/'+v.slice(0,4) : '—'; }
+
+  // Cálculo de conferência: aplica a tabela escolhida a um valor, como salário (INSS progressivo) e
+  // como pró-labore (INSS de contribuinte individual).
+  function simularTabelaFolha(valor, dependentes, tab){
+    const v = round2(Number(valor)||0), dep = Number(dependentes)||0;
+    const inssE = calcINSS(v, tab), baseE = baseIrrfCalculo(v, inssE, dep, tab), irrfE = calcIRRF(baseE, v, tab);
+    const inssP = calcINSSProLabore(v, tab), baseP = baseIrrfCalculo(v, inssP, dep, tab), irrfP = calcIRRF(baseP, v, tab);
+    return {
+      valor: v,
+      salario: { inss:inssE, baseIrrf:round2(baseE), irrf:irrfE, liquido:round2(v - inssE - irrfE) },
+      prolabore: { inss:inssP, baseIrrf:round2(baseP), irrf:irrfP, liquido:round2(v - inssP - irrfP) },
+    };
+  }
+
+  function tabelasFolhaPanelHtml(){
+    const comp = state.competenciaAtiva;
+    const vigente = tabelaFolhaVigente(comp);
+    const todas = tabelasFolhaTodas();
+    const ver = todas.find(t=>t.id===state.tabelaFolhaVerId) || vigente;
+    const valida = tabelaFolhaValida(ver);
+    const sim = state.tabelaFolhaSimulador || {};
+    const resSim = (valida && Number(sim.valor) > 0) ? simularTabelaFolha(sim.valor, sim.dependentes, ver) : null;
+    const antesDe2026 = comp < '2026-01';
+
+    const detalhe = !valida ? `<div class="empty">Esta tabela tem estrutura inválida e é ignorada nos cálculos. Edite-a ou exclua-a.</div>` : (function(){
+      const fi = ver.inss.faixas, ded = inssParcelasADeduzir(fi), fr = ver.irrf.faixas, red = ver.irrf.redutor;
+      let de = 0;
+      const linhasInss = fi.map((f,i)=>{ const de0 = i===0 ? 0 : Number(fi[i-1].ate) + 0.01; return `<tr><td>${i+1}ª</td><td>${fmtBRL(de0)} a ${fmtBRL(f.ate)}</td><td style="text-align:right">${pctBR(f.aliq)}%</td><td style="text-align:right" class="mono">${fmtBRL(ded[i])}</td></tr>`; }).join('');
+      let ant = 0;
+      const linhasIrrf = fr.map((f,i)=>{
+        const semLimite = (f.ate===null || f.ate===undefined || f.ate==='');
+        const de0 = i===0 ? 0 : ant + 0.01;
+        const txt = semLimite ? 'Acima de ' + fmtBRL(ant) : fmtBRL(de0) + ' a ' + fmtBRL(f.ate);
+        if(!semLimite) ant = Number(f.ate);
+        return `<tr><td>${i+1}ª</td><td>${txt}</td><td style="text-align:right">${Number(f.aliq)===0?'Isento':pctBR(f.aliq)+'%'}</td><td style="text-align:right" class="mono">${fmtBRL(f.deducao)}</td></tr>`;
+      }).join('');
+      return `
+        <div class="form-hint" style="margin:0 0 10px;"><strong>${escapeHtml(ver.nome)}</strong> — vigência a partir de ${vigenciaLabel(ver.vigenciaInicio)}${ver.salarioMinimo?' · salário mínimo de referência '+fmtBRL(ver.salarioMinimo):''}${ver.fonte?'<br/><em>'+escapeHtml(ver.fonte)+'</em>':''}</div>
+        <div class="form-row" style="align-items:flex-start;">
+          <div class="field" style="flex:1; min-width:280px;">
+            <label>INSS — salário de contribuição (empregados)</label>
+            <table><thead><tr><th>Faixa</th><th>Salário de contribuição</th><th style="text-align:right">Alíquota</th><th style="text-align:right">Parcela a deduzir*</th></tr></thead><tbody>${linhasInss}</tbody></table>
+            <div class="form-hint" style="margin-top:6px;">Teto do INSS: <strong>${fmtBRL(inssTeto(ver))}</strong> · Pró-labore (contribuinte individual): <strong>${pctBR(ver.prolabore.aliquota)}%</strong> sobre o valor, até o teto, sem FGTS. *Só para conferência — o sistema calcula faixa a faixa.</div>
+          </div>
+          <div class="field" style="flex:1; min-width:280px;">
+            <label>IRRF — base de cálculo mensal</label>
+            <table><thead><tr><th>Faixa</th><th>Base de cálculo</th><th style="text-align:right">Alíquota</th><th style="text-align:right">Parcela a deduzir</th></tr></thead><tbody>${linhasIrrf}</tbody></table>
+            <div class="form-hint" style="margin-top:6px;">Dedução por dependente: <strong>${fmtBRL(ver.irrf.deducaoDependente)}</strong> · Desconto simplificado: <strong>${fmtBRL(ver.irrf.descontoSimplificado||0)}</strong> (${ver.irrf.aplicarSimplificado?'aplicado quando mais vantajoso':'não aplicado nos cálculos'})${red && red.ativo ? ' · Redutor: isenção total até <strong>'+fmtBRL(red.isencaoAte)+'</strong> de rendimento bruto; entre esse valor e <strong>'+fmtBRL(red.reducaoAte)+'</strong> redução = '+fmtBRL(red.a)+' − '+String(red.b).replace('.',',')+' × rendimento' : ' · Sem redutor'}.</div>
+          </div>
+        </div>
+      `;
+    })();
+
+    return `
+      <div class="panel-head">
+        <h3>Tabelas de INSS e IRRF — salários e pró-labore</h3>
+        <button type="button" class="btn-add" id="tfNovaBtn">+ Nova tabela</button>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Estas tabelas alimentam <strong>todos</strong> os cálculos do Departamento Pessoal — folha, férias, 13º, rescisão e pró-labore. Cada cálculo usa a tabela mais recente cuja vigência começa em ou antes da competência calculada. A tabela de 2026 já vem pronta; quando sair uma nova (por exemplo, em janeiro de 2027), clique em "+ Nova tabela" (dá pra partir de uma cópia da atual) e informe a vigência — os meses antigos continuam calculados pela tabela da época.</div>
+      <div class="legis-note" style="margin-bottom:14px;">Em vigor na competência ativa (<strong>${monthLabel(comp)}/${comp.slice(0,4)}</strong>): <strong>${escapeHtml(vigente.nome)}</strong> (vigência ${vigenciaLabel(vigente.vigenciaInicio)}).${antesDe2026 ? ' Competências anteriores a 01/2026 também usam esta tabela — cadastre a tabela da época se precisar calcular períodos antigos.' : ''}</div>
+
+      <div class="form-section-title" style="margin-top:0;">Tabelas cadastradas</div>
+      <table>
+        <thead><tr><th>Nome</th><th>Vigência</th><th>Origem</th><th>Situação</th><th></th></tr></thead>
+        <tbody>
+          ${todas.map(t=>{
+            const ok = tabelaFolhaValida(t);
+            const emVigor = ok && t.id===vigente.id;
+            return `
+            <tr ${t.id===ver.id?'style="background:#F1F5FA;"':''}>
+              <td>${escapeHtml(t.nome||'—')}</td>
+              <td>a partir de ${vigenciaLabel(t.vigenciaInicio)}</td>
+              <td>${t.embutida ? '<span class="tag sit-outra">Padrão do sistema</span>' : '<span class="tag sit-ativa">Do escritório</span>'}</td>
+              <td>${!ok ? '<span class="tag sit-baixada">Inválida (ignorada)</span>' : emVigor ? '<span class="tag sit-ativa">Em vigor na competência ativa</span>' : '—'}</td>
+              <td style="white-space:nowrap;">
+                <button class="btn-sm" data-tf-ver="${t.id}">Ver</button>
+                ${ok ? `<button class="btn-sm" data-tf-duplicar="${t.id}">Duplicar</button>` : ''}
+                ${!t.embutida ? `<button class="btn-sm" data-tf-editar="${t.id}">Editar</button> <button class="btn-sm danger" data-tf-excluir="${t.id}">Excluir</button>` : ''}
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+
+      <div class="form-section-title">Tabela selecionada</div>
+      ${detalhe}
+
+      <div class="form-section-title">Conferir cálculo com esta tabela</div>
+      <div class="form-hint" style="margin:-4px 0 10px;">Digite um valor e veja o INSS e o IRRF que o sistema calcularia, tanto como salário de empregado quanto como pró-labore.</div>
+      <div class="form-row">
+        <div class="field"><label>Valor bruto mensal (R$)</label><input type="number" step="0.01" min="0" id="tfSimValor" value="${sim.valor||''}"/></div>
+        <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="tfSimDep" value="${sim.dependentes||0}"/></div>
+      </div>
+      <button type="button" class="btn-calc" id="tfSimBtn" ${valida?'':'disabled'}>Calcular</button>
+      ${resSim ? `
+        <div class="form-row" style="margin-top:12px; align-items:flex-start;">
+          <div class="field" style="flex:1; min-width:260px;"><div class="payroll-result">
+            <div class="pr-line"><span><strong>Como salário (CLT)</strong></span><span>${fmtBRL(resSim.valor)}</span></div>
+            <div class="pr-line neg"><span>(-) INSS progressivo</span><span>${fmtBRL(resSim.salario.inss)}</span></div>
+            <div class="pr-line" style="color:var(--ink-soft);"><span>Base do IRRF</span><span>${fmtBRL(resSim.salario.baseIrrf)}</span></div>
+            <div class="pr-line neg"><span>(-) IRRF</span><span>${fmtBRL(resSim.salario.irrf)}</span></div>
+            <div class="pr-line total"><span>Líquido</span><span>${fmtBRL(resSim.salario.liquido)}</span></div>
+          </div></div>
+          <div class="field" style="flex:1; min-width:260px;"><div class="payroll-result">
+            <div class="pr-line"><span><strong>Como pró-labore</strong></span><span>${fmtBRL(resSim.valor)}</span></div>
+            <div class="pr-line neg"><span>(-) INSS (${pctBR(ver.prolabore.aliquota)}%)</span><span>${fmtBRL(resSim.prolabore.inss)}</span></div>
+            <div class="pr-line" style="color:var(--ink-soft);"><span>Base do IRRF</span><span>${fmtBRL(resSim.prolabore.baseIrrf)}</span></div>
+            <div class="pr-line neg"><span>(-) IRRF</span><span>${fmtBRL(resSim.prolabore.irrf)}</span></div>
+            <div class="pr-line total"><span>Líquido</span><span>${fmtBRL(resSim.prolabore.liquido)}</span></div>
+          </div></div>
+        </div>` : ''}
+    `;
+  }
+
+  // Conversão entre a tabela salva e o formulário (valores como texto, pra preservar o que foi digitado).
+  function tabelaParaModal(t, comoNova){
+    const inss = (t && t.inss && Array.isArray(t.inss.faixas) && t.inss.faixas.length) ? t.inss.faixas : [{ate:'', aliq:''}];
+    const irrf = (t && t.irrf && Array.isArray(t.irrf.faixas) && t.irrf.faixas.length) ? t.irrf.faixas : [{ate:'', aliq:'', deducao:''}];
+    const red = (t && t.irrf && t.irrf.redutor) || {};
+    const s = v => (v===null||v===undefined) ? '' : String(v);
+    return {
+      id: comoNova ? undefined : (t && !t.embutida ? t.id : undefined),
+      nome: comoNova ? '' : s(t&&t.nome), vigenciaInicio: comoNova ? '' : s(t&&t.vigenciaInicio),
+      salarioMinimo: s(t&&t.salarioMinimo), fonte: comoNova ? '' : s(t&&t.fonte),
+      prolaboreAliquota: s(t && t.prolabore && t.prolabore.aliquota),
+      inssFaixas: inss.map(f=>({ ate:s(f.ate), aliq:s(f.aliq) })),
+      irrfFaixas: irrf.map(f=>({ ate:s(f.ate), aliq:s(f.aliq), deducao:s(f.deducao) })),
+      deducaoDependente: s(t && t.irrf && t.irrf.deducaoDependente),
+      descontoSimplificado: s(t && t.irrf && t.irrf.descontoSimplificado),
+      aplicarSimplificado: !!(t && t.irrf && t.irrf.aplicarSimplificado),
+      redutorAtivo: red.ativo!==undefined ? !!red.ativo : false,
+      redutorIsencaoAte: s(red.isencaoAte), redutorReducaoAte: s(red.reducaoAte), redutorA: s(red.a), redutorB: s(red.b),
+    };
+  }
+  function modalParaTabela(d){
+    const num = v => (v===''||v===null||v===undefined) ? NaN : Number(v);
+    const ultimaIrrf = d.irrfFaixas.length - 1;
+    return {
+      id: d.id, nome: String(d.nome||'').trim(), vigenciaInicio: d.vigenciaInicio,
+      salarioMinimo: d.salarioMinimo==='' ? undefined : num(d.salarioMinimo), fonte: String(d.fonte||'').trim(),
+      inss: { faixas: d.inssFaixas.map(f=>({ ate:num(f.ate), aliq:num(f.aliq) })) },
+      prolabore: { aliquota: num(d.prolaboreAliquota) },
+      irrf: {
+        faixas: d.irrfFaixas.map((f,i)=>({ ate: i===ultimaIrrf ? null : num(f.ate), aliq:num(f.aliq), deducao:num(f.deducao) })),
+        deducaoDependente: num(d.deducaoDependente),
+        descontoSimplificado: d.descontoSimplificado==='' ? 0 : num(d.descontoSimplificado),
+        aplicarSimplificado: !!d.aplicarSimplificado,
+        redutor: { ativo: !!d.redutorAtivo, isencaoAte:num(d.redutorIsencaoAte), reducaoAte:num(d.redutorReducaoAte), a:num(d.redutorA), b:num(d.redutorB) },
+      },
+    };
+  }
+
+  function tabelaFolhaModalHtml(){
+    const d = state.tabelaFolhaModalData;
+    if(!d) return '';
+    const ultI = d.irrfFaixas.length - 1;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:760px; max-height:92vh; overflow:auto;">
+          <h3>${d.id ? 'Editar tabela de INSS e IRRF' : 'Nova tabela de INSS e IRRF'}</h3>
+          <form id="tfForm">
+            <div class="form-row">
+              <div class="field"><label>Nome da tabela</label><input type="text" id="tfNome" value="${escapeHtml(d.nome)}" placeholder="Ex: Tabela 2027" required/></div>
+              <div class="field"><label>Vale a partir de (mês/ano)</label><input type="month" id="tfVigencia" value="${escapeHtml(d.vigenciaInicio)}" required/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Salário mínimo de referência (R$)</label><input type="number" step="0.01" min="0" id="tfSalMin" value="${escapeHtml(d.salarioMinimo)}"/></div>
+              <div class="field"><label>INSS do pró-labore (%)</label><input type="number" step="any" min="0" id="tfProlAliq" value="${escapeHtml(d.prolaboreAliquota)}" required/></div>
+            </div>
+            <div class="field"><label>Fonte / base legal (opcional)</label><input type="text" id="tfFonte" value="${escapeHtml(d.fonte)}" placeholder="Ex: Portaria Interministerial MPS/MF nº ..."/></div>
+
+            <div class="form-section-title">INSS — faixas progressivas (empregados)</div>
+            <div class="form-hint" style="margin:-4px 0 8px;">Informe o limite superior de cada faixa, em ordem crescente. O teto do INSS é o limite da última faixa.</div>
+            ${d.inssFaixas.map((f,i)=>`
+              <div class="form-row" style="align-items:flex-end;">
+                <div class="field"><label>${i+1}ª faixa — até (R$)</label><input type="number" step="0.01" min="0" id="tfInssAte_${i}" value="${escapeHtml(f.ate)}" required/></div>
+                <div class="field"><label>Alíquota (%)</label><input type="number" step="any" min="0" id="tfInssAliq_${i}" value="${escapeHtml(f.aliq)}" required/></div>
+                <div class="field" style="flex:0 0 auto;">${d.inssFaixas.length>1 ? `<button type="button" class="btn-sm danger" data-tf-rm-inss="${i}">Remover</button>` : ''}</div>
+              </div>`).join('')}
+            <button type="button" class="btn-sm" id="tfAddInss">+ faixa do INSS</button>
+
+            <div class="form-section-title">IRRF — tabela progressiva mensal</div>
+            <div class="form-hint" style="margin:-4px 0 8px;">Limite superior da base de cálculo, alíquota e parcela a deduzir de cada faixa. A última faixa não tem limite.</div>
+            ${d.irrfFaixas.map((f,i)=>`
+              <div class="form-row" style="align-items:flex-end;">
+                <div class="field"><label>${i+1}ª faixa — até (R$)</label><input type="number" step="0.01" min="0" id="tfIrrfAte_${i}" value="${i===ultI?'':escapeHtml(f.ate)}" ${i===ultI?'disabled placeholder="sem limite"':'required'}/></div>
+                <div class="field"><label>Alíquota (%)</label><input type="number" step="any" min="0" id="tfIrrfAliq_${i}" value="${escapeHtml(f.aliq)}" required/></div>
+                <div class="field"><label>Parcela a deduzir (R$)</label><input type="number" step="0.01" min="0" id="tfIrrfDed_${i}" value="${escapeHtml(f.deducao)}" required/></div>
+                <div class="field" style="flex:0 0 auto;">${d.irrfFaixas.length>1 ? `<button type="button" class="btn-sm danger" data-tf-rm-irrf="${i}">Remover</button>` : ''}</div>
+              </div>`).join('')}
+            <button type="button" class="btn-sm" id="tfAddIrrf">+ faixa do IRRF</button>
+
+            <div class="form-row" style="margin-top:14px;">
+              <div class="field"><label>Dedução por dependente (R$)</label><input type="number" step="0.01" min="0" id="tfDepDed" value="${escapeHtml(d.deducaoDependente)}" required/></div>
+              <div class="field"><label>Desconto simplificado (R$)</label><input type="number" step="0.01" min="0" id="tfDescSimpl" value="${escapeHtml(d.descontoSimplificado)}"/></div>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:0 0 12px; cursor:pointer;"><input type="checkbox" id="tfAplicarSimpl" ${d.aplicarSimplificado?'checked':''}/> Aplicar o desconto simplificado nos cálculos quando ele for mais vantajoso que INSS + dependentes</label>
+
+            <div class="form-section-title">Redutor do IRRF (isenção efetiva — Lei 15.270/2025 em 2026)</div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:0 0 8px; cursor:pointer;"><input type="checkbox" id="tfRedAtivo" ${d.redutorAtivo?'checked':''}/> Esta tabela tem redutor</label>
+            <div class="form-row">
+              <div class="field"><label>Isenção total até (R$ de rendimento bruto)</label><input type="number" step="0.01" min="0" id="tfRedIsenc" value="${escapeHtml(d.redutorIsencaoAte)}"/></div>
+              <div class="field"><label>Redução parcial até (R$)</label><input type="number" step="0.01" min="0" id="tfRedReduc" value="${escapeHtml(d.redutorReducaoAte)}"/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Constante da fórmula (R$)</label><input type="number" step="any" min="0" id="tfRedA" value="${escapeHtml(d.redutorA)}"/></div>
+              <div class="field"><label>Coeficiente (× rendimento)</label><input type="number" step="any" min="0" id="tfRedB" value="${escapeHtml(d.redutorB)}"/></div>
+            </div>
+            <div class="form-hint" style="margin:-4px 0 12px;">Fórmula da redução parcial: constante − coeficiente × rendimento bruto mensal (em 2026: 978,62 − 0,133145 × rendimento).</div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="tfCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar tabela</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
   const DP_TABS = [
     {k:'funcionarios', label:'Funcionários'},
     {k:'folha', label:'Contracheques / Folha Individual'},
+    {k:'tabelas-folha', label:'Tabelas INSS / IRRF'},
     {k:'ferias', label:'Férias e Licenças'},
     {k:'ponto', label:'Controle de Ponto'},
     {k:'decimo-terceiro', label:'13º Salário'},
@@ -11972,6 +12942,7 @@
     let tabContent = '';
     if(state.dpTab==='funcionarios') tabContent = funcionariosPanelHtml();
     else if(state.dpTab==='folha') tabContent = folhaTabHtml();
+    else if(state.dpTab==='tabelas-folha') tabContent = tabelasFolhaPanelHtml();
     else if(state.dpTab==='ferias') tabContent = feriasTabHtml();
     else if(state.dpTab==='ponto') tabContent = controlePontoPanelHtml();
     else if(state.dpTab==='decimo-terceiro') tabContent = decimoTerceiroPanelHtml();
@@ -12030,6 +13001,7 @@
     {k:'planejamento', label:'Planejamento & Regimes'},
     {k:'calculo-impostos', label:'Cálculo de Impostos'},
     {k:'declaracao', label:'Declaração de Faturamento'},
+    {k:'monofasicos', label:'Separador de Produtos Monofásicos'},
     {k:'reforma', label:'Reforma Tributária (EC 132/23)'},
     {k:'central-pdf', label:'Controle de Certificados Digitais'},
     {k:'certidoes-cnd', label:'Certidões Negativas de Débitos (CND)'},
@@ -12051,6 +13023,7 @@
     else if(state.fiscalTab==='planejamento') tabContent = planejamentoRegimesPanelHtml();
     else if(state.fiscalTab==='calculo-impostos') tabContent = calculadoraImpostosHtml();
     else if(state.fiscalTab==='declaracao') tabContent = declaracaoFaturamentoPanelHtml();
+    else if(state.fiscalTab==='monofasicos') tabContent = monofasicosPanelHtml();
     else if(state.fiscalTab==='reforma') tabContent = reformaTributariaPanelHtml();
     else if(state.fiscalTab==='central-pdf') tabContent = centralPdfOfxPanelHtml();
     else if(state.fiscalTab==='certidoes-cnd') tabContent = certidoesPanelHtml();
@@ -13107,6 +14080,10 @@
       ${state.modal==='baixaEmpresa' ? baixaEmpresaModalHtml() : ''}
       ${state.modal==='baixaDocumento' ? baixaDocumentoModalHtml() : ''}
       ${state.modal==='reciboHonorario' ? reciboHonorarioModalHtml() : ''}
+      ${state.modal==='monoItem' ? monoItemModalHtml() : ''}
+      ${state.modal==='monoColar' ? monoColarModalHtml() : ''}
+      ${state.modal==='monoRegra' ? monoRegraModalHtml() : ''}
+      ${state.modal==='tabelaFolha' ? tabelaFolhaModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
@@ -14361,6 +15338,237 @@
         el.disabled = false; el.textContent = original;
       };
     });
+
+    // ===== Separador de Produtos Monofásicos =====
+    const monoCompetencia = document.getElementById('monoCompetencia');
+    if(monoCompetencia) monoCompetencia.onchange = (e)=>{ if(e.target.value){ state.monofasicoCompetencia = e.target.value; render(); } };
+    const monoCompAtual = ()=> state.monofasicoCompetencia || state.competenciaAtiva;
+    const monoNovoItemBtn = document.getElementById('monoNovoItemBtn');
+    if(monoNovoItemBtn) monoNovoItemBtn.onclick = ()=>{ state.monoItemModalData = { ncm:'', descricao:'', valor:'', ovr:'' }; state.modal='monoItem'; render(); };
+    const monoColarBtn = document.getElementById('monoColarBtn');
+    if(monoColarBtn) monoColarBtn.onclick = ()=>{ state.monoColarModalData = {}; state.modal='monoColar'; render(); };
+    const monoNovaRegraBtn = document.getElementById('monoNovaRegraBtn');
+    if(monoNovaRegraBtn) monoNovaRegraBtn.onclick = ()=>{ state.monoRegraModalData = {}; state.modal='monoRegra'; render(); };
+    const monoPdfBtn = document.getElementById('monoPdfBtn');
+    if(monoPdfBtn) monoPdfBtn.onclick = ()=>{ const emp = deptOneSelectedClient(); if(emp) gerarRelatorioMonofasicoPDF(emp, monoCompAtual()); };
+    const monoLimparBtn = document.getElementById('monoLimparBtn');
+    if(monoLimparBtn) monoLimparBtn.onclick = ()=>{
+      const emp = deptOneSelectedClient();
+      if(emp && confirm('Apagar todos os produtos lançados em ' + monthLabel(monoCompAtual()) + '/' + monoCompAtual().slice(0,4) + ' para esta empresa? Você poderá importar de novo.')) monoLimparCompetencia(emp, monoCompAtual());
+    };
+
+    const monoXmlBtn = document.getElementById('monoXmlBtn');
+    const monoXmlInput = document.getElementById('monoXmlInput');
+    if(monoXmlBtn && monoXmlInput){
+      monoXmlBtn.onclick = ()=> monoXmlInput.click();
+      monoXmlInput.onchange = async (e)=>{
+        const files = Array.from(e.target.files || []);
+        const emp = deptOneSelectedClient();
+        if(!files.length || !emp) return;
+        monoXmlBtn.disabled = true; monoXmlBtn.textContent = 'Lendo ' + files.length + ' arquivo(s)...';
+        let r;
+        try{ r = await importarXmlsMonofasico(files, emp); }
+        catch(err){ alert('Não foi possível importar os arquivos.\n\nDetalhe técnico: ' + (err && err.message ? err.message : 'erro desconhecido')); render(); return; }
+        const comps = Object.keys(r.competencias).sort();
+        if(comps.length) state.monofasicoCompetencia = comps[comps.length-1];
+        const ignoradas = [];
+        if(r.duplicadas) ignoradas.push(r.duplicadas + ' já importada(s) antes');
+        if(r.canceladas) ignoradas.push(r.canceladas + ' cancelada(s)');
+        if(r.outroEmitente) ignoradas.push(r.outroEmitente + ' de outro emitente (não são vendas desta empresa)');
+        if(r.naoSaida) ignoradas.push(r.naoSaida + ' de entrada');
+        if(r.invalidas) ignoradas.push(r.invalidas + ' inválida(s)/ilegível(is)');
+        alert('Importação concluída.\n\n' +
+          '• Notas de venda lidas: ' + r.notas + ' (' + r.itens + ' linhas de produto)\n' +
+          (comps.length ? '• Competência(s): ' + comps.map(c=>monthLabel(c)+'/'+c.slice(0,4)).join(', ') + '\n' : '') +
+          (r.itensForaDeVenda ? '• Itens ignorados por CFOP que não é de venda (devolução, remessa etc.): ' + r.itensForaDeVenda + '\n' : '') +
+          (ignoradas.length ? '• Arquivos ignorados: ' + ignoradas.join('; ') + '\n' : ''));
+        render();
+      };
+    }
+
+    // ajuste manual de classificação, editar e excluir linhas
+    root.querySelectorAll('[data-mono-ajuste]').forEach(el=>{
+      el.onchange = ()=>{ const emp = deptOneSelectedClient(); if(emp) monoDefinirAjuste(emp, monoCompAtual(), el.getAttribute('data-mono-ajuste'), el.value); };
+    });
+    root.querySelectorAll('[data-mono-editar]').forEach(el=>{
+      el.onclick = ()=>{
+        const emp = deptOneSelectedClient(); if(!emp) return;
+        const doc = monoDocDe(emp, monoCompAtual());
+        const it = doc && doc.itens.find(i=>i.id===el.getAttribute('data-mono-editar'));
+        if(!it) return;
+        state.monoItemModalData = Object.assign({}, it);
+        state.modal = 'monoItem'; render();
+      };
+    });
+    root.querySelectorAll('[data-mono-excluir]').forEach(el=>{
+      el.onclick = ()=>{
+        const emp = deptOneSelectedClient(); if(!emp) return;
+        if(confirm('Excluir este produto da competência?')) monoExcluirItem(emp, monoCompAtual(), el.getAttribute('data-mono-excluir'));
+      };
+    });
+    root.querySelectorAll('[data-mono-del-regra]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta regra personalizada?')) deleteNcmMonofasicoCustom(el.getAttribute('data-mono-del-regra')); };
+    });
+
+    // formulário: adicionar / editar produto (mostra a classificação automática enquanto digita o NCM)
+    const monoItemNcm = document.getElementById('monoItemNcm');
+    if(monoItemNcm) monoItemNcm.oninput = ()=>{
+      const prev = document.getElementById('monoItemPreview');
+      if(!prev) return;
+      const n = ncmDigits(monoItemNcm.value);
+      if(!n){ prev.textContent = 'Informe o NCM para ver a classificação automática.'; return; }
+      const a = classificarNcmMonofasico(n);
+      prev.textContent = a.status==='monofasico' ? 'Automática: Monofásico — ' + a.regra.grupo :
+        a.status==='conferir' ? 'Automática: A conferir — ' + a.regra.grupo :
+        a.status==='invalido' ? 'Automática: ' + a.motivo : 'Automática: Tributação normal';
+    };
+    const monoItemCancel = document.getElementById('monoItemCancel');
+    if(monoItemCancel) monoItemCancel.onclick = ()=>{ state.modal=null; state.monoItemModalData=null; render(); };
+    const monoItemForm = document.getElementById('monoItemForm');
+    if(monoItemForm){
+      monoItemForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const emp = deptOneSelectedClient(); if(!emp){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
+        const ncm = ncmDigits(document.getElementById('monoItemNcm').value);
+        if(ncm.length < 4){ alert('Informe um NCM válido (pelo menos 4 dígitos).'); return; }
+        const dados = {
+          id: (state.monoItemModalData && state.monoItemModalData.id) || undefined,
+          ncm,
+          descricao: document.getElementById('monoItemDescricao').value,
+          valor: document.getElementById('monoItemValor').value,
+          ovr: document.getElementById('monoItemOvr').value,
+        };
+        const btn = monoItemForm.querySelector('button[type="submit"]');
+        if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
+        const ok = await monoSalvarItem(emp, monoCompAtual(), dados);
+        if(!ok){ if(btn){ btn.disabled = false; btn.textContent = 'Salvar'; } return; }
+        state.modal=null; state.monoItemModalData=null; render();
+      };
+    }
+
+    // formulário: colar lista
+    const monoColarCancel = document.getElementById('monoColarCancel');
+    if(monoColarCancel) monoColarCancel.onclick = ()=>{ state.modal=null; state.monoColarModalData=null; render(); };
+    const monoColarForm = document.getElementById('monoColarForm');
+    if(monoColarForm){
+      monoColarForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const emp = deptOneSelectedClient(); if(!emp){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
+        const { itens, erros } = parseListaColadaMonofasico(document.getElementById('monoColarTexto').value);
+        if(!itens.length){ alert('Nenhuma linha válida encontrada.' + (erros.length ? '\n\n' + erros.slice(0,5).join('\n') : '')); return; }
+        if(erros.length && !confirm(erros.length + ' linha(s) serão ignoradas:\n\n' + erros.slice(0,8).join('\n') + (erros.length>8?'\n...':'') + '\n\nImportar as ' + itens.length + ' linha(s) válidas mesmo assim?')) return;
+        const doc = monoCopiaDoc(emp, monoCompAtual());
+        monoMesclarItens(doc, itens, 'colado');
+        const ok = await salvarDocMonofasicoERecarregar(doc);
+        if(!ok) return;
+        state.modal=null; state.monoColarModalData=null; render();
+      };
+    }
+
+    // formulário: regra personalizada de NCM
+    const monoRegraCancel = document.getElementById('monoRegraCancel');
+    if(monoRegraCancel) monoRegraCancel.onclick = ()=>{ state.modal=null; state.monoRegraModalData=null; render(); };
+    const monoRegraForm = document.getElementById('monoRegraForm');
+    if(monoRegraForm){
+      monoRegraForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const ncm = ncmDigits(document.getElementById('monoRegraNcm').value);
+        if(ncm.length < 4){ alert('Informe um NCM (ou início de NCM) com pelo menos 4 dígitos.'); return; }
+        const ok = await saveNcmMonofasicoCustom({
+          ncm,
+          grupo: document.getElementById('monoRegraGrupo').value.trim(),
+          descricao: document.getElementById('monoRegraDescricao').value.trim(),
+          base: document.getElementById('monoRegraBase').value.trim(),
+          tratamento: document.getElementById('monoRegraTratamento').value,
+          nota: document.getElementById('monoRegraNota').value.trim(),
+        });
+        if(!ok) return;
+        state.modal=null; state.monoRegraModalData=null; render();
+      };
+    }
+
+    // ===== Tabelas INSS / IRRF =====
+    root.querySelectorAll('[data-tf-ver]').forEach(el=>{
+      el.onclick = ()=>{ state.tabelaFolhaVerId = el.getAttribute('data-tf-ver'); render(); };
+    });
+    const tfNovaBtn = document.getElementById('tfNovaBtn');
+    if(tfNovaBtn) tfNovaBtn.onclick = ()=>{
+      const base = tabelaFolhaVigente(state.competenciaAtiva);
+      const d = tabelaParaModal(base, true);
+      d.vigenciaInicio = (Number(base.vigenciaInicio.slice(0,4)) + 1) + '-01';
+      d.nome = 'Tabela ' + d.vigenciaInicio.slice(0,4);
+      state.tabelaFolhaModalData = d; state.modal = 'tabelaFolha'; render();
+    };
+    root.querySelectorAll('[data-tf-duplicar]').forEach(el=>{
+      el.onclick = ()=>{
+        const t = tabelasFolhaTodas().find(x=>x.id===el.getAttribute('data-tf-duplicar'));
+        if(!t) return;
+        const d = tabelaParaModal(t, true);
+        d.nome = 'Cópia de ' + (t.nome||'tabela');
+        state.tabelaFolhaModalData = d; state.modal = 'tabelaFolha'; render();
+      };
+    });
+    root.querySelectorAll('[data-tf-editar]').forEach(el=>{
+      el.onclick = ()=>{
+        const t = (state.tabelasFolha||[]).find(x=>x.id===el.getAttribute('data-tf-editar'));
+        if(!t) return;
+        state.tabelaFolhaModalData = tabelaParaModal(t, false); state.modal = 'tabelaFolha'; render();
+      };
+    });
+    root.querySelectorAll('[data-tf-excluir]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta tabela? As competências dessa vigência passarão a ser calculadas pela tabela anterior. Cálculos já salvos não mudam.')) deleteTabelaFolha(el.getAttribute('data-tf-excluir')); };
+    });
+    const tfSimBtn = document.getElementById('tfSimBtn');
+    if(tfSimBtn) tfSimBtn.onclick = ()=>{
+      state.tabelaFolhaSimulador = { valor: document.getElementById('tfSimValor').value, dependentes: document.getElementById('tfSimDep').value };
+      render();
+    };
+
+    // formulário de edição: guarda o que foi digitado antes de adicionar/remover linhas
+    const tfColetar = ()=>{
+      const d = state.tabelaFolhaModalData; if(!d) return;
+      const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+      const ck = id => { const el = document.getElementById(id); return !!(el && el.checked); };
+      d.nome = v('tfNome'); d.vigenciaInicio = v('tfVigencia'); d.salarioMinimo = v('tfSalMin');
+      d.prolaboreAliquota = v('tfProlAliq'); d.fonte = v('tfFonte');
+      d.inssFaixas = d.inssFaixas.map((f,i)=>({ ate:v('tfInssAte_'+i), aliq:v('tfInssAliq_'+i) }));
+      const ult = d.irrfFaixas.length - 1;
+      d.irrfFaixas = d.irrfFaixas.map((f,i)=>({ ate: i===ult ? '' : v('tfIrrfAte_'+i), aliq:v('tfIrrfAliq_'+i), deducao:v('tfIrrfDed_'+i) }));
+      d.deducaoDependente = v('tfDepDed'); d.descontoSimplificado = v('tfDescSimpl');
+      d.aplicarSimplificado = ck('tfAplicarSimpl'); d.redutorAtivo = ck('tfRedAtivo');
+      d.redutorIsencaoAte = v('tfRedIsenc'); d.redutorReducaoAte = v('tfRedReduc'); d.redutorA = v('tfRedA'); d.redutorB = v('tfRedB');
+    };
+    const tfAddInss = document.getElementById('tfAddInss');
+    if(tfAddInss) tfAddInss.onclick = ()=>{ tfColetar(); state.tabelaFolhaModalData.inssFaixas.push({ate:'', aliq:''}); render(); };
+    const tfAddIrrf = document.getElementById('tfAddIrrf');
+    if(tfAddIrrf) tfAddIrrf.onclick = ()=>{ tfColetar(); state.tabelaFolhaModalData.irrfFaixas.push({ate:'', aliq:'', deducao:''}); render(); };
+    root.querySelectorAll('[data-tf-rm-inss]').forEach(el=>{
+      el.onclick = ()=>{ tfColetar(); state.tabelaFolhaModalData.inssFaixas.splice(Number(el.getAttribute('data-tf-rm-inss')), 1); render(); };
+    });
+    root.querySelectorAll('[data-tf-rm-irrf]').forEach(el=>{
+      el.onclick = ()=>{ tfColetar(); state.tabelaFolhaModalData.irrfFaixas.splice(Number(el.getAttribute('data-tf-rm-irrf')), 1); render(); };
+    });
+    const tfCancel = document.getElementById('tfCancel');
+    if(tfCancel) tfCancel.onclick = ()=>{ state.modal=null; state.tabelaFolhaModalData=null; render(); };
+    const tfForm = document.getElementById('tfForm');
+    if(tfForm){
+      tfForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        tfColetar();
+        const t = modalParaTabela(state.tabelaFolhaModalData);
+        const erro = tabelaFolhaErro(t);
+        if(erro){ alert(erro); return; }
+        if(!t.nome) t.nome = 'Tabela a partir de ' + vigenciaLabel(t.vigenciaInicio);
+        if((state.tabelasFolha||[]).some(x=>x.id!==t.id && x.vigenciaInicio===t.vigenciaInicio)){
+          alert('Já existe uma tabela do escritório com a vigência ' + vigenciaLabel(t.vigenciaInicio) + '. Edite a existente ou escolha outro mês.'); return;
+        }
+        const btn = tfForm.querySelector('button[type="submit"]');
+        if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
+        const ok = await saveTabelaFolha(t);
+        if(!ok){ if(btn){ btn.disabled = false; btn.textContent = 'Salvar tabela'; } return; }
+        state.modal=null; state.tabelaFolhaModalData=null; state.tabelaFolhaVerId = t.id; render();
+      };
+    }
     const bdCancel = document.getElementById('bdCancel');
     if(bdCancel) bdCancel.onclick = ()=>{ state.modal=null; state.baixaDocumentoModalData=null; render(); };
     const baixaDocumentoForm = document.getElementById('baixaDocumentoForm');
@@ -14558,7 +15766,7 @@
         if(!func){ alert('Selecione um funcionário.'); return; }
         const ano = document.getElementById('decAno').value;
         const avos = document.getElementById('decAvos').value;
-        const r = calc13Salario(func.salarioBase, avos, func.dependentes);
+        const r = calc13Salario(func.salarioBase, avos, func.dependentes, ano + '-12');
         document.getElementById('decimoResult').innerHTML = `
           <div class="payroll-result">
             <div class="pr-line"><span>13º (total bruto)</span><span>${fmtBRL(r.totalBruto)}</span></div>
@@ -14669,7 +15877,7 @@
         if(tipo==='ferias'){
           const diasGozo = document.getElementById('simDiasGozo').value;
           const diasVendidos = document.getElementById('simDiasVendidos').value;
-          const r = calcFerias(salario, diasGozo, diasVendidos, 0);
+          const r = calcFerias(salario, diasGozo, diasVendidos, 0, state.competenciaAtiva);
           resultEl.innerHTML = `
             <div class="payroll-result">
               <div class="pr-line"><span>Férias (dias de gozo)</span><span>${fmtBRL(r.valorFeriasGozo)}</span></div>
@@ -14683,7 +15891,7 @@
         } else if(tipo==='decimo'){
           const avos = document.getElementById('simAvos').value;
           const dependentes = document.getElementById('simDependentes').value;
-          const r = calc13Salario(salario, avos, dependentes);
+          const r = calc13Salario(salario, avos, dependentes, state.competenciaAtiva);
           resultEl.innerHTML = `
             <div class="payroll-result">
               <div class="pr-line"><span>13º (total bruto)</span><span>${fmtBRL(r.totalBruto)}</span></div>
@@ -14702,7 +15910,7 @@
           const params = {
             salarioBase: salario, dependentes: 0, tipoRescisao, avisoPrevio: 'Indenizado',
             diasSaldoSalario: 0, anosCasa, mesesProporcionaisFerias: avosFerias, mesesProporcionais13: avos13,
-            mesesFeriasVencidas: 0, saldoFgtsInformado: 0,
+            mesesFeriasVencidas: 0, saldoFgtsInformado: 0, competencia: state.competenciaAtiva,
           };
           const r = calcRescisao(params);
           resultEl.innerHTML = `
@@ -15960,7 +17168,7 @@
         calcFolhaTodosBtn.textContent = 'Calculando...';
         let sucesso = 0, comLancamento = 0, semPlano = [];
         for(const func of pendentes){
-          const r = calcFolha(func.salarioBase, 0, func.dependentes, 0);
+          const r = calcFolha(func.salarioBase, 0, func.dependentes, 0, competencia);
           const folhaData = {
             id: uid(), funcionarioId: func.id, clientId: func.clientId, competencia,
             bruto: r.bruto, inss: r.inss, irrf: r.irrf, descontosExtra: 0,
@@ -15993,7 +17201,7 @@
         const competencia = document.getElementById('folhaCompetencia').value || state.competenciaAtiva;
         const outrosProventos = parseFloat(document.getElementById('folhaProventos').value)||0;
         const outrosDescontos = parseFloat(document.getElementById('folhaDescontos').value)||0;
-        const r = calcFolha(func.salarioBase, outrosProventos, func.dependentes, outrosDescontos);
+        const r = calcFolha(func.salarioBase, outrosProventos, func.dependentes, outrosDescontos, competencia);
         document.getElementById('folhaResult').innerHTML = `
           <div class="payroll-result">
             <div class="pr-line"><span>Salário base + proventos (bruto)</span><span>${fmtBRL(r.bruto)}</span></div>
@@ -16044,7 +17252,7 @@
         const dependentes = parseInt(document.getElementById('plDependentes').value)||0;
         if(!clientId || !socioNome || !valor){ alert('Preencha empresa, nome do sócio e valor do pró-labore.'); return; }
         const competencia = document.getElementById('folhaCompetencia').value || state.competenciaAtiva;
-        const r = calcProLabore(valor, dependentes);
+        const r = calcProLabore(valor, dependentes, competencia);
         document.getElementById('prolaboreResult').innerHTML = `
           <div class="payroll-result">
             <div class="pr-line"><span>Pró-labore (bruto)</span><span>${fmtBRL(r.bruto)}</span></div>
@@ -16088,7 +17296,7 @@
         calcFeriasTodosBtn.textContent = 'Lançando...';
         let sucesso = 0, comLancamento = 0, semPlano = [];
         for(const func of funcsElegiveis){
-          const r = calcFerias(func.salarioBase, 30, 0, func.dependentes);
+          const r = calcFerias(func.salarioBase, 30, 0, func.dependentes, dataInicioGozo);
           const feriasData = {
             id: uid(), funcionarioId: func.id, clientId: func.clientId, dataInicioGozo, diasGozo:30, diasVendidos:0,
             valorFeriasGozo: r.valorFeriasGozo, tercoGozo: r.tercoGozo, valorAbono: r.valorAbono, tercoAbono: r.tercoAbono,
@@ -16121,7 +17329,7 @@
         const dataInicioGozo = document.getElementById('feriasInicio').value;
         const diasGozo = parseInt(document.getElementById('feriasDias').value)||0;
         const diasVendidos = parseInt(document.getElementById('feriasVendidos').value)||0;
-        const r = calcFerias(func.salarioBase, diasGozo, diasVendidos, func.dependentes);
+        const r = calcFerias(func.salarioBase, diasGozo, diasVendidos, func.dependentes, dataInicioGozo);
         document.getElementById('feriasResult').innerHTML = `
           <div class="payroll-result">
             <div class="pr-line"><span>Férias (${diasGozo} dias)</span><span>${fmtBRL(r.valorFeriasGozo)}</span></div>
@@ -16172,7 +17380,7 @@
             salarioBase: func.salarioBase, dependentes: func.dependentes, tipoRescisao, avisoPrevio,
             diasSaldoSalario: avos.diasSaldoSalario, anosCasa: avos.anosCasa,
             mesesProporcionaisFerias: avos.avosFerias, mesesProporcionais13: avos.avos13,
-            mesesFeriasVencidas: 0, saldoFgtsInformado: 0,
+            mesesFeriasVencidas: 0, saldoFgtsInformado: 0, competencia: dataDesligamento,
           };
           const r = calcRescisao(params);
           const rescisaoData = Object.assign({ id: uid(), funcionarioId: func.id, clientId: func.clientId, dataDesligamento, tipoRescisao, avisoPrevio }, r);
@@ -16212,6 +17420,7 @@
           mesesProporcionais13: document.getElementById('rescAvos13').value,
           mesesFeriasVencidas: document.getElementById('rescFeriasVencidas').value,
           saldoFgtsInformado: document.getElementById('rescSaldoFgts').value,
+          competencia: document.getElementById('rescData').value,
         };
         const r = calcRescisao(params);
         document.getElementById('rescResult').innerHTML = `
