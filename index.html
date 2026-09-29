@@ -612,6 +612,8 @@
     fatManualAno: '',
     fatManualSujo: false,
     calcCompetenciaAuto: '',
+    impostosCalculados: [],
+    calcTrimestreAuto: '',
     tabelaFolhaModalData: null,
     tabelaFolhaVerId: '',
     tabelaFolhaSimulador: { valor:'', dependentes:0 },
@@ -699,6 +701,9 @@
     processoFiscalModalData: null,
     exportNfTipoOperacao: 'Todos',
     exportNfOrdenacao: 'numero',
+    nfRelTipoOperacao: 'Saída',
+    nfRelMesInicio: (()=>{ const d=new Date(); d.setMonth(d.getMonth()-5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })(),
+    nfRelMesFim: todayStr().slice(0,7),
     faturamentoRelTipo: 'ambos',
     faturamentoRelMesInicio: (()=>{ const d=new Date(); d.setMonth(d.getMonth()-5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })(),
     faturamentoRelMesFim: todayStr().slice(0,7),
@@ -9251,6 +9256,7 @@
     await loadNcmMonofasicoCustom();
     await loadTabelasFolha();
     await loadFaturamentosManuais();
+    await loadImpostosCalculados();
     await loadInscricoes();
     await loadAlvaras();
     await loadProcessosFiscais();
@@ -9295,6 +9301,7 @@
       ncmMonofasicoCustom: state.ncmMonofasicoCustom,
       tabelasFolha: state.tabelasFolha,
       faturamentosManuais: state.faturamentosManuais,
+      impostosCalculados: state.impostosCalculados,
       prolabores: state.prolabores,
       decimosTerceiros: state.decimosTerceiros,
       pontoRegistros: state.pontoRegistros,
@@ -9373,6 +9380,7 @@
       {key:'ncmMonofasicoCustom', prefix:'ncmmonofasicocustom:', idField:'id'},
       {key:'tabelasFolha', prefix:'tabelasfolha:', idField:'id'},
       {key:'faturamentosManuais', prefix:'faturamentosmanuais:', idField:'id'},
+      {key:'impostosCalculados', prefix:'impostoscalculados:', idField:'id'},
       {key:'prolabores', prefix:'prolabores:', idField:'id'},
       {key:'decimosTerceiros', prefix:'decimosterceiros:', idField:'id'},
       {key:'pontoRegistros', prefix:'pontoregistros:', idField:'id'},
@@ -11161,6 +11169,18 @@
     }
     return total;
   }
+  // Igual à função acima, mas devolve o detalhamento mês a mês (para o relatório de apoio).
+  function detalheFaturamento12Meses(clientId, competenciaFinal){
+    if(!clientId || !competenciaFinal) return [];
+    const [ano, mes] = competenciaFinal.split('-').map(Number);
+    const linhas = [];
+    for(let i=11; i>=0; i--){
+      const d = new Date(ano, mes-1-i, 1);
+      const comp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+      linhas.push({ competencia: comp, total: faturamentoNotasMes(clientId, comp).total });
+    }
+    return linhas;
+  }
 
   // Soma a folha de pagamento (salários + pró-labore, valores brutos) dos últimos 12 meses até a
   // competência informada — é o numerador do Fator R.
@@ -11185,6 +11205,70 @@
     const folha12 = folhaMaisProlabore12Meses(clientId, competenciaFinal);
     const fatorR = rbt12 > 0 ? folha12/rbt12 : 0;
     return { rbt12, folha12, fatorR, anexoSugerido: fatorR >= 0.28 ? 'Anexo III — Serviços (locação, agências, etc.)' : 'Anexo V — Serviços intelectuais/técnicos' };
+  }
+
+  // ---- Trimestres (apuração do IRPJ/CSLL no Lucro Presumido) ----
+  const TRIMESTRE_LABELS = { T1:'1º Trimestre (Jan-Mar)', T2:'2º Trimestre (Abr-Jun)', T3:'3º Trimestre (Jul-Set)', T4:'4º Trimestre (Out-Dez)' };
+  const TRIMESTRE_MESES = { T1:['01','02','03'], T2:['04','05','06'], T3:['07','08','09'], T4:['10','11','12'] };
+  function trimestreDeCompetencia(competencia){
+    const [ano, mes] = String(competencia||'').split('-').map(Number);
+    if(!ano || !mes) return '';
+    const t = Math.ceil(mes/3);
+    return ano + '-T' + t;
+  }
+  function trimestreLabel(trimKey){
+    const m = String(trimKey||'').match(/^(\d{4})-T([1-4])$/);
+    if(!m) return '—';
+    return TRIMESTRE_LABELS['T'+m[2]] + ' de ' + m[1];
+  }
+  function mesesDoTrimestre(trimKey){
+    const m = String(trimKey||'').match(/^(\d{4})-T([1-4])$/);
+    if(!m) return [];
+    return TRIMESTRE_MESES['T'+m[2]].map(mm=>m[1]+'-'+mm);
+  }
+  function trimestresDisponiveis(competenciaRef){
+    const anoAtual = Number((competenciaRef||todayStr()).slice(0,4));
+    const lista = [];
+    for(let a=anoAtual-3; a<=anoAtual; a++){
+      for(let t=1;t<=4;t++) lista.push(a+'-T'+t);
+    }
+    return lista;
+  }
+  // Faturamento (notas + lançado sem NF) somado dos 3 meses do trimestre.
+  function faturamentoTrimestre(clientId, trimKey){
+    return mesesDoTrimestre(trimKey).reduce((s,comp)=>s+faturamentoNotasMes(clientId,comp).total, 0);
+  }
+
+  // ---- Impostos calculados: guardados por empresa, regime, competência (Simples) ou trimestre
+  // (Presumido). Recalcular a mesma competência/trimestre para a mesma empresa SUBSTITUI o cálculo
+  // anterior (mesmo id determinístico), em vez de duplicar.
+  async function loadImpostosCalculados(){
+    state.impostosCalculados = [];
+    try{
+      const keys = await Store.list('impostoscalculados:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.impostosCalculados.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.impostosCalculados.sort((a,b)=>String(b.competencia||'').localeCompare(String(a.competencia||'')));
+  }
+  function impostoCalculadoId(clientId, tipo, competencia){ return clientId + '_' + tipo + '_' + competencia; }
+  async function salvarImpostoCalculado(rec){
+    rec.id = impostoCalculadoId(rec.clientId, rec.tipo, rec.competencia);
+    rec.calculadoEm = Date.now();
+    try{ await Store.set('impostoscalculados:'+rec.id, JSON.stringify(rec), true); }
+    catch(e){ alert('O cálculo foi exibido, mas não foi possível salvá-lo no histórico.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido')); return false; }
+    await loadImpostosCalculados();
+    return true;
+  }
+  async function excluirImpostoCalculado(id){
+    try{ await Store.delete('impostoscalculados:'+id, true); }catch(e){}
+    await loadImpostosCalculados(); render();
+  }
+  function impostosCalculadosDe(clientId, tipo){
+    return (state.impostosCalculados||[]).filter(r=>r.clientId===clientId && r.tipo===tipo).sort((a,b)=>String(b.competencia||'').localeCompare(String(a.competencia||'')));
   }
 
   // Lista de competências (YYYY-MM) entre duas datas, inclusive, em ordem crescente.
@@ -11367,6 +11451,30 @@
   }
 
   // ---- Simples Nacional: cálculo automático pelo cadastro da empresa ----
+  function historicoImpostosHtml(clienteId, tipo){
+    const historico = impostosCalculadosDe(clienteId, tipo);
+    const attrRelatorio = tipo==='simples' ? 'data-relatorio-apoio-simples' : 'data-relatorio-apoio-presumido';
+    return `
+      <div class="form-section-title">Cálculos salvos desta empresa</div>
+      ${!historico.length ? `<div class="empty">Nenhum cálculo salvo ainda para esta empresa. Ao clicar em "${tipo==='simples'?'Calcular DAS':'Calcular tributos'}", o resultado é guardado automaticamente aqui.</div>` : `
+        <table>
+          <thead><tr><th>${tipo==='simples'?'Competência':'Trimestre'}</th><th>${tipo==='simples'?'Anexo':'Atividade'}</th><th style="text-align:right">Valor total</th><th>Calculado em</th><th></th></tr></thead>
+          <tbody>
+            ${historico.map(h=>`
+              <tr>
+                <td>${tipo==='simples' ? monthLabel(h.competencia)+'/'+h.competencia.slice(0,4) : trimestreLabel(h.competencia)}</td>
+                <td>${escapeHtml(tipo==='simples' ? (h.anexo||'—') : (h.atividade||'—'))}</td>
+                <td style="text-align:right" class="mono">${fmtBRL(tipo==='simples' ? h.imposto : h.total)}</td>
+                <td>${h.calculadoEm ? new Date(h.calculadoEm).toLocaleString('pt-BR') : '—'}</td>
+                <td style="white-space:nowrap;"><button class="btn-sm" ${attrRelatorio}="${h.id}">Relatório (PDF)</button> <button class="btn-sm danger" data-del-imposto-calculado="${h.id}">Excluir</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `}
+    `;
+  }
+
   function calculoAutoSimplesHtml(cliente){
     const competencia = state.calcCompetenciaAuto || state.competenciaAtiva;
     const anexoCadastrado = cliente.anexoSimples;
@@ -11400,19 +11508,27 @@
         <input type="hidden" id="calcAnexo" value="${escapeHtml(anexoUsado)}"/>
         <button type="button" class="btn-calc" id="calcSimplesBtn">Calcular DAS</button>
         <div id="calcSimplesResult"></div>
+        <div class="form-hint" style="margin-top:6px;">Ao calcular, o resultado é salvo automaticamente no histórico desta empresa (substituindo um cálculo anterior da mesma competência, se houver).</div>
       `}
       <div class="calc-disclaimer">Tabelas do Simples Nacional (Anexos I a V) vigentes desde 2018, sem alteração até 2026. Este cálculo é uma estimativa da alíquota efetiva sobre a receita do mês — não substitui a apuração oficial no PGDAS-D, que também considera sublimites estaduais de ICMS/ISS e eventuais retenções. O faturamento puxado das Notas Fiscais depende de todas as notas do período já estarem corretamente registradas e classificadas como Saída/Serviços no sistema.</div>
+      ${historicoImpostosHtml(cliente.id, 'simples')}
     `;
   }
 
   // ---- Lucro Presumido: cálculo automático pelo cadastro da empresa ----
   function calculoAutoPresumidoHtml(cliente){
+    const trimestre = state.calcTrimestreAuto || trimestreDeCompetencia(state.competenciaAtiva);
     const semAtividade = !cliente.atividadePresumido;
     return `
       <div class="panel-head"><h3>Cálculo de Impostos — Lucro Presumido</h3></div>
       <div class="form-hint" style="margin:0 0 4px; font-weight:700;">Empresa: ${escapeHtml(cliente.name)}</div>
       ${semAtividade ? `<div class="empty">Esta empresa está no Lucro Presumido mas ainda não tem a atividade (percentual de presunção) definida no cadastro. Vá em Cadastro de Clientes → editar esta empresa → "Atividade (percentual de presunção)" antes de calcular.</div>` : `
         <div class="form-hint" style="margin:0 0 14px;">Atividade cadastrada: <strong>${escapeHtml(cliente.atividadePresumido)}</strong> (IRPJ ${(PRESUMIDO_ATIVIDADES[cliente.atividadePresumido].irpj*100).toFixed(1)}% / CSLL ${(PRESUMIDO_ATIVIDADES[cliente.atividadePresumido].csll*100).toFixed(0)}%) — <a href="#" data-ir-cadastro-cliente="${cliente.id}">alterar no cadastro</a></div>
+        <div class="field"><label>Trimestre de apuração</label>
+          <select id="calcTrimestre">${trimestresDisponiveis(state.competenciaAtiva).map(k=>`<option value="${k}" ${k===trimestre?'selected':''}>${trimestreLabel(k)}</option>`).join('')}</select>
+        </div>
+        <button type="button" class="btn-sm" id="calcUsarNotasPresumidoBtn" style="margin:10px 0 14px;">Usar faturamento do trimestre (Notas Fiscais + lançado sem nota fiscal)</button>
+        <div id="calcNotasResumoPresumido"></div>
         <div class="form-row">
           <div class="field"><label>Receita bruta do trimestre (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaTri" placeholder="Ex: 300000"/></div>
           <div class="field"><label>Alíquota de ISS do município (%, se serviço)</label><input type="number" step="0.01" min="0" max="5" id="calcIss" value="${escapeHtml(cliente.issAliquotaPresumido||'5')}"/></div>
@@ -11420,9 +11536,161 @@
         <input type="hidden" id="calcAtividade" value="${escapeHtml(cliente.atividadePresumido)}"/>
         <button type="button" class="btn-calc" id="calcPresumidoBtn">Calcular tributos</button>
         <div id="calcPresumidoResult"></div>
+        <div class="form-hint" style="margin-top:6px;">Ao calcular, o resultado é salvo automaticamente no histórico desta empresa (substituindo um cálculo anterior do mesmo trimestre, se houver).</div>
       `}
       <div class="calc-disclaimer">Percentuais de presunção conforme Lei 9.249/1995 e IN RFB 1.700/2017. IRPJ e CSLL apurados por trimestre; adicional de 10% de IRPJ incide sobre a base presumida que exceder R$ 60.000/trimestre. PIS (0,65%) e COFINS (3%) no regime cumulativo. Há tramitação legislativa (LC 224/2025 e PLP 182/2025) que pode alterar percentuais de presunção para empresas de maior faturamento; confirme a legislação vigente antes de usar para apuração oficial.</div>
+      ${historicoImpostosHtml(cliente.id, 'presumido')}
     `;
+  }
+
+  // Relatório de apoio — memória de cálculo do DAS (Simples Nacional), com o detalhamento mês a mês do
+  // RBT12, para servir de documentação/backup da apuração feita no sistema.
+  function gerarRelatorioApoioSimplesPDF(impostoCalculadoId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const rec = (state.impostosCalculados||[]).find(r=>r.id===impostoCalculadoId);
+    if(!rec){ alert('Cálculo não encontrado — ele pode ter sido excluído.'); return; }
+    const cliente = state.clients.find(c=>c.id===rec.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const mx = 14, cw = pageW - mx*2;
+
+    let y = pdfHeader(doc, 'Memória de Cálculo — Simples Nacional (DAS)', cliente ? cliente.name : '—', cliente ? cliente.logo : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('Competência: ' + monthLabel(rec.competencia) + '/' + rec.competencia.slice(0,4) + (cliente && cliente.doc ? '   ·   CNPJ/CPF: ' + cliente.doc : ''), mx, y);
+    y += 5;
+    doc.text('Anexo ' + (rec.fatorRAtivo ? 'utilizado (decidido pelo Fator R)' : 'cadastrado') + ': ' + (rec.anexo||'—'), mx, y);
+    y += 9;
+
+    const rowH = 6;
+    const tabela = (titulo, colunas, linhas)=>{
+      if(y > 195){ doc.addPage(); y = 15; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
+      doc.text(titulo, mx, y); y += 4;
+      let acc = mx;
+      const cols = colunas.map(c=>{ const x0=acc, wmm=cw*c.w; acc+=wmm; return Object.assign({},c,{x0,wmm}); });
+      const cabecalho = ()=>{
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
+        cols.forEach(c=>{
+          doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.wmm,rowH,'F');
+          doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.wmm,rowH,'S');
+          doc.text(c.label, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+        });
+        y += rowH; doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      };
+      cabecalho();
+      linhas.forEach(l=>{
+        if(y+rowH > 275){ doc.addPage(); y = 15; cabecalho(); }
+        doc.setDrawColor(210,210,210); doc.setLineWidth(0.15); doc.setTextColor(20,25,30);
+        cols.forEach((c,i)=>{
+          doc.rect(c.x0,y,c.wmm,rowH,'S');
+          const txt = doc.splitTextToSize(String(l[i]), c.wmm-3)[0] || '';
+          doc.text(txt, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+        });
+        y += rowH;
+      });
+      y += 7;
+    };
+
+    const detalhe12 = detalheFaturamento12Meses(rec.clientId, rec.competencia);
+    if(detalhe12.length){
+      tabela('Receita bruta dos últimos 12 meses (RBT12) — detalhamento', [{label:'COMPETÊNCIA', w:0.6}, {label:'RECEITA (NOTAS + SEM NF)', w:0.4, align:'right'}],
+        detalhe12.map(l=>[monthLabel(l.competencia)+'/'+l.competencia.slice(0,4), fmtBRL(l.total)]));
+    }
+
+    tabela('Apuração do DAS', [{label:'ITEM', w:0.6}, {label:'VALOR', w:0.4, align:'right'}], [
+      ['RBT12 — Receita bruta dos últimos 12 meses', fmtBRL(rec.rbt12)],
+      ['Receita da competência', fmtBRL(rec.receitaMes)],
+      ['Faixa identificada na tabela do ' + (rec.anexo||''), rec.faixaNum + 'ª faixa'],
+      ['Alíquota nominal', (rec.aliqNominal*100).toFixed(2).replace('.',',') + '%'],
+      ['Parcela a deduzir', fmtBRL(rec.deduz)],
+      ['Alíquota efetiva — (RBT12 × Alíq. nominal − Parcela a deduzir) ÷ RBT12', (rec.aliqEfetiva*100).toFixed(2).replace('.',',') + '%'],
+      ['Valor do DAS — Alíquota efetiva × Receita da competência', fmtBRL(rec.imposto)],
+    ]);
+
+    if(y > 250){ doc.addPage(); y = 15; }
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Base legal', mx, y); y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    const base = doc.splitTextToSize('Lei Complementar 123/2006, art. 18 (apuração do Simples Nacional por faixas de receita bruta, com alíquota efetiva calculada sobre o RBT12) e Anexos I a V (tabelas de alíquotas e partilha).' + (rec.fatorRAtivo ? ' O Anexo foi decidido pelo Fator R (art. 18, §5º-J): folha de pagamento dos últimos 12 meses dividida pela RBT12 — igual ou acima de 28% usa o Anexo III; abaixo de 28% usa o Anexo V.' : ''), cw);
+    doc.text(base, mx, y); y += base.length*4.2 + 4;
+
+    pdfFooterDisclaimer(doc, 'Documento de apoio gerado a partir dos dados registrados no sistema em ' + new Date(rec.calculadoEm||Date.now()).toLocaleString('pt-BR') + '. É uma estimativa da alíquota efetiva sobre a receita da competência — não substitui a apuração oficial no PGDAS-D, que também considera sublimites estaduais de ICMS/ISS e eventuais retenções. Confira os dados antes de utilizar como memória de cálculo oficial.');
+    doc.save('memoria-calculo-das-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + rec.competencia.replace('-','') + '.pdf');
+  }
+
+  // Relatório de apoio — memória de cálculo do Lucro Presumido (IRPJ, CSLL, PIS, COFINS, ISS).
+  function gerarRelatorioApoioPresumidoPDF(impostoCalculadoId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const rec = (state.impostosCalculados||[]).find(r=>r.id===impostoCalculadoId);
+    if(!rec){ alert('Cálculo não encontrado — ele pode ter sido excluído.'); return; }
+    const cliente = state.clients.find(c=>c.id===rec.clientId);
+    const p = PRESUMIDO_ATIVIDADES[rec.atividade] || {irpj:0, csll:0};
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const mx = 14, cw = pageW - mx*2;
+
+    let y = pdfHeader(doc, 'Memória de Cálculo — Lucro Presumido', cliente ? cliente.name : '—', cliente ? cliente.logo : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('Apuração: ' + trimestreLabel(rec.competencia) + ' (' + mesesDoTrimestre(rec.competencia).map(m=>monthLabel(m)).join('/') + ')' + (cliente && cliente.doc ? '   ·   CNPJ/CPF: ' + cliente.doc : ''), mx, y);
+    y += 5;
+    doc.text('Atividade: ' + (rec.atividade||'—') + '  (IRPJ ' + (p.irpj*100).toFixed(1).replace('.',',') + '% / CSLL ' + (p.csll*100).toFixed(0) + '% de presunção)', mx, y);
+    y += 9;
+
+    const rowH = 6;
+    const tabela = (titulo, colunas, linhas)=>{
+      if(y > 195){ doc.addPage(); y = 15; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
+      doc.text(titulo, mx, y); y += 4;
+      let acc = mx;
+      const cols = colunas.map(c=>{ const x0=acc, wmm=cw*c.w; acc+=wmm; return Object.assign({},c,{x0,wmm}); });
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      cols.forEach(c=>{
+        doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.wmm,rowH,'F');
+        doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.wmm,rowH,'S');
+        doc.text(c.label, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+      });
+      y += rowH; doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      linhas.forEach(l=>{
+        doc.setDrawColor(210,210,210); doc.setLineWidth(0.15); doc.setTextColor(20,25,30);
+        cols.forEach((c,i)=>{
+          doc.rect(c.x0,y,c.wmm,rowH,'S');
+          const txt = doc.splitTextToSize(String(l[i]), c.wmm-3)[0] || '';
+          doc.text(txt, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+        });
+        y += rowH;
+      });
+      y += 7;
+    };
+
+    tabela('IRPJ', [{label:'ITEM', w:0.65}, {label:'VALOR', w:0.35, align:'right'}], [
+      ['Receita bruta do trimestre', fmtBRL(rec.receitaTri)],
+      ['Base de cálculo (' + (p.irpj*100).toFixed(1).replace('.',',') + '% de presunção)', fmtBRL(rec.baseIrpj)],
+      ['IRPJ (15% sobre a base)', fmtBRL(rec.irpjNormal)],
+      ['Adicional de IRPJ (10% sobre o excedente de R$60.000/tri)', fmtBRL(rec.irpjAdicional)],
+      ['Total IRPJ', fmtBRL(rec.irpjTotal)],
+    ]);
+    tabela('CSLL', [{label:'ITEM', w:0.65}, {label:'VALOR', w:0.35, align:'right'}], [
+      ['Base de cálculo (' + (p.csll*100).toFixed(0) + '% de presunção)', fmtBRL(rec.baseCsll)],
+      ['CSLL (9% sobre a base)', fmtBRL(rec.csllTotal)],
+    ]);
+    tabela('PIS, COFINS e ISS', [{label:'ITEM', w:0.65}, {label:'VALOR', w:0.35, align:'right'}], [
+      ['PIS (0,65% sobre a receita, regime cumulativo)', fmtBRL(rec.pis)],
+      ['COFINS (3% sobre a receita, regime cumulativo)', fmtBRL(rec.cofins)],
+      ['ISS (' + (rec.issPerc||0) + '% sobre a receita)', fmtBRL(rec.iss)],
+    ]);
+
+    if(y > 245){ doc.addPage(); y = 15; }
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(20,25,30);
+    doc.text('Total estimado de tributos: ' + fmtBRL(rec.total), mx, y); y += 10;
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Base legal', mx, y); y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    const base = doc.splitTextToSize('Lei 9.249/1995, art. 15 (percentuais de presunção do IRPJ) e art. 20 (percentual de presunção da CSLL); Instrução Normativa RFB 1.700/2017 (regulamentação); Lei 9.718/1998 (PIS/COFINS no regime cumulativo). Há tramitação legislativa (LC 224/2025 e PLP 182/2025) que pode alterar os percentuais de presunção para empresas de maior faturamento — confirme a legislação vigente na data desta apuração.', cw);
+    doc.text(base, mx, y); y += base.length*4.2 + 4;
+
+    pdfFooterDisclaimer(doc, 'Documento de apoio gerado a partir dos dados registrados no sistema em ' + new Date(rec.calculadoEm||Date.now()).toLocaleString('pt-BR') + '. É uma estimativa — não substitui a apuração oficial na ECF/DCTF nem a guia de recolhimento (DARF). Confira os dados antes de utilizar como memória de cálculo oficial.');
+    doc.save('memoria-calculo-presumido-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + rec.competencia.replace('-','') + '.pdf');
   }
 
   function contaLevel(codigo){ return (String(codigo||'').match(/\./g)||[]).length; }
@@ -11973,6 +12241,73 @@
     `;
   }
 
+  const NF_TIPO_LEGENDA = {
+    'Entrada': 'Notas de compra/entrada — mercadorias, insumos ou serviços adquiridos pela empresa (não compõem o faturamento dela).',
+    'Saída': 'Notas de venda de mercadorias/produtos (NF-e/NFC-e) — compõem o faturamento sujeito ao ICMS (e, no Simples Nacional, ao Anexo I ou II).',
+    'Serviços': 'Notas de prestação de serviços (NFS-e) — compõem o faturamento sujeito ao ISS (e, no Simples Nacional, aos Anexos III, IV ou V).',
+  };
+  function gerarRelatorioNotasFiscaisPDF(clientId, tipoOperacao, mesInicio, mesFim){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const cliente = state.clients.find(c=>c.id===clientId);
+    const notas = state.notasFiscais.filter(n=>
+      n.clientId===clientId && n.tipoOperacao===tipoOperacao &&
+      (n.dataEmissao||'').slice(0,7) >= mesInicio && (n.dataEmissao||'').slice(0,7) <= mesFim
+    ).sort((a,b)=>(a.dataEmissao||'').localeCompare(b.dataEmissao||''));
+    if(!notas.length){ alert('Nenhuma nota de ' + tipoOperacao + ' encontrada no período selecionado.'); return; }
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const mx = 14, cw = pageW - mx*2, rowH = 6.5;
+    let y = pdfHeader(doc, 'Relatório de Notas Fiscais — ' + tipoOperacao, cliente ? cliente.name : '—', cliente ? cliente.logo : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('Período: ' + monthLabel(mesInicio) + '/' + mesInicio.slice(0,4) + ' a ' + monthLabel(mesFim) + '/' + mesFim.slice(0,4) + (cliente && cliente.doc ? '   ·   CNPJ/CPF: ' + cliente.doc : ''), mx, y);
+    y += 8;
+
+    const cols = [
+      {label:'Nº / SÉRIE', w:cw*0.16}, {label:'EMISSÃO', w:cw*0.13}, {label:'TIPO', w:cw*0.20},
+      {label:'STATUS', w:cw*0.16}, {label:'VALOR', w:cw*0.20, align:'right'}, {label:'OBSERVAÇÕES', w:cw*0.15},
+    ];
+    let acc = mx; const colsX = cols.map(c=>{ const x0=acc; acc+=c.w; return Object.assign({},c,{x0}); });
+    const cabecalho = ()=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
+      colsX.forEach(c=>{
+        doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.w,rowH,'F');
+        doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.w,rowH,'S');
+        doc.text(c.label, c.align==='right'?c.x0+c.w-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+      });
+      y += rowH; doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+    };
+    cabecalho();
+    let total = 0;
+    notas.forEach(n=>{
+      if(y+rowH > 275){ doc.addPage(); y=15; cabecalho(); }
+      if(n.status !== 'Cancelada') total += Number(n.valor)||0;
+      const linha = [
+        (n.numero||'—') + (n.serie?'/'+n.serie:''), n.dataEmissao?fmtDate(n.dataEmissao):'—', n.tipo||'—',
+        n.status||'Emitida', fmtBRL(n.valor), n.observacoes||'',
+      ];
+      doc.setDrawColor(210,210,210); doc.setLineWidth(0.15); doc.setTextColor(20,25,30);
+      colsX.forEach((c,i)=>{
+        doc.rect(c.x0,y,c.w,rowH,'S');
+        const txt = doc.splitTextToSize(String(linha[i]), c.w-3)[0] || '';
+        doc.text(txt, c.align==='right'?c.x0+c.w-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+      });
+      y += rowH;
+    });
+    y += 4;
+    if(y > 270){ doc.addPage(); y = 15; }
+    doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.text('Total do período (' + notas.filter(n=>n.status!=='Cancelada').length + ' nota(s), excluídas canceladas): ' + fmtBRL(total), mx, y);
+    y += 9;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    const legenda = doc.splitTextToSize(NF_TIPO_LEGENDA[tipoOperacao] || '', cw);
+    doc.text(legenda, mx, y);
+
+    pdfFooterDisclaimer(doc, 'Relatório gerado a partir das notas fiscais registradas manualmente no sistema (controle interno) — não substitui a consulta oficial no portal da NF-e/NFS-e nem a apuração fiscal. Confira se todas as notas do período já foram importadas antes de usar como referência.');
+    doc.save('relatorio-notas-' + tipoOperacao.toLowerCase().replace(/[^a-z0-9]+/gi,'-') + '-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + mesInicio.replace('-','') + '-a-' + mesFim.replace('-','') + '.pdf');
+  }
+
   function notasFiscaisTableHtml(){
     let notas = state.notasFiscais.filter(n=>isClientInScope(n.clientId));
     if(!notas.length) return `<div class="empty">${state.deptAllClients ? 'Nenhuma nota fiscal registrada ainda.' : 'Nenhuma nota registrada para os clientes selecionados no topo da página.'}</div>`;
@@ -12145,6 +12480,7 @@
   }
 
   function notasControlePanelHtml(){
+    const empresaAlvo = deptOneSelectedClient();
     return `
       <div class="panel-head">
         <h3>Controle de Notas Fiscais - Entrada / Saída / Serviços</h3>
@@ -12152,6 +12488,24 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Este é um controle interno das notas já emitidas pelos sistemas oficiais (emissor de NF-e/NFS-e da prefeitura ou da Sefaz) — o sistema não emite notas fiscais, apenas organiza o que já foi emitido para consulta rápida. Use o painel "Selecionar cliente" no topo da página para filtrar por empresa.</div>
       <div id="nfTableContainer">${notasFiscaisTableHtml()}</div>
+
+      <div class="form-section-title">Relatório de Notas Fiscais</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Gera um PDF com a lista de notas de um único tipo (Entrada, Saída ou Serviços) e o total do período — use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
+      ${!empresaAlvo ? deptSelecioneUmaEmpresaHtml('gerar o relatório de notas fiscais') : `
+        <div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(clientName(empresaAlvo))}</div>
+        <div class="form-row">
+          <div class="field"><label>Tipo de operação</label>
+            <select id="nfRelTipoOperacao">
+              <option value="Entrada" ${state.nfRelTipoOperacao==='Entrada'?'selected':''}>Entrada</option>
+              <option value="Saída" ${state.nfRelTipoOperacao==='Saída'?'selected':''}>Saída</option>
+              <option value="Serviços" ${state.nfRelTipoOperacao==='Serviços'?'selected':''}>Serviços</option>
+            </select>
+          </div>
+          <div class="field"><label>Competência inicial</label><input type="month" id="nfRelMesInicio" value="${state.nfRelMesInicio}"/></div>
+          <div class="field"><label>Competência final</label><input type="month" id="nfRelMesFim" value="${state.nfRelMesFim}"/></div>
+        </div>
+        <button type="button" class="btn-detail" id="nfRelPdfBtn">Gerar Relatório (PDF)</button>
+      `}
     `;
   }
 
@@ -15124,8 +15478,19 @@
     root.querySelectorAll('[data-ir-cadastro-cliente]').forEach(el=>{
       el.onclick = (e)=>{ e.preventDefault(); openClientEditModal(el.getAttribute('data-ir-cadastro-cliente')); };
     });
+    root.querySelectorAll('[data-del-imposto-calculado]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir este cálculo do histórico?')) excluirImpostoCalculado(el.getAttribute('data-del-imposto-calculado')); };
+    });
+    root.querySelectorAll('[data-relatorio-apoio-simples]').forEach(el=>{
+      el.onclick = ()=> gerarRelatorioApoioSimplesPDF(el.getAttribute('data-relatorio-apoio-simples'));
+    });
+    root.querySelectorAll('[data-relatorio-apoio-presumido]').forEach(el=>{
+      el.onclick = ()=> gerarRelatorioApoioPresumidoPDF(el.getAttribute('data-relatorio-apoio-presumido'));
+    });
     const calcCompetenciaEl = document.getElementById('calcCompetencia');
     if(calcCompetenciaEl) calcCompetenciaEl.onchange = (e)=>{ if(e.target.value){ state.calcCompetenciaAuto = e.target.value; render(); } };
+    const calcTrimestreEl = document.getElementById('calcTrimestre');
+    if(calcTrimestreEl) calcTrimestreEl.onchange = (e)=>{ state.calcTrimestreAuto = e.target.value; render(); };
     const calcUsarNotasBtn = document.getElementById('calcUsarNotasBtn');
     if(calcUsarNotasBtn){
       calcUsarNotasBtn.onclick = ()=>{
@@ -15142,9 +15507,24 @@
         `;
       };
     }
+    const calcUsarNotasPresumidoBtn = document.getElementById('calcUsarNotasPresumidoBtn');
+    if(calcUsarNotasPresumidoBtn){
+      calcUsarNotasPresumidoBtn.onclick = ()=>{
+        const clientId = deptOneSelectedClient();
+        const trimestre = document.getElementById('calcTrimestre').value;
+        if(!clientId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
+        if(!trimestre){ alert('Escolha o trimestre de apuração.'); return; }
+        const total = faturamentoTrimestre(clientId, trimestre);
+        document.getElementById('calcReceitaTri').value = total.toFixed(2);
+        const meses = mesesDoTrimestre(trimestre);
+        document.getElementById('calcNotasResumoPresumido').innerHTML = `
+          <div class="form-hint" style="margin:-8px 0 12px;">Receita de ${trimestreLabel(trimestre)} (${meses.map(m=>monthLabel(m)).join('/')}), somando notas de Saída/Serviços + faturamento lançado sem nota fiscal: ${fmtBRL(total)}.</div>
+        `;
+      };
+    }
     const calcSimplesBtn = document.getElementById('calcSimplesBtn');
     if(calcSimplesBtn){
-      calcSimplesBtn.onclick = ()=>{
+      calcSimplesBtn.onclick = async ()=>{
         const anexo = document.getElementById('calcAnexo').value;
         const rbt12 = parseFloat(document.getElementById('calcRbt12').value) || 0;
         const receitaMes = parseFloat(document.getElementById('calcReceitaMes').value) || 0;
@@ -15160,11 +15540,23 @@
             <div class="cr-line total"><span>Valor estimado do DAS</span><span>${fmtBRL(r.imposto)}</span></div>
           </div>
         `;
+        // Em modo automático (uma empresa no Simples Nacional selecionada no topo), salva no histórico.
+        const clientId = deptOneSelectedClient();
+        const cliente = clientId ? state.clients.find(c=>c.id===clientId) : null;
+        if(cliente && cliente.regimeTributario === 'Simples Nacional'){
+          const competencia = document.getElementById('calcCompetencia').value || state.calcCompetenciaAuto || state.competenciaAtiva;
+          await salvarImpostoCalculado({
+            clientId, tipo:'simples', competencia, anexo,
+            fatorRAtivo: !!cliente.fatorRAtivo, rbt12, receitaMes,
+            faixaNum:r.faixaNum, aliqNominal:r.aliqNominal, deduz:r.deduz, aliqEfetiva:r.aliqEfetiva, imposto:r.imposto,
+          });
+          render();
+        }
       };
     }
     const calcPresumidoBtn = document.getElementById('calcPresumidoBtn');
     if(calcPresumidoBtn){
-      calcPresumidoBtn.onclick = ()=>{
+      calcPresumidoBtn.onclick = async ()=>{
         const atividade = document.getElementById('calcAtividade').value;
         const receitaTri = parseFloat(document.getElementById('calcReceitaTri').value) || 0;
         const issPerc = parseFloat(document.getElementById('calcIss').value) || 0;
@@ -15184,6 +15576,19 @@
             <div class="cr-line total"><span>Total estimado de tributos</span><span>${fmtBRL(r.total)}</span></div>
           </div>
         `;
+        // Em modo automático (uma empresa no Lucro Presumido selecionada no topo), salva no histórico.
+        const clientId = deptOneSelectedClient();
+        const cliente = clientId ? state.clients.find(c=>c.id===clientId) : null;
+        if(cliente && cliente.regimeTributario === 'Lucro Presumido'){
+          const trimestreEl = document.getElementById('calcTrimestre');
+          const trimestre = (trimestreEl && trimestreEl.value) || state.calcTrimestreAuto || trimestreDeCompetencia(state.competenciaAtiva);
+          await salvarImpostoCalculado({
+            clientId, tipo:'presumido', competencia:trimestre, atividade, receitaTri, issPerc,
+            baseIrpj:r.baseIrpj, baseCsll:r.baseCsll, irpjNormal:r.irpjNormal, irpjAdicional:r.irpjAdicional, irpjTotal:r.irpjTotal,
+            csllTotal:r.csllTotal, pis:r.pis, cofins:r.cofins, iss:r.iss, total:r.total,
+          });
+          render();
+        }
       };
     }
 
@@ -15218,6 +15623,25 @@
     // Notas Fiscais wiring
     const novaNfBtn = document.getElementById('novaNfBtn');
     if(novaNfBtn) novaNfBtn.onclick = ()=>{ state.nfModalData = {}; state.modal='nf'; render(); };
+    const nfRelTipoOperacaoEl = document.getElementById('nfRelTipoOperacao');
+    if(nfRelTipoOperacaoEl) nfRelTipoOperacaoEl.onchange = (e)=>{ state.nfRelTipoOperacao = e.target.value; };
+    const nfRelMesInicioEl = document.getElementById('nfRelMesInicio');
+    if(nfRelMesInicioEl) nfRelMesInicioEl.onchange = (e)=>{ if(e.target.value) state.nfRelMesInicio = e.target.value; };
+    const nfRelMesFimEl = document.getElementById('nfRelMesFim');
+    if(nfRelMesFimEl) nfRelMesFimEl.onchange = (e)=>{ if(e.target.value) state.nfRelMesFim = e.target.value; };
+    const nfRelPdfBtn = document.getElementById('nfRelPdfBtn');
+    if(nfRelPdfBtn){
+      nfRelPdfBtn.onclick = ()=>{
+        const clientId = deptOneSelectedClient();
+        if(!clientId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
+        const tipo = document.getElementById('nfRelTipoOperacao').value;
+        const mesInicio = document.getElementById('nfRelMesInicio').value;
+        const mesFim = document.getElementById('nfRelMesFim').value;
+        if(!mesInicio || !mesFim){ alert('Informe o período (competência inicial e final).'); return; }
+        if(mesInicio > mesFim){ alert('A competência inicial não pode ser depois da final.'); return; }
+        gerarRelatorioNotasFiscaisPDF(clientId, tipo, mesInicio, mesFim);
+      };
+    }
     const nfCancel = document.getElementById('nfCancel');
     if(nfCancel) nfCancel.onclick = ()=>{ state.modal=null; state.nfModalData=null; render(); };
     const nfXmlInput = document.getElementById('nfXmlInput');
