@@ -611,6 +611,7 @@
     faturamentosManuais: [],
     fatManualAno: '',
     fatManualSujo: false,
+    calcCompetenciaAuto: '',
     tabelaFolhaModalData: null,
     tabelaFolhaVerId: '',
     tabelaFolhaSimulador: { valor:'', dependentes:0 },
@@ -10318,6 +10319,8 @@
       situacao: c.situacao||'', mainActivity: c.mainActivity||'', lookupMsg:'', lookupType:'info', lookupLoading:false,
       personType: c.personType||'', porte: c.porte||'', regimeTributario: c.regimeTributario||'',
       dataAbertura: c.dataAbertura||'', secondaryActivities: c.secondaryActivities||'',
+      anexoSimples: c.anexoSimples||'', fatorRAtivo: !!c.fatorRAtivo,
+      atividadePresumido: c.atividadePresumido||'', issAliquotaPresumido: c.issAliquotaPresumido!==undefined?c.issAliquotaPresumido:'5',
       capitalSocial: c.capitalSocial!==undefined?c.capitalSocial:'', capitalIntegralizado: c.capitalIntegralizado!==undefined?c.capitalIntegralizado:'',
       capitalAIntegralizar: c.capitalAIntegralizar!==undefined?c.capitalAIntegralizar:'',
       socios: Array.isArray(c.socios) ? c.socios.map(s=>Object.assign({},s)) : [],
@@ -10631,6 +10634,8 @@
             <div class="detail-item"><div class="dl">Situação cadastral</div><div class="dv">${c.situacao ? `<span class="tag ${situacaoClass(c.situacao)}">${escapeHtml(c.situacao)}</span>` : '—'}</div></div>
             <div class="detail-item"><div class="dl">Porte</div><div class="dv">${escapeHtml(c.porte||'—')}</div></div>
             <div class="detail-item"><div class="dl">Regime tributário</div><div class="dv">${escapeHtml(c.regimeTributario||'—')}</div></div>
+            ${c.regimeTributario==='Simples Nacional' ? `<div class="detail-item"><div class="dl">Anexo do Simples</div><div class="dv">${escapeHtml(c.anexoSimples||'—')}${c.fatorRAtivo?' <span class="tag sit-outra">Fator R automático (III/V)</span>':''}</div></div>` : ''}
+            ${c.regimeTributario==='Lucro Presumido' ? `<div class="detail-item"><div class="dl">Atividade (presunção)</div><div class="dv">${escapeHtml(c.atividadePresumido||'—')}${c.issAliquotaPresumido?' · ISS '+escapeHtml(c.issAliquotaPresumido)+'%':''}</div></div>` : ''}
             <div class="detail-item"><div class="dl">Data de abertura</div><div class="dv">${c.dataAbertura?fmtDate(c.dataAbertura):'—'}</div></div>
             <div class="detail-item detail-full"><div class="dl">Atividade principal</div><div class="dv">${escapeHtml(c.mainActivity||'—')}</div></div>
             <div class="detail-item detail-full"><div class="dl">Atividade(s) secundária(s)</div><div class="dv">${escapeHtml(c.secondaryActivities||'—')}</div></div>
@@ -11157,6 +11162,31 @@
     return total;
   }
 
+  // Soma a folha de pagamento (salários + pró-labore, valores brutos) dos últimos 12 meses até a
+  // competência informada — é o numerador do Fator R.
+  function folhaMaisProlabore12Meses(clientId, competenciaFinal){
+    if(!clientId || !competenciaFinal) return 0;
+    const [ano, mes] = competenciaFinal.split('-').map(Number);
+    let total = 0;
+    for(let i=0; i<12; i++){
+      const d = new Date(ano, mes-1-i, 1);
+      const comp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+      total += (state.folhas||[]).filter(f=>f.clientId===clientId && f.competencia===comp).reduce((s,f)=>s+(Number(f.bruto)||0),0);
+      total += (state.prolabores||[]).filter(p=>p.clientId===clientId && p.competencia===comp).reduce((s,p)=>s+(Number(p.bruto)||0),0);
+    }
+    return total;
+  }
+  // Fator R (LC 123/2006, art. 18, §5º-J): folha de pagamento (salários + pró-labore) dos últimos 12
+  // meses dividida pela receita bruta dos últimos 12 meses (RBT12). Decide, para as atividades de
+  // serviço elegíveis a essa dualidade, entre o Anexo III (Fator R ≥ 28%, tributação mais baixa) e o
+  // Anexo V (Fator R < 28%).
+  function calcFatorR(clientId, competenciaFinal){
+    const rbt12 = faturamentoNotas12Meses(clientId, competenciaFinal);
+    const folha12 = folhaMaisProlabore12Meses(clientId, competenciaFinal);
+    const fatorR = rbt12 > 0 ? folha12/rbt12 : 0;
+    return { rbt12, folha12, fatorR, anexoSugerido: fatorR >= 0.28 ? 'Anexo III — Serviços (locação, agências, etc.)' : 'Anexo V — Serviços intelectuais/técnicos' };
+  }
+
   // Lista de competências (YYYY-MM) entre duas datas, inclusive, em ordem crescente.
   function listaCompetencias(mesInicio, mesFim){
     if(!mesInicio || !mesFim) return [];
@@ -11213,24 +11243,16 @@
 
   function simplesCalcFormHtml(){
     return `
-      <div class="form-row">
-        <div class="field"><label>Anexo</label>
-          <select id="calcAnexo">${Object.keys(SIMPLES_TABELAS).map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
-        </div>
-        <div class="field"><label>Cliente (opcional)</label>
-          <select id="calcCliente"><option value="">— Nenhum —</option>${state.clients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>
-        </div>
+      <div class="field"><label>Anexo</label>
+        <select id="calcAnexo">${Object.keys(SIMPLES_TABELAS).map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
       </div>
-      <div class="field"><label>Competência (mês de apuração)</label><input type="month" id="calcCompetencia" value="${state.competenciaAtiva}"/></div>
-      <button type="button" class="btn-sm" id="calcUsarNotasBtn" style="margin-bottom:14px;">Usar faturamento (Notas Fiscais + lançado sem nota fiscal)</button>
-      <div id="calcNotasResumo"></div>
       <div class="form-row">
         <div class="field"><label>RBT12 — Receita bruta últimos 12 meses (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
         <div class="field"><label>Receita do mês (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaMes" placeholder="Ex: 25000"/></div>
       </div>
       <button type="button" class="btn-calc" id="calcSimplesBtn">Calcular DAS</button>
       <div id="calcSimplesResult"></div>
-      <div class="calc-disclaimer">Tabelas do Simples Nacional (Anexos I a V) vigentes desde 2018, sem alteração até 2026. Este cálculo é uma estimativa da alíquota efetiva sobre a receita do mês — não substitui a apuração oficial no PGDAS-D, que também considera o Fator R (para Anexos III/V), sublimites estaduais de ICMS/ISS e eventuais retenções. O faturamento puxado das Notas Fiscais depende de todas as notas do período já estarem corretamente registradas e classificadas como Saída/Serviços no sistema.</div>
+      <div class="calc-disclaimer">Tabelas do Simples Nacional (Anexos I a V) vigentes desde 2018, sem alteração até 2026. Este cálculo é uma estimativa da alíquota efetiva sobre a receita do mês — não substitui a apuração oficial no PGDAS-D, que também considera o Fator R (para Anexos III/V), sublimites estaduais de ICMS/ISS e eventuais retenções.</div>
     `;
   }
 
@@ -11290,13 +11312,8 @@
 
   function presumidoCalcFormHtml(){
     return `
-      <div class="form-row">
-        <div class="field"><label>Atividade</label>
-          <select id="calcAtividade">${Object.keys(PRESUMIDO_ATIVIDADES).map(k=>`<option value="${k}">${k} (IRPJ ${(PRESUMIDO_ATIVIDADES[k].irpj*100).toFixed(1)}% / CSLL ${(PRESUMIDO_ATIVIDADES[k].csll*100).toFixed(0)}%)</option>`).join('')}</select>
-        </div>
-        <div class="field"><label>Cliente (opcional)</label>
-          <select id="calcClientePresumido"><option value="">— Nenhum —</option>${state.clients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>
-        </div>
+      <div class="field"><label>Atividade</label>
+        <select id="calcAtividade">${Object.keys(PRESUMIDO_ATIVIDADES).map(k=>`<option value="${k}">${k} (IRPJ ${(PRESUMIDO_ATIVIDADES[k].irpj*100).toFixed(1)}% / CSLL ${(PRESUMIDO_ATIVIDADES[k].csll*100).toFixed(0)}%)</option>`).join('')}</select>
       </div>
       <div class="form-row">
         <div class="field"><label>Receita bruta do trimestre (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaTri" placeholder="Ex: 300000"/></div>
@@ -11317,13 +11334,94 @@
   }
 
   function calculadoraImpostosHtml(){
+    const empresaId = deptOneSelectedClient();
+    const cliente = empresaId ? state.clients.find(c=>c.id===empresaId) : null;
+    if(cliente && cliente.regimeTributario === 'Simples Nacional') return calculoAutoSimplesHtml(cliente);
+    if(cliente && cliente.regimeTributario === 'Lucro Presumido') return calculoAutoPresumidoHtml(cliente);
+    if(cliente && cliente.regimeTributario === 'Lucro Real') return `
+      <div class="panel-head"><h3>Cálculo de Impostos</h3></div>
+      <div class="form-hint" style="margin:0 0 8px; font-weight:700;">Empresa: ${escapeHtml(cliente.name)} — Lucro Real</div>
+      <div class="empty">O Lucro Real apura IRPJ e CSLL sobre o lucro contábil efetivo (ajustado pelas adições/exclusões fiscais), não por um percentual fixo de presunção — por isso não cabe num cálculo simplificado como este. Apure pelo Departamento Contábil (Lançamentos Contábeis e Relatório de Balanço/DRE) para chegar ao lucro real do período, e aplique as alíquotas de IRPJ (15% + adicional de 10% sobre o que exceder R$ 20.000/mês) e CSLL (9%) sobre esse resultado.</div>
+    `;
+    if(cliente && cliente.regimeTributario === 'MEI') return `
+      <div class="panel-head"><h3>Cálculo de Impostos</h3></div>
+      <div class="form-hint" style="margin:0 0 8px; font-weight:700;">Empresa: ${escapeHtml(cliente.name)} — MEI</div>
+      <div class="empty">O MEI paga um valor fixo mensal (DAS-MEI), que não depende de percentual sobre o faturamento — muda apenas conforme a atividade (comércio/indústria, serviços, ou ambos) e é reajustado todo início de ano pelo salário mínimo vigente. Consulte o valor atualizado no Portal do Empreendedor (gov.br/mei) ou no PGMEI antes de gerar a guia.</div>
+    `;
+    if(cliente) return `
+      <div class="panel-head"><h3>Cálculo de Impostos</h3></div>
+      <div class="form-hint" style="margin:0 0 8px; font-weight:700;">Empresa: ${escapeHtml(cliente.name)}</div>
+      <div class="empty">Esta empresa ainda não tem um regime tributário definido no cadastro (ou está marcada como "Isento / Outro"). Vá em Cadastro de Clientes → editar esta empresa → "Regime tributário" e escolha Simples Nacional ou Lucro Presumido para o sistema calcular os impostos automaticamente. Enquanto isso, você pode usar a simulação livre abaixo desmarcando a empresa no seletor do topo.</div>
+    `;
+
+    // Sem empresa única selecionada: simulação livre, comparando os dois regimes manualmente.
     return `
       <div class="panel-head"><h3>Cálculo de Impostos</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Selecione uma única empresa no painel "Selecionar cliente", no topo da página, para calcular automaticamente pelo regime tributário cadastrado dela (Simples Nacional ou Lucro Presumido). Sem uma empresa selecionada, use esta simulação livre para comparar cenários hipotéticos.</div>
       <div class="calc-tabs">
         <button type="button" class="dept-tab-btn ${state.calcTab==='simples'?'active':''}" data-calc-tab="simples">Simples Nacional</button>
         <button type="button" class="dept-tab-btn ${state.calcTab==='presumido'?'active':''}" data-calc-tab="presumido">Lucro Presumido</button>
       </div>
       <div id="calcTabContent">${state.calcTab==='simples' ? simplesCalcFormHtml() : presumidoCalcFormHtml()}</div>
+    `;
+  }
+
+  // ---- Simples Nacional: cálculo automático pelo cadastro da empresa ----
+  function calculoAutoSimplesHtml(cliente){
+    const competencia = state.calcCompetenciaAuto || state.competenciaAtiva;
+    const anexoCadastrado = cliente.anexoSimples;
+    const usaFatorR = !!cliente.fatorRAtivo && (anexoCadastrado==='Anexo III — Serviços (locação, agências, etc.)' || anexoCadastrado==='Anexo V — Serviços intelectuais/técnicos');
+    const fatorR = usaFatorR ? calcFatorR(cliente.id, competencia) : null;
+    const anexoUsado = fatorR ? fatorR.anexoSugerido : anexoCadastrado;
+    const semAnexo = !anexoCadastrado;
+
+    return `
+      <div class="panel-head"><h3>Cálculo de Impostos — Simples Nacional</h3></div>
+      <div class="form-hint" style="margin:0 0 4px; font-weight:700;">Empresa: ${escapeHtml(cliente.name)}</div>
+      ${semAnexo ? `<div class="empty">Esta empresa está no Simples Nacional mas ainda não tem o Anexo definido no cadastro. Vá em Cadastro de Clientes → editar esta empresa → "Anexo do Simples Nacional" e escolha o anexo antes de calcular.</div>` : `
+        <div class="form-hint" style="margin:0 0 14px;">
+          Anexo ${usaFatorR ? 'em uso (decidido pelo Fator R)' : 'cadastrado'}: <strong>${escapeHtml(anexoUsado)}</strong>
+          ${usaFatorR ? '' : ` — <a href="#" data-ir-cadastro-cliente="${cliente.id}">alterar no cadastro</a>`}
+        </div>
+        <div class="field"><label>Competência (mês de apuração)</label><input type="month" id="calcCompetencia" value="${competencia}"/></div>
+        <button type="button" class="btn-sm" id="calcUsarNotasBtn" style="margin-bottom:14px;">Usar faturamento (Notas Fiscais + lançado sem nota fiscal)</button>
+        <div id="calcNotasResumo"></div>
+        <div class="form-row">
+          <div class="field"><label>RBT12 — Receita bruta últimos 12 meses (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
+          <div class="field"><label>Receita do mês (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaMes" placeholder="Ex: 25000"/></div>
+        </div>
+        ${usaFatorR ? `
+          <div class="legis-note" style="margin-bottom:14px;">
+            <strong>Fator R (folha ÷ RBT12):</strong> ${fmtBRL(fatorR.folha12)} ÷ ${fmtBRL(fatorR.rbt12)} = <strong>${(fatorR.fatorR*100).toFixed(2).replace('.',',')}%</strong>
+            ${fatorR.fatorR >= 0.28 ? ' — igual ou acima de 28%, usa o Anexo III (mais barato).' : ' — abaixo de 28%, usa o Anexo V.'}
+            O RBT12 do Fator R é calculado pela mesma regra do campo acima (notas + lançado sem nota fiscal); a folha soma os salários (Contracheques/Folha) e os pró-labores dos últimos 12 meses. Confira se todos os meses estão lançados antes de confiar neste número.
+          </div>
+        ` : ''}
+        <input type="hidden" id="calcAnexo" value="${escapeHtml(anexoUsado)}"/>
+        <button type="button" class="btn-calc" id="calcSimplesBtn">Calcular DAS</button>
+        <div id="calcSimplesResult"></div>
+      `}
+      <div class="calc-disclaimer">Tabelas do Simples Nacional (Anexos I a V) vigentes desde 2018, sem alteração até 2026. Este cálculo é uma estimativa da alíquota efetiva sobre a receita do mês — não substitui a apuração oficial no PGDAS-D, que também considera sublimites estaduais de ICMS/ISS e eventuais retenções. O faturamento puxado das Notas Fiscais depende de todas as notas do período já estarem corretamente registradas e classificadas como Saída/Serviços no sistema.</div>
+    `;
+  }
+
+  // ---- Lucro Presumido: cálculo automático pelo cadastro da empresa ----
+  function calculoAutoPresumidoHtml(cliente){
+    const semAtividade = !cliente.atividadePresumido;
+    return `
+      <div class="panel-head"><h3>Cálculo de Impostos — Lucro Presumido</h3></div>
+      <div class="form-hint" style="margin:0 0 4px; font-weight:700;">Empresa: ${escapeHtml(cliente.name)}</div>
+      ${semAtividade ? `<div class="empty">Esta empresa está no Lucro Presumido mas ainda não tem a atividade (percentual de presunção) definida no cadastro. Vá em Cadastro de Clientes → editar esta empresa → "Atividade (percentual de presunção)" antes de calcular.</div>` : `
+        <div class="form-hint" style="margin:0 0 14px;">Atividade cadastrada: <strong>${escapeHtml(cliente.atividadePresumido)}</strong> (IRPJ ${(PRESUMIDO_ATIVIDADES[cliente.atividadePresumido].irpj*100).toFixed(1)}% / CSLL ${(PRESUMIDO_ATIVIDADES[cliente.atividadePresumido].csll*100).toFixed(0)}%) — <a href="#" data-ir-cadastro-cliente="${cliente.id}">alterar no cadastro</a></div>
+        <div class="form-row">
+          <div class="field"><label>Receita bruta do trimestre (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaTri" placeholder="Ex: 300000"/></div>
+          <div class="field"><label>Alíquota de ISS do município (%, se serviço)</label><input type="number" step="0.01" min="0" max="5" id="calcIss" value="${escapeHtml(cliente.issAliquotaPresumido||'5')}"/></div>
+        </div>
+        <input type="hidden" id="calcAtividade" value="${escapeHtml(cliente.atividadePresumido)}"/>
+        <button type="button" class="btn-calc" id="calcPresumidoBtn">Calcular tributos</button>
+        <div id="calcPresumidoResult"></div>
+      `}
+      <div class="calc-disclaimer">Percentuais de presunção conforme Lei 9.249/1995 e IN RFB 1.700/2017. IRPJ e CSLL apurados por trimestre; adicional de 10% de IRPJ incide sobre a base presumida que exceder R$ 60.000/trimestre. PIS (0,65%) e COFINS (3%) no regime cumulativo. Há tramitação legislativa (LC 224/2025 e PLP 182/2025) que pode alterar percentuais de presunção para empresas de maior faturamento; confirme a legislação vigente antes de usar para apuração oficial.</div>
     `;
   }
 
@@ -14201,6 +14299,32 @@
               <div class="field"><label>Regime tributário</label><select id="clRegime">${optHtml(REGIME_OPTIONS, d.regimeTributario)}</select></div>
               <div class="field"><label>Data de abertura</label><input type="date" id="clDataAbertura" value="${escapeHtml(d.dataAbertura||'')}"/></div>
             </div>
+            ${d.regimeTributario==='Simples Nacional' ? `
+              <div class="form-row" style="align-items:flex-end;">
+                <div class="field"><label>Anexo do Simples Nacional</label>
+                  <select id="clAnexoSimples">
+                    <option value="">— Selecione —</option>
+                    ${Object.keys(SIMPLES_TABELAS).map(k=>`<option value="${k}" ${d.anexoSimples===k?'selected':''}>${k}</option>`).join('')}
+                  </select>
+                </div>
+                ${(d.anexoSimples==='Anexo III — Serviços (locação, agências, etc.)' || d.anexoSimples==='Anexo V — Serviços intelectuais/técnicos') ? `
+                  <div class="field" style="flex:0 0 auto;"><label style="display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap;"><input type="checkbox" id="clFatorRAtivo" ${d.fatorRAtivo?'checked':''}/> Decidir III/V pelo Fator R</label></div>
+                ` : ''}
+              </div>
+              ${(d.anexoSimples==='Anexo III — Serviços (locação, agências, etc.)' || d.anexoSimples==='Anexo V — Serviços intelectuais/técnicos') ? `
+                <div class="form-hint" style="margin:-6px 0 12px;">O Fator R (folha de pagamento ÷ receita bruta dos últimos 12 meses) decide entre o Anexo III (Fator R ≥ 28%, mais barato) e o Anexo V (Fator R &lt; 28%) para atividades elegíveis a essa dualidade (LC 123/2006, art. 18, §5º-J). Marque a opção acima para o Cálculo de Impostos calcular automaticamente qual dos dois usar a cada competência — sem marcar, usa sempre o anexo selecionado.</div>
+              ` : ''}
+            ` : d.regimeTributario==='Lucro Presumido' ? `
+              <div class="form-row">
+                <div class="field"><label>Atividade (percentual de presunção)</label>
+                  <select id="clAtividadePresumido">
+                    <option value="">— Selecione —</option>
+                    ${Object.keys(PRESUMIDO_ATIVIDADES).map(k=>`<option value="${k}" ${d.atividadePresumido===k?'selected':''}>${k} (IRPJ ${(PRESUMIDO_ATIVIDADES[k].irpj*100).toFixed(1)}% / CSLL ${(PRESUMIDO_ATIVIDADES[k].csll*100).toFixed(0)}%)</option>`).join('')}
+                  </select>
+                </div>
+                <div class="field"><label>Alíquota de ISS do município (%, se serviço)</label><input type="number" step="0.01" min="0" max="5" id="clIssPresumido" value="${escapeHtml(d.issAliquotaPresumido)}"/></div>
+              </div>
+            ` : ''}
             <div class="field"><label>Atividade principal</label><input type="text" id="clMainActivity" value="${escapeHtml(d.mainActivity||'')}"/></div>
             <div class="field"><label>Atividade(s) secundária(s)</label><input type="text" id="clSecondaryActivities" placeholder="Separe por ; se houver mais de uma" value="${escapeHtml(d.secondaryActivities||'')}"/></div>
 
@@ -14414,6 +14538,7 @@
         doc:'', name:'', phone:'', email:'', address:'', city:'', uf:'',
         situacao:'', mainActivity:'', lookupMsg:'', lookupType:'info', lookupLoading:false,
         personType:'', porte:'', regimeTributario:'', dataAbertura:'', secondaryActivities:'',
+        anexoSimples:'', fatorRAtivo:false, atividadePresumido:'', issAliquotaPresumido:'5',
         capitalSocial:'', capitalIntegralizado:'', capitalAIntegralizar:'', socios:[],
         contractStart:'', contractEnd:'', contractValue:'', contractPeriodicity:'Mensal', contractStatus:'Ativo', contractNotes:'',
       };
@@ -14996,12 +15121,17 @@
     root.querySelectorAll('[data-calc-tab]').forEach(el=>{
       el.onclick = ()=>{ state.calcTab = el.getAttribute('data-calc-tab'); render(); };
     });
+    root.querySelectorAll('[data-ir-cadastro-cliente]').forEach(el=>{
+      el.onclick = (e)=>{ e.preventDefault(); openClientEditModal(el.getAttribute('data-ir-cadastro-cliente')); };
+    });
+    const calcCompetenciaEl = document.getElementById('calcCompetencia');
+    if(calcCompetenciaEl) calcCompetenciaEl.onchange = (e)=>{ if(e.target.value){ state.calcCompetenciaAuto = e.target.value; render(); } };
     const calcUsarNotasBtn = document.getElementById('calcUsarNotasBtn');
     if(calcUsarNotasBtn){
       calcUsarNotasBtn.onclick = ()=>{
-        const clientId = document.getElementById('calcCliente').value;
+        const clientId = deptOneSelectedClient();
         const competencia = document.getElementById('calcCompetencia').value;
-        if(!clientId){ alert('Selecione um cliente para puxar o faturamento das Notas Fiscais.'); return; }
+        if(!clientId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
         if(!competencia){ alert('Informe a competência (mês de apuração).'); return; }
         const doMes = faturamentoNotasMes(clientId, competencia);
         const dos12Meses = faturamentoNotas12Meses(clientId, competencia);
@@ -15022,10 +15152,11 @@
         const r = calcSimples(anexo, rbt12, receitaMes);
         document.getElementById('calcSimplesResult').innerHTML = `
           <div class="calc-result">
+            <div class="cr-line"><span>Anexo usado</span><span>${escapeHtml(anexo)}</span></div>
             <div class="cr-line"><span>Faixa identificada</span><span>${r.faixaNum}ª faixa</span></div>
-            <div class="cr-line"><span>Alíquota nominal</span><span>${(r.aliqNominal*100).toFixed(2)}%</span></div>
+            <div class="cr-line"><span>Alíquota nominal</span><span>${(r.aliqNominal*100).toFixed(2).replace('.',',')}%</span></div>
             <div class="cr-line"><span>Parcela a deduzir</span><span>${fmtBRL(r.deduz)}</span></div>
-            <div class="cr-line"><span>Alíquota efetiva</span><span>${(r.aliqEfetiva*100).toFixed(2)}%</span></div>
+            <div class="cr-line"><span>Alíquota efetiva</span><span>${(r.aliqEfetiva*100).toFixed(2).replace('.',',')}%</span></div>
             <div class="cr-line total"><span>Valor estimado do DAS</span><span>${fmtBRL(r.imposto)}</span></div>
           </div>
         `;
@@ -15041,6 +15172,7 @@
         const r = calcPresumido(atividade, receitaTri, issPerc);
         document.getElementById('calcPresumidoResult').innerHTML = `
           <div class="calc-result">
+            <div class="cr-line"><span>Atividade usada</span><span>${escapeHtml(atividade)}</span></div>
             <div class="cr-line"><span>Base de cálculo IRPJ</span><span>${fmtBRL(r.baseIrpj)}</span></div>
             <div class="cr-line"><span>IRPJ (15%)</span><span>${fmtBRL(r.irpjNormal)}</span></div>
             <div class="cr-line"><span>Adicional IRPJ (10% sobre excedente R$60mil)</span><span>${fmtBRL(r.irpjAdicional)}</span></div>
@@ -18018,14 +18150,33 @@
         state.clientModalData[map[id]] = e.target.value;
       };
     });
-    ['clPersonType','clPorte','clRegime','clContractPeriodicity','clContractStatus'].forEach(id=>{
+    ['clPersonType','clPorte','clContractPeriodicity','clContractStatus'].forEach(id=>{
       const el = document.getElementById(id);
       if(el) el.onchange = (e)=>{
         if(!state.clientModalData) return;
-        const map = {clPersonType:'personType', clPorte:'porte', clRegime:'regimeTributario', clContractPeriodicity:'contractPeriodicity', clContractStatus:'contractStatus'};
+        const map = {clPersonType:'personType', clPorte:'porte', clContractPeriodicity:'contractPeriodicity', clContractStatus:'contractStatus'};
         state.clientModalData[map[id]] = e.target.value;
       };
     });
+    const clRegimeEl = document.getElementById('clRegime');
+    if(clRegimeEl) clRegimeEl.onchange = (e)=>{
+      if(!state.clientModalData) return;
+      state.clientModalData.regimeTributario = e.target.value;
+      render();
+    };
+    const clAnexoSimplesEl = document.getElementById('clAnexoSimples');
+    if(clAnexoSimplesEl) clAnexoSimplesEl.onchange = (e)=>{
+      if(!state.clientModalData) return;
+      state.clientModalData.anexoSimples = e.target.value;
+      state.clientModalData.fatorRAtivo = false;
+      render();
+    };
+    const clFatorRAtivoEl = document.getElementById('clFatorRAtivo');
+    if(clFatorRAtivoEl) clFatorRAtivoEl.onchange = (e)=>{ if(state.clientModalData) state.clientModalData.fatorRAtivo = e.target.checked; };
+    const clAtividadePresumidoEl = document.getElementById('clAtividadePresumido');
+    if(clAtividadePresumidoEl) clAtividadePresumidoEl.onchange = (e)=>{ if(state.clientModalData) state.clientModalData.atividadePresumido = e.target.value; };
+    const clIssPresumidoEl = document.getElementById('clIssPresumido');
+    if(clIssPresumidoEl) clIssPresumidoEl.oninput = (e)=>{ if(state.clientModalData) state.clientModalData.issAliquotaPresumido = e.target.value; };
 
     function refreshSociosList(){
       const container = document.getElementById('sociosListContainer');
@@ -18174,6 +18325,10 @@
           personType: explicitPersonType || personTypeFromDoc(doc),
           porte: document.getElementById('clPorte').value,
           regimeTributario: document.getElementById('clRegime').value,
+          anexoSimples: (state.clientModalData && state.clientModalData.anexoSimples) || '',
+          fatorRAtivo: !!(state.clientModalData && state.clientModalData.fatorRAtivo),
+          atividadePresumido: (state.clientModalData && state.clientModalData.atividadePresumido) || '',
+          issAliquotaPresumido: (state.clientModalData && state.clientModalData.issAliquotaPresumido) || '',
           dataAbertura: document.getElementById('clDataAbertura').value,
           mainActivity: document.getElementById('clMainActivity').value,
           secondaryActivities: document.getElementById('clSecondaryActivities').value,
