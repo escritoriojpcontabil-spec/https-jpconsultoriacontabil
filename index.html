@@ -614,9 +614,10 @@
     calcCompetenciaAuto: '',
     impostosCalculados: [],
     calcTrimestreAuto: '',
-    constituicoesEmpresa: [],
-    constituicaoEmpresaAtiva: '',
-    constituicaoCampoModalData: null,
+    empresasConstituicao: [],
+    constituicaoExpandidaId: '',
+    empresaConstituicaoModalData: null,
+    constituicaoDocumentoModalData: null,
     tabelaFolhaModalData: null,
     tabelaFolhaVerId: '',
     tabelaFolhaSimulador: { valor:'', dependentes:0 },
@@ -6851,37 +6852,37 @@
     await loadDocumentosSocietarios(); render();
   }
 
-  // Constituição de Empresas — ficha fixa por empresa (CNPJ, Contrato de Sociedade Limitada, Contrato
-  // de Empresa e Data de Abertura), cada campo editado individualmente. Um único registro por cliente
-  // (id = clientId). A Data de Abertura é o mesmo campo do Cadastro de Clientes — editar aqui atualiza
-  // lá também, e vice-versa, para não ter duas datas divergentes.
-  async function loadConstituicoesEmpresa(){
-    state.constituicoesEmpresa = [];
+  // Constituição de Empresas — lista própria, independente do Cadastro de Clientes: empresas em fase
+  // de abertura, que ainda podem não ser clientes do escritório. Cada uma guarda nome, CNPJ (texto) e
+  // Data de Abertura, além de 3 documentos em PDF (CNPJ, Contrato de Sociedade Limitada, Contrato de
+  // Empresa) anexados um a um.
+  async function loadEmpresasConstituicao(){
+    state.empresasConstituicao = [];
     try{
-      const keys = await Store.list('constituicoesempresa:', true);
+      const keys = await Store.list('empresasconstituicao:', true);
       if(keys && keys.keys){
         for(const k of keys.keys){
-          try{ const r = await Store.get(k, true); if(r) state.constituicoesEmpresa.push(JSON.parse(r.value)); }catch(e){}
+          try{ const r = await Store.get(k, true); if(r) state.empresasConstituicao.push(JSON.parse(r.value)); }catch(e){}
         }
       }
     }catch(e){}
+    state.empresasConstituicao.sort((a,b)=>(a.nomeEmpresa||'').localeCompare(b.nomeEmpresa||''));
   }
-  function constituicaoEmpresaEmBranco(clientId){
-    return { id:clientId, clientId, cnpjNome:'', cnpjBase64:'', contratoSociedadeNome:'', contratoSociedadeBase64:'', contratoEmpresaNome:'', contratoEmpresaBase64:'' };
-  }
-  function constituicaoEmpresaDe(clientId){
-    return (state.constituicoesEmpresa||[]).find(r=>r.clientId===clientId) || constituicaoEmpresaEmBranco(clientId);
-  }
-  async function saveConstituicaoEmpresa(rec){
-    rec.id = rec.clientId;
+  async function saveEmpresaConstituicao(emp){
+    if(!emp.id) emp.id = uid();
     try{
-      await Store.set('constituicoesempresa:'+rec.id, JSON.stringify(rec), true);
+      await Store.set('empresasconstituicao:'+emp.id, JSON.stringify(emp), true);
     }catch(e){
-      alert('Não foi possível salvar. O arquivo anexado provavelmente é grande demais para o banco de dados (limite de ~1MB por documento). Tente um arquivo menor ou mais comprimido.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      alert('Não foi possível salvar. Se anexou um arquivo, ele provavelmente é grande demais para o banco de dados (limite de ~1MB por documento). Tente um arquivo menor ou mais comprimido.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
       return false;
     }
-    await loadConstituicoesEmpresa(); render();
+    await loadEmpresasConstituicao(); render();
     return true;
+  }
+  async function deleteEmpresaConstituicao(id){
+    await Store.delete('empresasconstituicao:'+id, true);
+    if(state.constituicaoExpandidaId===id) state.constituicaoExpandidaId='';
+    await loadEmpresasConstituicao(); render();
   }
 
   // Baixa de Empresas — serviço esporádico, sem vínculo com o Cadastro de Clientes
@@ -9293,7 +9294,7 @@
     await loadTabelasFolha();
     await loadFaturamentosManuais();
     await loadImpostosCalculados();
-    await loadConstituicoesEmpresa();
+    await loadEmpresasConstituicao();
     await loadInscricoes();
     await loadAlvaras();
     await loadProcessosFiscais();
@@ -9339,7 +9340,7 @@
       tabelasFolha: state.tabelasFolha,
       faturamentosManuais: state.faturamentosManuais,
       impostosCalculados: state.impostosCalculados,
-      constituicoesEmpresa: state.constituicoesEmpresa,
+      empresasConstituicao: state.empresasConstituicao,
       prolabores: state.prolabores,
       decimosTerceiros: state.decimosTerceiros,
       pontoRegistros: state.pontoRegistros,
@@ -9419,7 +9420,7 @@
       {key:'tabelasFolha', prefix:'tabelasfolha:', idField:'id'},
       {key:'faturamentosManuais', prefix:'faturamentosmanuais:', idField:'id'},
       {key:'impostosCalculados', prefix:'impostoscalculados:', idField:'id'},
-      {key:'constituicoesEmpresa', prefix:'constituicoesempresa:', idField:'id'},
+      {key:'empresasConstituicao', prefix:'empresasconstituicao:', idField:'id'},
       {key:'prolabores', prefix:'prolabores:', idField:'id'},
       {key:'decimosTerceiros', prefix:'decimosterceiros:', idField:'id'},
       {key:'pontoRegistros', prefix:'pontoregistros:', idField:'id'},
@@ -14063,7 +14064,6 @@
     const empresaUnica = deptOneSelectedClient() || '';
     state.contratoEmpresaAtiva = empresaUnica;
     state.documentoSocietarioEmpresaAtiva = empresaUnica;
-    state.constituicaoEmpresaAtiva = empresaUnica;
     state.inscricaoEmpresaAtiva = empresaUnica;
     state.alvaraEmpresaAtiva = empresaUnica;
     state.processoFiscalEmpresaAtiva = empresaUnica;
@@ -14205,82 +14205,93 @@
   }
 
   const CONSTITUICAO_CAMPOS = {
-    cnpj: { label:'CNPJ', nomeCampo:'cnpjNome', base64Campo:'cnpjBase64', tipo:'arquivo' },
-    contratoSociedade: { label:'Contrato de Sociedade Limitada', nomeCampo:'contratoSociedadeNome', base64Campo:'contratoSociedadeBase64', tipo:'arquivo' },
-    contratoEmpresa: { label:'Contrato de Empresa', nomeCampo:'contratoEmpresaNome', base64Campo:'contratoEmpresaBase64', tipo:'arquivo' },
-    dataAbertura: { label:'Data de Abertura', tipo:'data' },
+    cnpj: { label:'CNPJ', nomeCampo:'cnpjArquivoNome', base64Campo:'cnpjArquivoBase64' },
+    contratoSociedade: { label:'Contrato de Sociedade Limitada', nomeCampo:'contratoSociedadeArquivoNome', base64Campo:'contratoSociedadeArquivoBase64' },
+    contratoEmpresa: { label:'Contrato de Empresa', nomeCampo:'contratoEmpresaArquivoNome', base64Campo:'contratoEmpresaArquivoBase64' },
   };
 
-  function constituicaoEmpresaPanelHtml(){
-    const empresa = state.clients.find(c=>c.id===state.constituicaoEmpresaAtiva);
+  function constituicaoDocumentosHtml(emp){
+    const linha = (campoKey)=>{
+      const cfg = CONSTITUICAO_CAMPOS[campoKey];
+      const nome = emp[cfg.nomeCampo], base64 = emp[cfg.base64Campo];
+      const chave = emp.id + '|' + campoKey;
+      return `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:#F8F9FB; border:1px solid var(--line); border-radius:8px; padding:8px 10px;">
+          <div style="font-size:12.5px;">
+            <strong>${cfg.label}</strong>
+            ${nome ? `<span style="color:var(--ink-soft);"> — 📎 ${escapeHtml(nome)}</span>` : `<span style="color:var(--ink-soft);"> — sem arquivo anexado</span>`}
+          </div>
+          <div style="display:flex; gap:6px; flex-shrink:0;">
+            ${base64 ? `
+              ${/\.pdf$/i.test(nome||'') ? `<button type="button" class="btn-detail" data-ver-constituicao="${chave}">Visualizar</button>` : ''}
+              <button type="button" class="btn-detail" data-baixar-constituicao="${chave}">Baixar</button>
+              <button type="button" class="btn-sm danger" data-remover-constituicao="${chave}">Remover</button>
+            ` : `<button type="button" class="btn-sm" data-anexar-constituicao="${chave}">Anexar arquivo</button>`}
+          </div>
+        </div>
+      `;
+    };
     return `
-      <div class="panel-head"><h3>Constituição de Empresas</h3></div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Ficha com os documentos e a data de abertura da constituição da empresa — CNPJ, Contrato de Sociedade Limitada e Contrato de Empresa em PDF, e a Data de Abertura — cada campo com seu próprio botão de edição.</div>
-      ${!empresa ? deptSelecioneUmaEmpresaHtml('ver ou editar a constituição dela') : (function(){
-        const rec = constituicaoEmpresaDe(empresa.id);
-        const linhaArquivo = (campoKey)=>{
-          const cfg = CONSTITUICAO_CAMPOS[campoKey];
-          const nome = rec[cfg.nomeCampo], base64 = rec[cfg.base64Campo];
-          return `
-            <div class="cc-row" style="align-items:flex-start;">
-              <div class="cr-main">
-                <div class="cr-title">${cfg.label}</div>
-                <div class="cr-meta">${nome ? '📎 '+escapeHtml(nome) : '<span style="color:var(--ink-soft);">Nenhum arquivo anexado</span>'}</div>
-              </div>
-              <div style="display:flex; gap:6px; flex-shrink:0;">
-                ${base64 ? `<button type="button" class="btn-detail" data-ver-constituicao="${campoKey}">Visualizar</button><button type="button" class="btn-detail" data-baixar-constituicao="${campoKey}">Baixar</button>` : ''}
-                <button type="button" class="btn-detail" data-editar-constituicao="${campoKey}">Editar</button>
-              </div>
-            </div>
-          `;
-        };
-        const linhaData = `
-          <div class="cc-row" style="align-items:flex-start;">
-            <div class="cr-main">
-              <div class="cr-title">Data de Abertura</div>
-              <div class="cr-meta">${empresa.dataAbertura ? fmtDate(empresa.dataAbertura) : '<span style="color:var(--ink-soft);">Não informada</span>'}</div>
-            </div>
-            <div style="display:flex; gap:6px; flex-shrink:0;">
-              <button type="button" class="btn-detail" data-editar-constituicao="dataAbertura">Editar</button>
-            </div>
-          </div>
-        `;
-        return `
-          <div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(empresa.name)}</div>
-          <div class="cc-list">
-            ${linhaArquivo('cnpj')}
-            ${linhaArquivo('contratoSociedade')}
-            ${linhaArquivo('contratoEmpresa')}
-            ${linhaData}
-          </div>
-        `;
-      })()}
+      <div style="border-top:1px solid var(--line); margin-top:6px; padding-top:10px;">
+        <div style="font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Documentos da constituição</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${linha('cnpj')}
+          ${linha('contratoSociedade')}
+          ${linha('contratoEmpresa')}
+        </div>
+      </div>
     `;
   }
 
-  function constituicaoCampoModalHtml(){
-    const d = state.constituicaoCampoModalData;
+  function constituicaoEmpresaPanelHtml(){
+    const lista = state.empresasConstituicao || [];
+    return `
+      <div class="panel-head">
+        <h3>Constituição de Empresas</h3>
+        <button type="button" class="btn-add" id="novaEmpresaConstituicaoBtn">+ Nova empresa</button>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 16px;">Empresas em fase de abertura — não precisa ser cliente cadastrado no escritório, já que a empresa pode ainda não ter fechado contrato. Guarde aqui o CNPJ, o Contrato de Sociedade Limitada e o Contrato de Empresa em PDF, e a Data de Abertura.</div>
+      ${!lista.length ? `<div class="empty">Nenhuma empresa em constituição registrada ainda.</div>` : `
+        <div class="cc-list">
+          ${lista.map(emp=>`
+            <div class="cc-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+                <div class="cr-main">
+                  <div class="cr-title">${escapeHtml(emp.nomeEmpresa||'—')}</div>
+                  <div class="cr-meta">${emp.cnpj?'CNPJ '+escapeHtml(emp.cnpj):'CNPJ não informado'} · Abertura: ${emp.dataAbertura?fmtDate(emp.dataAbertura):'não informada'}</div>
+                  ${emp.observacoes ? `<div class="cr-meta">${escapeHtml(emp.observacoes)}</div>` : ''}
+                </div>
+                <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap;">
+                  <button type="button" class="btn-detail" data-toggle-docs-constituicao="${emp.id}">${state.constituicaoExpandidaId===emp.id?'Fechar documentos':'Ver / anexar documentos'}</button>
+                  <button type="button" class="btn-sm" data-editar-empresa-constituicao="${emp.id}">Editar</button>
+                  <button type="button" class="btn-sm danger" data-del-empresa-constituicao="${emp.id}">Excluir</button>
+                </div>
+              </div>
+              ${state.constituicaoExpandidaId===emp.id ? constituicaoDocumentosHtml(emp) : ''}
+            </div>
+          `).join('')}
+        </div>
+      `}
+    `;
+  }
+
+  function empresaConstituicaoModalHtml(){
+    const d = state.empresaConstituicaoModalData;
     if(!d) return '';
-    const cfg = CONSTITUICAO_CAMPOS[d.campo];
-    if(!cfg) return '';
-    const ehData = cfg.tipo === 'data';
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>Editar — ${escapeHtml(cfg.label)}</h3>
-          <form id="constituicaoCampoForm">
-            ${ehData ? `
-              <div class="field"><label>Data de Abertura</label><input type="date" id="ccDataAbertura" value="${escapeHtml(d.valorAtual||'')}"/></div>
-            ` : `
-              <div class="attach-box">
-                <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo em PDF — ${escapeHtml(cfg.label)}</label>
-                <input type="file" id="ccArquivoInput" accept=".pdf"/>
-                <div class="form-hint" style="margin-top:6px;">Tamanho máximo: 700KB.</div>
-                ${d.valorAtual ? `<div class="form-hint" style="margin-top:8px;">Arquivo atual: ${escapeHtml(d.valorAtual)} — selecionar um novo substitui este.</div>` : ''}
-              </div>
-            `}
+          <h3>${d.id ? 'Editar empresa' : 'Nova empresa em constituição'}</h3>
+          <form id="empresaConstituicaoForm">
+            <div class="field"><label>Nome da empresa</label><input type="text" id="ecNomeEmpresa" value="${escapeHtml(d.nomeEmpresa||'')}" required/></div>
+            <div class="form-row">
+              <div class="field"><label>CNPJ (se já tiver)</label><input type="text" id="ecCnpj" value="${escapeHtml(d.cnpj||'')}" placeholder="00.000.000/0000-00"/></div>
+              <div class="field"><label>Data de Abertura</label><input type="date" id="ecDataAbertura" value="${escapeHtml(d.dataAbertura||'')}"/></div>
+            </div>
+            <div class="field"><label>Observações</label><input type="text" id="ecObservacoes" value="${escapeHtml(d.observacoes||'')}"/></div>
+            <div class="form-hint" style="margin:-4px 0 12px;">Os documentos (CNPJ, Contrato de Sociedade Limitada, Contrato de Empresa) são anexados depois de salvar, em "Ver / anexar documentos".</div>
             <div class="modal-actions">
-              <button type="button" class="btn-sm" id="ccCancel">Cancelar</button>
+              <button type="button" class="btn-sm" id="ecCancel">Cancelar</button>
               <button type="submit" class="btn-add">Salvar</button>
             </div>
           </form>
@@ -14288,6 +14299,32 @@
       </div>
     `;
   }
+
+  function constituicaoDocumentoModalHtml(){
+    const d = state.constituicaoDocumentoModalData;
+    if(!d) return '';
+    const cfg = CONSTITUICAO_CAMPOS[d.campo];
+    if(!cfg) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Anexar — ${escapeHtml(cfg.label)}</h3>
+          <form id="constituicaoDocumentoForm">
+            <div class="attach-box">
+              <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo em PDF</label>
+              <input type="file" id="cxdArquivoInput" accept=".pdf" required/>
+              <div class="form-hint" style="margin-top:6px;">Tamanho máximo: 700KB.</div>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="cxdCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
 
   const TIPOS_INSCRICAO = ['CNPJ', 'Inscrição Estadual', 'Inscrição Municipal', 'IPTU'];
 
@@ -14972,7 +15009,8 @@
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
       ${state.modal==='documentoSocietario' ? documentoSocietarioModalHtml() : ''}
-      ${state.modal==='constituicaoCampo' ? constituicaoCampoModalHtml() : ''}
+      ${state.modal==='empresaConstituicao' ? empresaConstituicaoModalHtml() : ''}
+      ${state.modal==='constituicaoDocumento' ? constituicaoDocumentoModalHtml() : ''}
       ${state.modal==='inscricao' ? inscricaoModalHtml() : ''}
       ${state.modal==='alvara' ? alvaraModalHtml() : ''}
       ${state.modal==='processoFiscal' ? processoFiscalModalHtml() : ''}
@@ -17372,76 +17410,126 @@
       };
     }
 
-    // ===== Constituição de Empresas =====
+    // ===== Constituição de Empresas (lista própria, independente do Cadastro de Clientes) =====
+    const novaEmpresaConstituicaoBtn = document.getElementById('novaEmpresaConstituicaoBtn');
+    if(novaEmpresaConstituicaoBtn){
+      novaEmpresaConstituicaoBtn.onclick = ()=>{
+        state.empresaConstituicaoModalData = { nomeEmpresa:'', cnpj:'', dataAbertura:'', observacoes:'' };
+        state.modal = 'empresaConstituicao'; render();
+      };
+    }
+    root.querySelectorAll('[data-editar-empresa-constituicao]').forEach(el=>{
+      el.onclick = ()=>{
+        const emp = state.empresasConstituicao.find(x=>x.id===el.getAttribute('data-editar-empresa-constituicao'));
+        if(!emp) return;
+        state.empresaConstituicaoModalData = { id:emp.id, nomeEmpresa:emp.nomeEmpresa||'', cnpj:emp.cnpj||'', dataAbertura:emp.dataAbertura||'', observacoes:emp.observacoes||'' };
+        state.modal = 'empresaConstituicao'; render();
+      };
+    });
+    root.querySelectorAll('[data-del-empresa-constituicao]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta empresa e todos os documentos anexados a ela? Essa ação não pode ser desfeita.')) deleteEmpresaConstituicao(el.getAttribute('data-del-empresa-constituicao')); };
+    });
+    root.querySelectorAll('[data-toggle-docs-constituicao]').forEach(el=>{
+      el.onclick = ()=>{
+        const id = el.getAttribute('data-toggle-docs-constituicao');
+        state.constituicaoExpandidaId = state.constituicaoExpandidaId===id ? '' : id;
+        render();
+      };
+    });
+    const ecCancel = document.getElementById('ecCancel');
+    if(ecCancel) ecCancel.onclick = ()=>{ state.modal=null; state.empresaConstituicaoModalData=null; render(); };
+    const empresaConstituicaoForm = document.getElementById('empresaConstituicaoForm');
+    if(empresaConstituicaoForm){
+      empresaConstituicaoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const d = state.empresaConstituicaoModalData;
+        if(!d) return;
+        const emp = {
+          id: d.id, nomeEmpresa: document.getElementById('ecNomeEmpresa').value,
+          cnpj: document.getElementById('ecCnpj').value,
+          dataAbertura: document.getElementById('ecDataAbertura').value,
+          observacoes: document.getElementById('ecObservacoes').value,
+        };
+        if(d.id){
+          const existente = state.empresasConstituicao.find(x=>x.id===d.id);
+          if(existente){ emp.cnpjArquivoNome = existente.cnpjArquivoNome; emp.cnpjArquivoBase64 = existente.cnpjArquivoBase64; emp.contratoSociedadeArquivoNome = existente.contratoSociedadeArquivoNome; emp.contratoSociedadeArquivoBase64 = existente.contratoSociedadeArquivoBase64; emp.contratoEmpresaArquivoNome = existente.contratoEmpresaArquivoNome; emp.contratoEmpresaArquivoBase64 = existente.contratoEmpresaArquivoBase64; }
+        }
+        const btn = empresaConstituicaoForm.querySelector('button[type="submit"]');
+        if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
+        const ok = await saveEmpresaConstituicao(emp);
+        if(!ok){ if(btn){ btn.disabled = false; btn.textContent = 'Salvar'; } return; }
+        state.modal=null; state.empresaConstituicaoModalData=null; render();
+      };
+    }
     root.querySelectorAll('[data-ver-constituicao]').forEach(el=>{
       el.onclick = ()=>{
-        const rec = constituicaoEmpresaDe(state.constituicaoEmpresaAtiva);
-        const cfg = CONSTITUICAO_CAMPOS[el.getAttribute('data-ver-constituicao')];
-        if(rec[cfg.base64Campo]) visualizarArquivoBase64(rec[cfg.base64Campo], rec[cfg.nomeCampo]||'documento.pdf');
+        const [empId, campo] = el.getAttribute('data-ver-constituicao').split('|');
+        const emp = state.empresasConstituicao.find(x=>x.id===empId);
+        const cfg = CONSTITUICAO_CAMPOS[campo];
+        if(emp && emp[cfg.base64Campo]) visualizarArquivoBase64(emp[cfg.base64Campo], emp[cfg.nomeCampo]||'documento.pdf');
       };
     });
     root.querySelectorAll('[data-baixar-constituicao]').forEach(el=>{
       el.onclick = ()=>{
-        const rec = constituicaoEmpresaDe(state.constituicaoEmpresaAtiva);
-        const cfg = CONSTITUICAO_CAMPOS[el.getAttribute('data-baixar-constituicao')];
-        if(!rec[cfg.base64Campo]) return;
+        const [empId, campo] = el.getAttribute('data-baixar-constituicao').split('|');
+        const emp = state.empresasConstituicao.find(x=>x.id===empId);
+        const cfg = CONSTITUICAO_CAMPOS[campo];
+        if(!emp || !emp[cfg.base64Campo]) return;
         const a = document.createElement('a');
-        a.href = 'data:application/pdf;base64,' + rec[cfg.base64Campo];
-        a.download = rec[cfg.nomeCampo] || 'documento.pdf';
+        a.href = 'data:application/pdf;base64,' + emp[cfg.base64Campo];
+        a.download = emp[cfg.nomeCampo] || 'documento.pdf';
         a.click();
       };
     });
-    root.querySelectorAll('[data-editar-constituicao]').forEach(el=>{
-      el.onclick = ()=>{
-        const campo = el.getAttribute('data-editar-constituicao');
+    root.querySelectorAll('[data-remover-constituicao]').forEach(el=>{
+      el.onclick = async ()=>{
+        const [empId, campo] = el.getAttribute('data-remover-constituicao').split('|');
+        const emp = state.empresasConstituicao.find(x=>x.id===empId);
         const cfg = CONSTITUICAO_CAMPOS[campo];
-        const empresa = state.clients.find(c=>c.id===state.constituicaoEmpresaAtiva);
-        if(!empresa) return;
-        const valorAtual = cfg.tipo==='data' ? (empresa.dataAbertura||'') : constituicaoEmpresaDe(empresa.id)[cfg.nomeCampo];
-        state.constituicaoCampoModalData = { clientId: empresa.id, campo, valorAtual };
-        state.modal = 'constituicaoCampo'; render();
+        if(!emp) return;
+        if(!confirm('Remover este arquivo?')) return;
+        const atualizado = Object.assign({}, emp);
+        atualizado[cfg.nomeCampo] = ''; atualizado[cfg.base64Campo] = '';
+        await saveEmpresaConstituicao(atualizado);
       };
     });
-    const ccCancel = document.getElementById('ccCancel');
-    if(ccCancel) ccCancel.onclick = ()=>{ state.modal=null; state.constituicaoCampoModalData=null; render(); };
-    const constituicaoCampoForm = document.getElementById('constituicaoCampoForm');
-    if(constituicaoCampoForm){
-      constituicaoCampoForm.onsubmit = async (e)=>{
+    root.querySelectorAll('[data-anexar-constituicao]').forEach(el=>{
+      el.onclick = ()=>{
+        const [empId, campo] = el.getAttribute('data-anexar-constituicao').split('|');
+        state.constituicaoDocumentoModalData = { empresaId: empId, campo };
+        state.modal = 'constituicaoDocumento'; render();
+      };
+    });
+    const cxdCancel = document.getElementById('cxdCancel');
+    if(cxdCancel) cxdCancel.onclick = ()=>{ state.modal=null; state.constituicaoDocumentoModalData=null; render(); };
+    const constituicaoDocumentoForm = document.getElementById('constituicaoDocumentoForm');
+    if(constituicaoDocumentoForm){
+      constituicaoDocumentoForm.onsubmit = async (e)=>{
         e.preventDefault();
-        const d = state.constituicaoCampoModalData;
+        const d = state.constituicaoDocumentoModalData;
         if(!d) return;
         const cfg = CONSTITUICAO_CAMPOS[d.campo];
-        const btn = constituicaoCampoForm.querySelector('button[type="submit"]');
-        if(cfg.tipo==='data'){
-          const empresa = state.clients.find(c=>c.id===d.clientId);
-          if(!empresa) return;
-          const novaData = document.getElementById('ccDataAbertura').value;
-          if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
-          const ok = await saveClient(Object.assign({}, empresa, { dataAbertura: novaData }));
-          if(!ok){ if(btn){ btn.disabled = false; btn.textContent = 'Salvar'; } return; }
-          state.modal=null; state.constituicaoCampoModalData=null; render();
-          return;
-        }
-        const fileInput = document.getElementById('ccArquivoInput');
+        const emp = state.empresasConstituicao.find(x=>x.id===d.empresaId);
+        if(!emp) return;
+        const fileInput = document.getElementById('cxdArquivoInput');
         const file = fileInput && fileInput.files && fileInput.files[0];
-        const rec = Object.assign({}, constituicaoEmpresaDe(d.clientId));
-        if(file){
-          if(file.size > 700*1024){ alert('O arquivo é maior que 700KB — o banco de dados usado aceita no máximo cerca de 1MB por documento (o arquivo cresce ~35% ao ser convertido). Escolha um arquivo menor, ou escaneie em resolução mais baixa / comprima o PDF antes de anexar.'); return; }
-          try{
-            const buf = await file.arrayBuffer();
-            let binary = '';
-            const bytes = new Uint8Array(buf);
-            for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
-            rec[cfg.base64Campo] = btoa(binary);
-            rec[cfg.nomeCampo] = file.name;
-          }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); return; }
-        } else if(!rec[cfg.base64Campo]){
-          alert('Selecione um arquivo PDF.'); return;
-        }
+        if(!file){ alert('Selecione um arquivo PDF.'); return; }
+        if(file.size > 700*1024){ alert('O arquivo é maior que 700KB — o banco de dados usado aceita no máximo cerca de 1MB por documento (o arquivo cresce ~35% ao ser convertido). Escolha um arquivo menor, ou escaneie em resolução mais baixa / comprima o PDF antes de anexar.'); return; }
+        const btn = constituicaoDocumentoForm.querySelector('button[type="submit"]');
         if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
-        const ok = await saveConstituicaoEmpresa(rec);
+        let base64, nome;
+        try{
+          const buf = await file.arrayBuffer();
+          let binary = '';
+          const bytes = new Uint8Array(buf);
+          for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+          base64 = btoa(binary); nome = file.name;
+        }catch(err){ alert('Não foi possível ler o arquivo selecionado.'); if(btn){ btn.disabled=false; btn.textContent='Salvar'; } return; }
+        const atualizado = Object.assign({}, emp);
+        atualizado[cfg.nomeCampo] = nome; atualizado[cfg.base64Campo] = base64;
+        const ok = await saveEmpresaConstituicao(atualizado);
         if(!ok){ if(btn){ btn.disabled = false; btn.textContent = 'Salvar'; } return; }
-        state.modal=null; state.constituicaoCampoModalData=null; render();
+        state.modal=null; state.constituicaoDocumentoModalData=null; render();
       };
     }
 
