@@ -608,6 +608,9 @@
     produtosMonofasicos: [],
     ncmMonofasicoCustom: [],
     tabelasFolha: [],
+    faturamentosManuais: [],
+    fatManualAno: '',
+    fatManualSujo: false,
     tabelaFolhaModalData: null,
     tabelaFolhaVerId: '',
     tabelaFolhaSimulador: { valor:'', dependentes:0 },
@@ -6127,17 +6130,28 @@
       const numero = getTagText(infNfse, 'Numero') || getTagText(infNfse, 'numero');
       const dataEmissao = getTagText(infNfse, 'DataEmissao') || getTagText(infNfse, 'DataEmissaoRps');
       const valor = getTagText(infNfse, 'ValorLiquidoNfse') || getTagText(infNfse, 'ValorServicos');
-      const prestador = doc.getElementsByTagName('PrestadorServico')[0] || doc.getElementsByTagName('IdentificacaoPrestador')[0];
-      const prestCNPJ = getTagText(prestador, 'Cnpj') || getTagText(prestador, 'CNPJ') || getTagText(prestador, 'CpfCnpj');
+      // O prestador (quem emitiu o serviço) aparece espalhado em elementos diferentes conforme o
+      // município: "PrestadorServico"/"IdentificacaoPrestador" costumam trazer nome e endereço, mas em
+      // vários layouts (ABRASF v2, usado por sistemas como o GISS) o CNPJ só aparece separado, num
+      // elemento "Prestador" à parte (Prestador > CpfCnpj > Cnpj/Cpf) — por isso a busca abaixo tenta
+      // os três, nessa ordem, além de "Cpf" para prestador/tomador pessoa física.
+      const prestadorServico = doc.getElementsByTagName('PrestadorServico')[0];
+      const identPrestador = doc.getElementsByTagName('IdentificacaoPrestador')[0];
+      const prestadorTag = doc.getElementsByTagName('Prestador')[0];
+      const prestCNPJ = getTagText(prestadorServico, 'Cnpj') || getTagText(prestadorServico, 'CNPJ') || getTagText(prestadorServico, 'CpfCnpj') || getTagText(prestadorServico, 'Cpf')
+        || getTagText(identPrestador, 'Cnpj') || getTagText(identPrestador, 'CNPJ') || getTagText(identPrestador, 'CpfCnpj') || getTagText(identPrestador, 'Cpf')
+        || getTagText(prestadorTag, 'Cnpj') || getTagText(prestadorTag, 'CNPJ') || getTagText(prestadorTag, 'CpfCnpj') || getTagText(prestadorTag, 'Cpf');
+      const emitNome = getTagText(prestadorServico, 'RazaoSocial') || getTagText(identPrestador, 'RazaoSocial') || getTagText(prestadorTag, 'RazaoSocial');
       const tomador = doc.getElementsByTagName('TomadorServico')[0] || doc.getElementsByTagName('IdentificacaoTomador')[0];
-      const tomadorCNPJ = getTagText(tomador, 'Cnpj') || getTagText(tomador, 'CNPJ') || getTagText(tomador, 'CpfCnpj');
+      const tomadorCNPJ = getTagText(tomador, 'Cnpj') || getTagText(tomador, 'CNPJ') || getTagText(tomador, 'CpfCnpj') || getTagText(tomador, 'Cpf');
+      const destNome = getTagText(tomador, 'RazaoSocial') || getTagText(tomador, 'xNome');
       const cancelado = doc.getElementsByTagName('NfseCancelamento').length > 0;
       return {
         ok:true,
         tipo: 'NFS-e (Serviço)',
         numero, serie: '', dataEmissao: dataEmissao ? dataEmissao.slice(0,10) : '',
         valor, status: cancelado ? 'Cancelada' : 'Emitida',
-        emitDoc: prestCNPJ, emitNome: '', destDoc: tomadorCNPJ, destNome: '',
+        emitDoc: prestCNPJ, emitNome, destDoc: tomadorCNPJ, destNome,
         tipoOperacaoSugerida: 'Serviços',
         partial: !numero || !valor,
       };
@@ -8305,10 +8319,10 @@
     if(!list.length) return `<div class="empty">Nenhuma declaração de faturamento lançada ainda para esta empresa.</div>`;
     return `
       <table>
-        <thead><tr><th>Competência</th><th style="text-align:right">Faturamento declarado</th><th style="text-align:right">Faturamento apurado (notas)</th><th>Status</th><th>Data confirmação/protocolo</th><th></th></tr></thead>
+        <thead><tr><th>Competência</th><th style="text-align:right">Faturamento declarado</th><th style="text-align:right">Faturamento apurado (notas + sem NF)</th><th>Status</th><th>Data confirmação/protocolo</th><th></th></tr></thead>
         <tbody>
           ${list.map(d=>{
-            const apurado = state.notasFiscais.filter(n=>n.clientId===empresa && n.status!=='Cancelada' && (n.tipoOperacao==='Saída'||n.tipoOperacao==='Serviços') && (n.dataEmissao||'').slice(0,7)===d.competencia).reduce((s,n)=>s+(Number(n.valor)||0),0);
+            const apurado = state.notasFiscais.filter(n=>n.clientId===empresa && n.status!=='Cancelada' && (n.tipoOperacao==='Saída'||n.tipoOperacao==='Serviços') && (n.dataEmissao||'').slice(0,7)===d.competencia).reduce((s,n)=>s+(Number(n.valor)||0),0) + faturamentoManualMes(empresa, d.competencia).total;
             const divergente = Math.abs(apurado - (Number(d.valorDeclarado)||0)) > 0.01;
             return `
             <tr>
@@ -9235,6 +9249,7 @@
     await loadProdutosMonofasicos();
     await loadNcmMonofasicoCustom();
     await loadTabelasFolha();
+    await loadFaturamentosManuais();
     await loadInscricoes();
     await loadAlvaras();
     await loadProcessosFiscais();
@@ -9278,6 +9293,7 @@
       produtosMonofasicos: state.produtosMonofasicos,
       ncmMonofasicoCustom: state.ncmMonofasicoCustom,
       tabelasFolha: state.tabelasFolha,
+      faturamentosManuais: state.faturamentosManuais,
       prolabores: state.prolabores,
       decimosTerceiros: state.decimosTerceiros,
       pontoRegistros: state.pontoRegistros,
@@ -9355,6 +9371,7 @@
       {key:'produtosMonofasicos', prefix:'produtosmonofasicos:', idField:'id'},
       {key:'ncmMonofasicoCustom', prefix:'ncmmonofasicocustom:', idField:'id'},
       {key:'tabelasFolha', prefix:'tabelasfolha:', idField:'id'},
+      {key:'faturamentosManuais', prefix:'faturamentosmanuais:', idField:'id'},
       {key:'prolabores', prefix:'prolabores:', idField:'id'},
       {key:'decimosTerceiros', prefix:'decimosterceiros:', idField:'id'},
       {key:'pontoRegistros', prefix:'pontoregistros:', idField:'id'},
@@ -10811,11 +10828,16 @@
     const hoje = new Date();
     const inicio = new Date(hoje.getFullYear(), hoje.getMonth()-11, 1);
     const inicioStr = inicio.toISOString().slice(0,7);
-    return state.notasFiscais.filter(n=>
+    const dasNotas = state.notasFiscais.filter(n=>
       n.clientId===clientId && n.status!=='Cancelada' &&
       (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços') &&
       (n.dataEmissao||'').slice(0,7) >= inicioStr
     ).reduce((s,n)=>s+(Number(n.valor)||0),0);
+    // + faturamento lançado à mão (sem NF) nos mesmos 12 meses
+    const lancado = (state.faturamentosManuais||[]).filter(d=>
+      d.clientId===clientId && (d.competencia||'') >= inicioStr
+    ).reduce((s,d)=>s+(Number(d.vendas)||0)+(Number(d.servicos)||0),0);
+    return dasNotas + lancado;
   }
 
   function alertasSimplesNacionalPanelHtml(){
@@ -10848,7 +10870,7 @@
             </div>
           `;}).join('')}
         </div>
-      ` : `<div class="empty" style="margin-bottom:20px;">Nenhuma empresa do Simples Nacional está perto do limite de faturamento (calculado sobre os últimos 12 meses de notas fiscais lançadas).</div>`}
+      ` : `<div class="empty" style="margin-bottom:20px;">Nenhuma empresa do Simples Nacional está perto do limite de faturamento (calculado sobre os últimos 12 meses de notas fiscais lançadas e de faturamento lançado sem nota fiscal).</div>`}
     `;
   }
 
@@ -11049,10 +11071,60 @@
     return { faixaNum: faixaIdx+1, aliqNominal: faixa.aliq, deduz: faixa.deduz, aliqEfetiva, imposto };
   }
 
+  // ---- Faturamento lançado mês a mês, SEM notas fiscais ----
+  // Para empresas cujas notas não estão no sistema (ou que faturam sem nota), o faturamento é digitado
+  // por competência, separado em Vendas e Serviços. Um documento por empresa + mês:
+  // { id: clientId_AAAA-MM, clientId, competencia, vendas, servicos, observacao }.
+  // ATENÇÃO: o valor lançado aqui é SOMADO às notas fiscais do mês — se as notas do mês já estão no
+  // sistema, não repita o mesmo valor aqui (a tela mostra as notas do mês ao lado para conferência).
+  async function loadFaturamentosManuais(){
+    state.faturamentosManuais = [];
+    try{
+      const keys = await Store.list('faturamentosmanuais:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.faturamentosManuais.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.faturamentosManuais.sort((a,b)=>String(a.competencia||'').localeCompare(String(b.competencia||'')));
+  }
+  function faturamentoManualMes(clientId, competencia){
+    const d = (state.faturamentosManuais||[]).find(x=>x.clientId===clientId && x.competencia===competencia);
+    const vendas = d ? (Number(d.vendas)||0) : 0, servicos = d ? (Number(d.servicos)||0) : 0;
+    return { existe: !!d, vendas, servicos, total: round2(vendas + servicos), observacao: d ? (d.observacao||'') : '' };
+  }
+  // Grava os 12 meses de um ano de uma vez: só grava o que mudou; mês zerado e sem observação é removido.
+  // linhas: [{competencia, vendas, servicos, observacao}] — devolve { salvos, removidos } ou null se falhou.
+  async function salvarFaturamentosManuaisAno(clientId, linhas){
+    let salvos = 0, removidos = 0;
+    try{
+      for(const l of linhas){
+        const id = clientId + '_' + l.competencia;
+        const atual = (state.faturamentosManuais||[]).find(x=>x.id===id);
+        const vazio = !(l.vendas > 0) && !(l.servicos > 0) && !String(l.observacao||'').trim();
+        if(vazio){
+          if(atual){ await Store.delete('faturamentosmanuais:'+id, true); removidos++; }
+          continue;
+        }
+        const novo = { id, clientId, competencia:l.competencia, vendas:round2(l.vendas||0), servicos:round2(l.servicos||0), observacao:String(l.observacao||'').trim() };
+        if(atual && Number(atual.vendas)===novo.vendas && Number(atual.servicos)===novo.servicos && (atual.observacao||'')===novo.observacao) continue;
+        await Store.set('faturamentosmanuais:'+id, JSON.stringify(novo), true);
+        salvos++;
+      }
+    }catch(e){
+      alert('Não foi possível salvar o faturamento.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      await loadFaturamentosManuais();
+      return null;
+    }
+    await loadFaturamentosManuais();
+    return { salvos, removidos };
+  }
+
   // Soma o faturamento de um cliente num mês (YYYY-MM), a partir das Notas Fiscais registradas
   // com tipo de operação "Saída" (venda) ou "Serviços" (prestação) — notas de "Entrada" são
   // compras do cliente, não contam como faturamento dele para fins de apuração do Simples.
-  function faturamentoNotasMes(clientId, competencia){
+  function faturamentoSoNotasMes(clientId, competencia){
     if(!clientId || !competencia) return { total: 0, quantidade: 0 };
     const notas = state.notasFiscais.filter(n=>
       n.clientId === clientId &&
@@ -11061,6 +11133,14 @@
       (n.dataEmissao||'').slice(0,7) === competencia
     );
     return { total: notas.reduce((s,n)=>s+(Number(n.valor)||0), 0), quantidade: notas.length };
+  }
+  // Faturamento total do mês = notas fiscais + o que foi lançado à mão (sem NF). É este que alimenta o
+  // cálculo do Simples (mês e RBT12).
+  function faturamentoNotasMes(clientId, competencia){
+    if(!clientId || !competencia) return { total: 0, quantidade: 0, notas: 0, manual: 0 };
+    const n = faturamentoSoNotasMes(clientId, competencia);
+    const m = faturamentoManualMes(clientId, competencia);
+    return { total: n.total + m.total, quantidade: n.quantidade, notas: n.total, manual: m.total };
   }
 
   // RBT12: soma o faturamento dos 12 meses terminando na competência informada (inclusive) —
@@ -11093,30 +11173,40 @@
   }
 
   // Faturamento de um único cliente, mês a mês, dentro do período — separado por Vendas
-  // (Saída) e Serviços, com o total de cada linha.
+  // (Saída) e Serviços, com o total de cada linha. Vendas/Serviços já incluem o que foi lançado
+  // à mão (sem NF); manualVendas/manualServicos trazem só essa parte, pra mostrar em coluna própria.
   function relatorioFaturamentoPorCompetencia(clientId, mesInicio, mesFim){
     const notasCliente = state.notasFiscais.filter(n => n.clientId === clientId && n.status !== 'Cancelada' && (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços'));
     return listaCompetencias(mesInicio, mesFim).map(comp=>{
       const doMes = notasCliente.filter(n => (n.dataEmissao||'').slice(0,7) === comp);
-      const vendas = doMes.filter(n=>n.tipoOperacao==='Saída').reduce((s,n)=>s+(Number(n.valor)||0),0);
-      const servicos = doMes.filter(n=>n.tipoOperacao==='Serviços').reduce((s,n)=>s+(Number(n.valor)||0),0);
-      return { competencia: comp, vendas, servicos, total: vendas+servicos, quantidade: doMes.length };
+      const man = faturamentoManualMes(clientId, comp);
+      const vendas = doMes.filter(n=>n.tipoOperacao==='Saída').reduce((s,n)=>s+(Number(n.valor)||0),0) + man.vendas;
+      const servicos = doMes.filter(n=>n.tipoOperacao==='Serviços').reduce((s,n)=>s+(Number(n.valor)||0),0) + man.servicos;
+      return { competencia: comp, vendas, servicos, total: vendas+servicos, quantidade: doMes.length, manualVendas: man.vendas, manualServicos: man.servicos, manualObs: man.observacao };
     });
   }
 
   // Faturamento agregado (soma do período todo) por cliente — para a visão "Todos os clientes".
+  // Inclui empresas que só têm faturamento lançado à mão (sem nenhuma nota no sistema).
   function relatorioFaturamentoPorCliente(mesInicio, mesFim){
     const competencias = new Set(listaCompetencias(mesInicio, mesFim));
     const porCliente = {};
+    const linha = (id)=> porCliente[id] || (porCliente[id] = { clientId: id, vendas: 0, servicos: 0, quantidade: 0, manualVendas: 0, manualServicos: 0 });
     state.notasFiscais.forEach(n=>{
       if(n.status === 'Cancelada') return;
       if(n.tipoOperacao !== 'Saída' && n.tipoOperacao !== 'Serviços') return;
       if(!isClientInScope(n.clientId)) return;
       if(!competencias.has((n.dataEmissao||'').slice(0,7))) return;
-      if(!porCliente[n.clientId]) porCliente[n.clientId] = { clientId: n.clientId, vendas: 0, servicos: 0, quantidade: 0 };
-      if(n.tipoOperacao === 'Saída') porCliente[n.clientId].vendas += Number(n.valor)||0;
-      else porCliente[n.clientId].servicos += Number(n.valor)||0;
-      porCliente[n.clientId].quantidade++;
+      const l = linha(n.clientId);
+      if(n.tipoOperacao === 'Saída') l.vendas += Number(n.valor)||0;
+      else l.servicos += Number(n.valor)||0;
+      l.quantidade++;
+    });
+    (state.faturamentosManuais||[]).forEach(d=>{
+      if(!isClientInScope(d.clientId) || !competencias.has(d.competencia)) return;
+      const l = linha(d.clientId);
+      const v = Number(d.vendas)||0, s = Number(d.servicos)||0;
+      l.vendas += v; l.servicos += s; l.manualVendas += v; l.manualServicos += s;
     });
     return Object.values(porCliente).map(r=>({...r, clientName: clientName(r.clientId), total: r.vendas+r.servicos})).sort((a,b)=> b.total - a.total);
   }
@@ -11132,7 +11222,7 @@
         </div>
       </div>
       <div class="field"><label>Competência (mês de apuração)</label><input type="month" id="calcCompetencia" value="${state.competenciaAtiva}"/></div>
-      <button type="button" class="btn-sm" id="calcUsarNotasBtn" style="margin-bottom:14px;">Usar faturamento das Notas Fiscais (Saída + Serviços)</button>
+      <button type="button" class="btn-sm" id="calcUsarNotasBtn" style="margin-bottom:14px;">Usar faturamento (Notas Fiscais + lançado sem nota fiscal)</button>
       <div id="calcNotasResumo"></div>
       <div class="form-row">
         <div class="field"><label>RBT12 — Receita bruta últimos 12 meses (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
@@ -11823,6 +11913,61 @@
     });
   }
 
+  const MESES_NOMES_COMPLETOS = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+  // Grade para lançar o faturamento mês a mês (sem notas fiscais) de UMA empresa, num ano.
+  function faturamentoManualGridHtml(){
+    const empresaId = deptOneSelectedClient();
+    const titulo = `<div class="form-section-title">Faturamento lançado mês a mês (sem notas fiscais)</div>`;
+    if(!empresaId) return titulo + `<div class="form-hint" style="margin:-4px 0 10px;">Para empresas que não têm notas fiscais no sistema (ou que faturam sem nota): digite aqui o faturamento de cada mês, separado em Vendas e Serviços. Ele entra no relatório acima, no PDF, no alerta de limite do Simples Nacional e no cálculo de impostos.</div>` + deptSelecioneUmaEmpresaHtml('lançar o faturamento mês a mês');
+    const cliente = state.clients.find(c=>c.id===empresaId);
+    const anoAtual = Number((state.competenciaAtiva||todayStr()).slice(0,4));
+    const ano = Number(state.fatManualAno) || anoAtual;
+    const anos = []; for(let a = anoAtual - 6; a <= anoAtual + 1; a++) anos.push(a);
+    if(!anos.includes(ano)) anos.push(ano);
+    anos.sort((a,b)=>a-b);
+    let sN = 0, sV = 0, sS = 0;
+    const linhas = MESES_NOMES_COMPLETOS.map((nome, i)=>{
+      const mm = String(i+1).padStart(2,'0'), comp = ano + '-' + mm;
+      const n = faturamentoSoNotasMes(empresaId, comp), man = faturamentoManualMes(empresaId, comp);
+      sN += n.total; sV += man.vendas; sS += man.servicos;
+      return `
+        <tr>
+          <td>${nome}</td>
+          <td style="text-align:right" class="mono" id="fatManNotas_${mm}" data-valor="${n.total}">${n.total ? fmtBRL(n.total) : '—'}${n.quantidade ? ' <span style="font-size:10.5px; color:var(--ink-soft);">(' + n.quantidade + ' NF)</span>' : ''}</td>
+          <td><input type="number" step="0.01" min="0" class="fat-man-input" id="fatManV_${mm}" value="${man.vendas ? man.vendas : ''}" placeholder="0,00" style="width:100%; text-align:right;"/></td>
+          <td><input type="number" step="0.01" min="0" class="fat-man-input" id="fatManS_${mm}" value="${man.servicos ? man.servicos : ''}" placeholder="0,00" style="width:100%; text-align:right;"/></td>
+          <td style="text-align:right; font-weight:700;" class="mono" id="fatManTot_${mm}">${fmtBRL(n.total + man.total)}</td>
+          <td><input type="text" class="fat-man-input" id="fatManO_${mm}" value="${escapeHtml(man.observacao)}" placeholder="opcional" style="width:100%;"/></td>
+        </tr>`;
+    }).join('');
+    return titulo + `
+      <div class="form-hint" style="margin:-4px 0 10px;">Para empresas que não têm notas fiscais no sistema (ou que faturam sem nota): digite o faturamento de cada mês, separado em <strong>Vendas</strong> e <strong>Serviços</strong>. Ele entra no relatório acima (coluna "Sem NF"), no PDF, no alerta de limite do Simples Nacional e no cálculo de impostos.</div>
+      <div class="legis-note" style="margin-bottom:12px;">⚠️ O valor lançado aqui é <strong>somado</strong> às notas fiscais do mês (coluna "Notas fiscais", só para conferência). Se as notas do mês já estão no sistema, <strong>não repita</strong> o mesmo valor aqui — senão ele conta em dobro.</div>
+      <div class="form-hint" style="margin:0 0 8px; font-weight:700;">Empresa: ${escapeHtml(cliente ? cliente.name : '—')}</div>
+      <div class="form-row">
+        <div class="field" style="max-width:200px;"><label>Ano</label>
+          <select id="fatManualAno">${anos.map(a=>`<option value="${a}" ${a===ano?'selected':''}>${a}</option>`).join('')}</select>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Mês</th><th style="text-align:right">Notas fiscais (R$)</th><th style="text-align:right">Vendas sem NF (R$)</th><th style="text-align:right">Serviços sem NF (R$)</th><th style="text-align:right">Total do mês (R$)</th><th>Observação</th></tr></thead>
+        <tbody>${linhas}
+          <tr class="conta-sintetica">
+            <td>Total de ${ano}</td>
+            <td style="text-align:right" class="mono" id="fatManFootNotas">${fmtBRL(sN)}</td>
+            <td style="text-align:right" class="mono" id="fatManFootV">${fmtBRL(sV)}</td>
+            <td style="text-align:right" class="mono" id="fatManFootS">${fmtBRL(sS)}</td>
+            <td style="text-align:right" class="mono" id="fatManFootTot">${fmtBRL(sN + sV + sS)}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+      <button type="button" class="btn-add" id="fatManualSalvarBtn" style="margin-top:12px;">Salvar faturamento de ${ano}</button>
+      <div class="form-hint" style="margin-top:8px;">Deixar os dois valores em branco (e sem observação) num mês que já tinha lançamento remove esse lançamento.</div>
+    `;
+  }
+
   function faturamentoRelatorioHtml(){
     const clienteId = deptOneSelectedClient() || 'all';
     const tipo = state.faturamentoRelTipo;
@@ -11830,52 +11975,60 @@
     const mesFim = state.faturamentoRelMesFim;
     const mostrarVendas = tipo === 'vendas' || tipo === 'ambos';
     const mostrarServicos = tipo === 'servicos' || tipo === 'ambos';
+    const manualDe = (l)=> (mostrarVendas ? l.manualVendas : 0) + (mostrarServicos ? l.manualServicos : 0);
+    const celManual = (v, obs)=> `<td style="text-align:right" class="mono" ${obs ? 'title="' + escapeHtml(obs) + '"' : ''}>${v ? fmtBRL(v) : '—'}</td>`;
 
     let conteudo = '';
     if(clienteId === 'all'){
       const linhas = relatorioFaturamentoPorCliente(mesInicio, mesFim);
       const totalGeral = linhas.reduce((s,l)=> s + (mostrarVendas?l.vendas:0) + (mostrarServicos?l.servicos:0), 0);
-      conteudo = !linhas.length ? `<div class="empty">Nenhuma nota de Saída/Serviços encontrada no período${state.deptAllClients?'':' para os clientes selecionados'}.</div>` : `
+      const totalManual = linhas.reduce((s,l)=> s + manualDe(l), 0);
+      conteudo = !linhas.length ? `<div class="empty">Nenhum faturamento encontrado no período (nem notas de Saída/Serviços, nem valores lançados sem nota fiscal)${state.deptAllClients?'':' para os clientes selecionados'}.</div>` : `
         <table>
-          <thead><tr><th>Cliente</th>${mostrarVendas?'<th style="text-align:right">Vendas</th>':''}${mostrarServicos?'<th style="text-align:right">Serviços</th>':''}<th style="text-align:right">Total</th></tr></thead>
+          <thead><tr><th>Cliente</th>${mostrarVendas?'<th style="text-align:right">Vendas</th>':''}${mostrarServicos?'<th style="text-align:right">Serviços</th>':''}<th style="text-align:right">Sem NF</th><th style="text-align:right">Total</th></tr></thead>
           <tbody>
             ${linhas.map(l=>`
               <tr>
                 <td>${escapeHtml(l.clientName)}</td>
                 ${mostrarVendas?`<td style="text-align:right" class="mono">${fmtBRL(l.vendas)}</td>`:''}
                 ${mostrarServicos?`<td style="text-align:right" class="mono">${fmtBRL(l.servicos)}</td>`:''}
+                ${celManual(manualDe(l))}
                 <td style="text-align:right" class="mono">${fmtBRL((mostrarVendas?l.vendas:0)+(mostrarServicos?l.servicos:0))}</td>
               </tr>
             `).join('')}
-            <tr class="conta-sintetica"><td>Total geral</td>${mostrarVendas?'<td></td>':''}${mostrarServicos?'<td></td>':''}<td style="text-align:right">${fmtBRL(totalGeral)}</td></tr>
+            <tr class="conta-sintetica"><td>Total geral</td>${mostrarVendas?'<td></td>':''}${mostrarServicos?'<td></td>':''}<td style="text-align:right">${fmtBRL(totalManual)}</td><td style="text-align:right">${fmtBRL(totalGeral)}</td></tr>
           </tbody>
         </table>
+        ${totalManual ? `<div class="form-hint" style="margin-top:8px;">A coluna "Sem NF" mostra a parte lançada manualmente (sem nota fiscal); ela já está somada em Vendas/Serviços e no Total.</div>` : ''}
       `;
     } else {
       const linhas = relatorioFaturamentoPorCompetencia(clienteId, mesInicio, mesFim);
       const totalGeral = linhas.reduce((s,l)=> s + (mostrarVendas?l.vendas:0) + (mostrarServicos?l.servicos:0), 0);
+      const totalManual = linhas.reduce((s,l)=> s + manualDe(l), 0);
       conteudo = !linhas.length ? `<div class="empty">Selecione um período válido.</div>` : `
         <table>
-          <thead><tr><th>Competência</th>${mostrarVendas?'<th style="text-align:right">Vendas</th>':''}${mostrarServicos?'<th style="text-align:right">Serviços</th>':''}<th style="text-align:right">Total</th><th style="text-align:right">Nº notas</th></tr></thead>
+          <thead><tr><th>Competência</th>${mostrarVendas?'<th style="text-align:right">Vendas</th>':''}${mostrarServicos?'<th style="text-align:right">Serviços</th>':''}<th style="text-align:right">Sem NF</th><th style="text-align:right">Total</th><th style="text-align:right">Nº notas</th></tr></thead>
           <tbody>
             ${linhas.map(l=>`
               <tr>
                 <td>${monthLabel(l.competencia)}/${l.competencia.slice(0,4)}</td>
                 ${mostrarVendas?`<td style="text-align:right" class="mono">${fmtBRL(l.vendas)}</td>`:''}
                 ${mostrarServicos?`<td style="text-align:right" class="mono">${fmtBRL(l.servicos)}</td>`:''}
+                ${celManual(manualDe(l), l.manualObs)}
                 <td style="text-align:right" class="mono">${fmtBRL((mostrarVendas?l.vendas:0)+(mostrarServicos?l.servicos:0))}</td>
                 <td style="text-align:right">${l.quantidade}</td>
               </tr>
             `).join('')}
-            <tr class="conta-sintetica"><td>Total do período</td>${mostrarVendas?'<td></td>':''}${mostrarServicos?'<td></td>':''}<td style="text-align:right">${fmtBRL(totalGeral)}</td><td></td></tr>
+            <tr class="conta-sintetica"><td>Total do período</td>${mostrarVendas?'<td></td>':''}${mostrarServicos?'<td></td>':''}<td style="text-align:right">${fmtBRL(totalManual)}</td><td style="text-align:right">${fmtBRL(totalGeral)}</td><td></td></tr>
           </tbody>
         </table>
+        ${totalManual ? `<div class="form-hint" style="margin-top:8px;">A coluna "Sem NF" mostra a parte lançada manualmente (sem nota fiscal); ela já está somada em Vendas/Serviços e no Total.</div>` : ''}
       `;
     }
 
     return `
       <div class="form-section-title">Relatório de Faturamento Mensal</div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Consulta o faturamento por competência, a partir das notas de Saída (vendas) e Serviços já cadastradas — notas de Entrada (compras) não entram na conta. Mostra o total agrupado por cliente quando "todos" ou várias empresas estão selecionadas no topo da página, ou o detalhamento por competência quando apenas uma empresa está selecionada.</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Consulta o faturamento por competência, a partir das notas de Saída (vendas) e Serviços já cadastradas — notas de Entrada (compras) não entram na conta — mais o faturamento lançado à mão, sem nota fiscal, na seção "Faturamento lançado mês a mês" logo abaixo. Mostra o total agrupado por cliente quando "todos" ou várias empresas estão selecionadas no topo da página, ou o detalhamento por competência quando apenas uma empresa está selecionada.</div>
       <div class="form-row">
         <div class="field"><label>Tipo</label>
           <select id="fatRelTipo">
@@ -11889,6 +12042,7 @@
       </div>
       <div id="fatRelResult">${conteudo}</div>
       <button type="button" class="btn-detail" id="fatRelPdfBtn" style="margin-top:12px;">Baixar PDF</button>
+      ${faturamentoManualGridHtml()}
     `;
   }
 
@@ -14854,7 +15008,7 @@
         document.getElementById('calcReceitaMes').value = doMes.total.toFixed(2);
         document.getElementById('calcRbt12').value = dos12Meses.toFixed(2);
         document.getElementById('calcNotasResumo').innerHTML = `
-          <div class="form-hint" style="margin:-8px 0 12px;">${doMes.quantidade} nota(s) de Saída/Serviços encontrada(s) em ${monthLabel(competencia)}/${competencia.slice(0,4)}, somando ${fmtBRL(doMes.total)}. RBT12 (12 meses até essa competência) calculado a partir das notas: ${fmtBRL(dos12Meses)}.</div>
+          <div class="form-hint" style="margin:-8px 0 12px;">${doMes.quantidade} nota(s) de Saída/Serviços encontrada(s) em ${monthLabel(competencia)}/${competencia.slice(0,4)}, somando ${fmtBRL(doMes.notas)}${doMes.manual ? ' + ' + fmtBRL(doMes.manual) + ' lançado sem nota fiscal (Relatório de Faturamento Mensal) = ' + fmtBRL(doMes.total) : ''}. RBT12 (12 meses até essa competência) calculado a partir das notas${doMes.manual || (state.faturamentosManuais||[]).some(d=>d.clientId===clientId) ? ' e do faturamento lançado sem nota fiscal' : ''}: ${fmtBRL(dos12Meses)}.</div>
         `;
       };
     }
@@ -15115,6 +15269,57 @@
     if(fatRelMesFim) fatRelMesFim.onchange = (e)=>{ state.faturamentoRelMesFim = e.target.value; render(); };
     const fatRelPdfBtn = document.getElementById('fatRelPdfBtn');
     if(fatRelPdfBtn) fatRelPdfBtn.onclick = ()=> gerarPdfFaturamentoMensal();
+
+    // Faturamento lançado mês a mês (sem notas fiscais)
+    const fatManualAnoEl = document.getElementById('fatManualAno');
+    if(fatManualAnoEl) fatManualAnoEl.onchange = (e)=>{ state.fatManualAno = e.target.value; render(); };
+    const MESES_MM = ['01','02','03','04','05','06','07','08','09','10','11','12'];
+    const fatManualAtualizarLinha = (mm)=>{
+      const v = parseFloat(document.getElementById('fatManV_'+mm).value) || 0;
+      const s = parseFloat(document.getElementById('fatManS_'+mm).value) || 0;
+      const notasEl = document.getElementById('fatManNotas_'+mm);
+      const notas = notasEl ? (parseFloat(notasEl.getAttribute('data-valor')) || 0) : 0;
+      const totEl = document.getElementById('fatManTot_'+mm);
+      if(totEl) totEl.textContent = fmtBRL(notas + v + s);
+    };
+    const fatManualAtualizarRodape = ()=>{
+      let sV=0, sS=0, sN=0;
+      MESES_MM.forEach(mm=>{
+        sV += parseFloat(document.getElementById('fatManV_'+mm).value) || 0;
+        sS += parseFloat(document.getElementById('fatManS_'+mm).value) || 0;
+        const notasEl = document.getElementById('fatManNotas_'+mm);
+        sN += notasEl ? (parseFloat(notasEl.getAttribute('data-valor')) || 0) : 0;
+      });
+      const fv = document.getElementById('fatManFootV'), fs = document.getElementById('fatManFootS'), ft = document.getElementById('fatManFootTot');
+      if(fv) fv.textContent = fmtBRL(sV);
+      if(fs) fs.textContent = fmtBRL(sS);
+      if(ft) ft.textContent = fmtBRL(sN + sV + sS);
+    };
+    MESES_MM.forEach(mm=>{
+      const vEl = document.getElementById('fatManV_'+mm), sEl = document.getElementById('fatManS_'+mm);
+      if(vEl) vEl.oninput = ()=>{ fatManualAtualizarLinha(mm); fatManualAtualizarRodape(); };
+      if(sEl) sEl.oninput = ()=>{ fatManualAtualizarLinha(mm); fatManualAtualizarRodape(); };
+    });
+    const fatManualSalvarBtn = document.getElementById('fatManualSalvarBtn');
+    if(fatManualSalvarBtn){
+      fatManualSalvarBtn.onclick = async ()=>{
+        const empresaId = deptOneSelectedClient();
+        if(!empresaId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
+        const ano = document.getElementById('fatManualAno').value;
+        const linhas = MESES_MM.map(mm=>({
+          competencia: ano + '-' + mm,
+          vendas: parseFloat(document.getElementById('fatManV_'+mm).value) || 0,
+          servicos: parseFloat(document.getElementById('fatManS_'+mm).value) || 0,
+          observacao: document.getElementById('fatManO_'+mm).value,
+        }));
+        fatManualSalvarBtn.disabled = true; const original = fatManualSalvarBtn.textContent; fatManualSalvarBtn.textContent = 'Salvando...';
+        const r = await salvarFaturamentosManuaisAno(empresaId, linhas);
+        fatManualSalvarBtn.disabled = false; fatManualSalvarBtn.textContent = original;
+        if(!r) return;
+        if(r.salvos || r.removidos){ alert((r.salvos ? r.salvos + ' mês(es) salvo(s)' : '') + (r.salvos && r.removidos ? ' · ' : '') + (r.removidos ? r.removidos + ' mês(es) removido(s) (ficaram vazios)' : '')); }
+        render();
+      };
+    }
 
     // Parcelamentos de Impostos
     function updateParcResults(){
