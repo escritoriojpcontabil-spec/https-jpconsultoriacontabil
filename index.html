@@ -3335,6 +3335,9 @@
               ${honorariosCliente.map(h=>{
                 const venc = honorarioVencimento(h);
                 const status = honorarioStatus(h);
+                const recebido = honorarioValorRecebido(h);
+                const valorNum = Number(h.valor)||0;
+                const sobra = recebido - valorNum;
                 return `
                 <tr>
                   <td>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)}</td>
@@ -3343,8 +3346,11 @@
                   <td>${venc ? fmtDate(venc) : '—'}</td>
                   <td style="text-align:right" class="mono">${fmtBRLorDash(h.valor)}</td>
                   <td>${h.dataPagamento ? fmtDate(h.dataPagamento) : '—'}</td>
-                  <td>${escapeHtml(h.formaPagamento||'—')}</td>
-                  <td><span class="tag ${honorarioStatusClass(status)}">${status}</span></td>
+                  <td>${escapeHtml(h.formaPagamento||'—')}${h.detalheRecebimento ? `<div style="font-size:11px; color:var(--ink-soft);">${escapeHtml(h.detalheRecebimento)}</div>` : ''}</td>
+                  <td>
+                    <span class="tag ${honorarioStatusClass(status)}">${status}</span>
+                    ${sobra > 0.01 ? `<div style="font-size:11px; color:#b45309; margin-top:2px;" title="O valor recebido registrado é maior que o valor deste honorário — confira em Editar se não é saldo de outro mês deixado aqui por engano.">⚠ recebido ${fmtBRL(recebido)}</div>` : ''}
+                  </td>
                   <td style="display:flex; gap:6px;"><button class="btn-detail" data-edit-honorario="${h.id}">Editar</button><button class="btn-sm danger" data-del-honorario="${h.id}">Excluir</button></td>
                 </tr>
               `;}).join('')}
@@ -3680,6 +3686,8 @@
               <div class="field"><label>Valor já recebido (para pagamento parcial)</label><input type="number" step="0.01" min="0" id="honValorRecebido" value="${d.valorRecebido!==undefined?d.valorRecebido:''}" placeholder="Deixe em branco se pago integral ou nada recebido"/></div>
               <div class="field"><label>Data do recebimento parcial</label><input type="date" id="honDataRecebimentoParcial" value="${d.dataRecebimentoParcial||''}"/></div>
             </div>
+            ${d.id ? `<button type="button" class="btn-sm" id="honZerarPagamento" style="margin:-6px 0 14px;">Zerar pagamento (marcar como nada recebido)</button>` : ''}
+            <div class="form-hint" style="margin:-8px 0 12px;">"Valor já recebido" e "Detalhe do recebimento" não aparecem na lista — só aqui. Se um valor antigo ficar esquecido neles, o Extrato Anual de Cobranças soma errado mesmo que a lista pareça certa. Use "Zerar pagamento" acima para limpar tudo de uma vez quando quiser marcar como nada recebido.</div>
             <div class="field"><label>Observações</label><input type="text" id="honObs" value="${escapeHtml(d.observacoes||'')}"/></div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="honCancel">Cancelar</button>
@@ -17208,6 +17216,17 @@
       };
     }
     if(honCancel) honCancel.onclick = ()=>{ state.modal=null; state.honorarioModalData=null; render(); };
+    const honZerarPagamento = document.getElementById('honZerarPagamento');
+    if(honZerarPagamento){
+      honZerarPagamento.onclick = ()=>{
+        if(!confirm('Limpar data de pagamento, forma, detalhe do recebimento, valor recebido e data do recebimento parcial deste lançamento? O valor do honorário (quanto é devido) não muda.')) return;
+        document.getElementById('honDataPagamento').value = '';
+        document.getElementById('honFormaPagamento').value = '';
+        document.getElementById('honDetalheRecebimento').value = '';
+        document.getElementById('honValorRecebido').value = '';
+        document.getElementById('honDataRecebimentoParcial').value = '';
+      };
+    }
     const honorarioForm = document.getElementById('honorarioForm');
     if(honorarioForm){
       honorarioForm.onsubmit = (e)=>{
