@@ -3132,6 +3132,7 @@
               <option value="Simples Nacional" ${state.propostaRegime==='Simples Nacional'?'selected':''}>Simples Nacional</option>
               <option value="Lucro Presumido" ${state.propostaRegime==='Lucro Presumido'?'selected':''}>Lucro Presumido</option>
               <option value="Lucro Real" ${state.propostaRegime==='Lucro Real'?'selected':''}>Lucro Real (fora da tabela — valor a combinar)</option>
+              <option value="Outros" ${state.propostaRegime==='Outros'?'selected':''}>Outros (fora da tabela — valor a combinar)</option>
             </select>
           </div>
         </div>
@@ -3148,7 +3149,7 @@
         ${state.propostaIncluirHonorarioMensal ? `
           <div class="payroll-result">
             ${fat > 0 ? (aCombinar ? `
-              <div class="pr-line total"><span>Faturamento acima de R$ 100.000,00 — valor a combinar</span><span>—</span></div>
+              <div class="pr-line total"><span>${faixaInfo && faixaInfo.max===Infinity ? 'Faturamento acima de R$ 100.000,00' : escapeHtml(state.propostaRegime) + ' — fora da tabela'} — valor a combinar</span><span>—</span></div>
             ` : faixaInfo ? `
               <div class="pr-line"><span>Faixa: ${fmtBRL(faixaInfo.min)} até ${faixaInfo.max===Infinity?'—':fmtBRL(faixaInfo.max)}</span><span>${escapeHtml(state.propostaRegime)}</span></div>
               <div class="pr-line total"><span>Honorário base mensal</span><span>${fmtBRL(honorarioBase)}</span></div>
@@ -5136,6 +5137,9 @@
   function calcHonorarioBase(faturamento, regime){
     const faixa = buscarFaixaHonorario(faturamento);
     if(!faixa) return { valor: null, aCombinar: true, faixa: null };
+    // Só Simples Nacional e Lucro Presumido têm valor fixo na tabela. Lucro Real e Outros ficam
+    // sempre "a combinar", em qualquer faixa de faturamento — não só na faixa mais alta.
+    if(regime !== 'Simples Nacional' && regime !== 'Lucro Presumido') return { valor: null, aCombinar: true, faixa };
     const valor = regime === 'Lucro Presumido' ? faixa.presumido : faixa.simples;
     return { valor, aCombinar: valor===null, faixa };
   }
