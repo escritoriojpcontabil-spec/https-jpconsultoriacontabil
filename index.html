@@ -544,6 +544,9 @@
     STORAGE_MODE = 'local';
   }
 
+  // Texto padrão das observações da proposta (também usado para limpar o formulário ao sair da edição).
+  const PROPOSTA_OBSERVACOES_PADRAO = 'Empresas no Lucro Presumido - contrato inicial (sem empregados) é de 01 (um) salário mínimo vigente no país.\nEmpresas no Simples Nacional - contrato inicial (sem empregados) é de 1/2 salário mínimo vigente no país.\nOs serviços anteriores à assinatura do contrato serão cobrados à parte.\nOs serviços de MEI, DIRPF, eSocial Doméstico, entre outros, ou serviços fora do contrato da prestação de serviços contábeis, serão cobrados à parte.';
+
   const state = {
     user: null,
     view: 'dashboard',
@@ -642,8 +645,9 @@
     propostaIncluirHonorarioMensal: false,
     propostaServicosSaoOpcoes: false,
     propostaPendenciasSelecionadas: [],
+    propostaEditandoId: '',
     propostaItensExtras: [],
-    propostaObservacoes: 'Empresas no Lucro Presumido - contrato inicial (sem empregados) é de 01 (um) salário mínimo vigente no país.\nEmpresas no Simples Nacional - contrato inicial (sem empregados) é de 1/2 salário mínimo vigente no país.\nOs serviços anteriores à assinatura do contrato serão cobrados à parte.\nOs serviços de MEI, DIRPF, eSocial Doméstico, entre outros, ou serviços fora do contrato da prestação de serviços contábeis, serão cobrados à parte.',
+    propostaObservacoes: PROPOSTA_OBSERVACOES_PADRAO,
     propostaPreview: null,
     fichasContratosData: {},
     contratoPfData: {},
@@ -1832,6 +1836,7 @@
       incluirHonorarioMensal,
       honorarioBase, aCombinar, faixaTexto: (incluirHonorarioMensal && faixa) ? (fmtBRL(faixa.min)+' até '+(faixa.max===Infinity?'—':fmtBRL(faixa.max))) : '',
       qtdFuncionarios: incluirHonorarioMensal ? (Number(state.propostaQtdFuncionarios)||0) : 0, valorFuncionarios,
+      qtdFuncionariosInformada: Number(state.propostaQtdFuncionarios)||0, // o que foi digitado (usado ao editar a proposta)
       pendencias: [],
       itensExtras: itensExtrasValidos,
       servicosSaoOpcoes,
@@ -1842,6 +1847,43 @@
       demonstrativoPendencias: [],
       totalMensal, criadaEm: new Date().toISOString(),
     };
+  }
+
+  // ---- Edição de propostas salvas ----
+  // Devolve o formulário da Proposta Comercial ao estado de uma proposta nova (em branco).
+  function limparFormularioProposta(){
+    state.propostaEditandoId = '';
+    state.propostaNomeAvulso = ''; state.propostaDocAvulso = ''; state.propostaFaturamento = '';
+    state.propostaRegime = 'Simples Nacional'; state.propostaQtdFuncionarios = 0;
+    state.propostaIncluirBalanco = false; state.propostaIncluirHonorarioMensal = false;
+    state.propostaServicosSaoOpcoes = false; state.propostaItensExtras = [];
+    state.propostaObservacoes = PROPOSTA_OBSERVACOES_PADRAO;
+  }
+  // Carrega uma proposta salva no formulário e entra em modo de edição.
+  function carregarPropostaNoFormulario(p){
+    state.propostaEditandoId = p.id;
+    state.propostaNomeAvulso = p.clienteNome || '';
+    state.propostaDocAvulso = p.clienteDoc || '';
+    state.propostaRegime = p.regime || 'Simples Nacional';
+    state.propostaFaturamento = p.faturamento ? String(p.faturamento) : '';
+    state.propostaQtdFuncionarios = p.qtdFuncionariosInformada !== undefined ? p.qtdFuncionariosInformada : (Number(p.qtdFuncionarios)||0);
+    // Propostas antigas (anteriores ao campo) não tinham a opção: se havia honorário base, incluíam.
+    state.propostaIncluirHonorarioMensal = p.incluirHonorarioMensal !== undefined ? !!p.incluirHonorarioMensal : (Number(p.honorarioBase) > 0 || !!p.aCombinar);
+    state.propostaItensExtras = (p.itensExtras||[]).map(it=>({ descricao: it.descricao||'', valor: Number(it.valor)||0 }));
+    state.propostaServicosSaoOpcoes = !!p.servicosSaoOpcoes;
+    state.propostaIncluirBalanco = !!p.incluirBalanco;
+    state.propostaObservacoes = p.observacoes !== undefined ? p.observacoes : '';
+  }
+  // Grava as alterações na MESMA proposta (mantém id e data de criação; registra a data da edição).
+  // Campos que o formulário não conhece (de versões antigas) são preservados.
+  async function salvarEdicaoProposta(){
+    const original = state.propostas.find(x=>x.id===state.propostaEditandoId);
+    if(!original) return false;
+    const atualizada = Object.assign({}, original, montarPropostaSnapshot(), {
+      id: original.id, criadaEm: original.criadaEm || new Date().toISOString(), editadaEm: new Date().toISOString(),
+    });
+    await savePropostaItem(atualizada);
+    return true;
   }
 
   function pendenciasHonorariosCliente(clientId){
@@ -3108,6 +3150,7 @@
 
   function propostaComercialPanelHtml(){
     const totalPendenciasAntesDeclarar = 0; // placeholder removido — mantém compatibilidade de nomes abaixo
+    const propEmEdicao = state.propostaEditandoId ? (state.propostas.find(x=>x.id===state.propostaEditandoId) || null) : null;
 
     let honorarioBase = null, faixaInfo = null, aCombinar = false;
     const fat = parseFloat(state.propostaFaturamento);
@@ -3124,6 +3167,12 @@
     return `
       <div class="panel-head"><h3>Serviços Contábeis — Proposta Comercial</h3></div>
         <div class="form-hint" style="margin:-4px 0 16px;">Propostas são para clientes de fora do escritório (prospecção) — quem já é cliente cadastrado não precisa de proposta. Monta uma proposta de honorários com a logomarca do escritório, usando a Tabela de Honorários Mensais vigente.</div>
+        ${propEmEdicao ? `
+          <div id="propEdicaoBanner" class="legis-note" style="margin:0 0 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+            <span>✏️ <strong>Editando a proposta de ${escapeHtml(propEmEdicao.clienteNome||'—')}</strong> (criada em ${propEmEdicao.criadaEm ? new Date(propEmEdicao.criadaEm).toLocaleDateString('pt-BR') : '—'}${propEmEdicao.editadaEm ? ' · última edição em ' + new Date(propEmEdicao.editadaEm).toLocaleDateString('pt-BR') : ''}). Use "Salvar alterações" para atualizar esta mesma proposta, ou "Salvar como nova proposta" para criar uma cópia sem mexer na original.</span>
+            <button type="button" class="btn-sm" id="propSairEdicaoBtn">Sair da edição</button>
+          </div>
+        ` : ''}
 
         <div class="form-row">
           <div class="field"><label>Nome do cliente</label><input type="text" id="propNomeAvulso" value="${escapeHtml(state.propostaNomeAvulso)}" placeholder="Nome do cliente/empresa"/></div>
@@ -3190,9 +3239,14 @@
           <div class="form-hint" style="margin-top:16px;">Os serviços acima são opções à escolha do cliente — o valor final depende de qual opção for selecionada, por isso não há um total somado.</div>
         `}
 
-        <div style="display:flex; gap:10px; margin-top:14px;">
+        <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
           <button type="button" class="btn-add" id="propGerarPdfBtn" ${!state.propostaNomeAvulso ? 'disabled' : ''}>Gerar Proposta em PDF</button>
-          <button type="button" class="btn-detail" id="propSalvarBtn" ${!state.propostaNomeAvulso ? 'disabled' : ''}>Salvar Proposta</button>
+          ${propEmEdicao ? `
+            <button type="button" class="btn-detail" id="propSalvarEdicaoBtn" ${!state.propostaNomeAvulso ? 'disabled' : ''}>Salvar alterações</button>
+            <button type="button" class="btn-sm" id="propSalvarComoNovaBtn" ${!state.propostaNomeAvulso ? 'disabled' : ''}>Salvar como nova proposta</button>
+          ` : `
+            <button type="button" class="btn-detail" id="propSalvarBtn" ${!state.propostaNomeAvulso ? 'disabled' : ''}>Salvar Proposta</button>
+          `}
         </div>
 
         <div class="form-section-title">Propostas salvas</div>
@@ -3201,11 +3255,11 @@
             <thead><tr><th>Cliente</th><th>Data</th><th style="text-align:right">Total mensal</th><th></th></tr></thead>
             <tbody>
               ${state.propostas.map(p=>`
-                <tr>
-                  <td>${escapeHtml(p.clienteNome||'—')}</td>
+                <tr ${p.id===state.propostaEditandoId ? 'style="background:#FFF8E7;"' : ''}>
+                  <td>${escapeHtml(p.clienteNome||'—')}${p.id===state.propostaEditandoId ? ' <span class="tag sit-pendente">em edição</span>' : ''}${p.editadaEm ? `<div style="font-size:11px; color:var(--ink-soft);">editada em ${new Date(p.editadaEm).toLocaleDateString('pt-BR')}</div>` : ''}</td>
                   <td>${p.criadaEm ? new Date(p.criadaEm).toLocaleDateString('pt-BR') : '—'}</td>
                   <td style="text-align:right" class="mono">${p.aCombinar ? 'A combinar' : (p.servicosSaoOpcoes && !p.incluirHonorarioMensal ? 'Opções (a definir)' : fmtBRL(p.totalMensal))}</td>
-                  <td><button class="btn-sm danger" data-del-proposta="${p.id}">Excluir</button></td>
+                  <td><div style="display:flex; gap:6px; justify-content:flex-end;"><button class="btn-detail" data-edit-proposta="${p.id}">Editar</button><button class="btn-sm danger" data-del-proposta="${p.id}">Excluir</button></div></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -17101,8 +17155,52 @@
       };
     }
     root.querySelectorAll('[data-del-proposta]').forEach(el=>{
-      el.onclick = ()=>{ if(confirm('Excluir esta proposta salva?')) deletePropostaItem(el.getAttribute('data-del-proposta')); };
+      el.onclick = ()=>{
+        const id = el.getAttribute('data-del-proposta');
+        if(!confirm('Excluir esta proposta salva?')) return;
+        if(state.propostaEditandoId === id) state.propostaEditandoId = ''; // excluiu a que estava editando: sai do modo de edição
+        deletePropostaItem(id);
+      };
     });
+    root.querySelectorAll('[data-edit-proposta]').forEach(el=>{
+      el.onclick = ()=>{
+        const prop = state.propostas.find(x=>x.id===el.getAttribute('data-edit-proposta'));
+        if(!prop) return;
+        const formTemConteudo = !!(state.propostaNomeAvulso || state.propostaFaturamento || (state.propostaItensExtras||[]).length);
+        if(formTemConteudo && state.propostaEditandoId !== prop.id && !confirm('O formulário acima tem dados digitados. Carregar esta proposta vai substituir o que está lá (o que não foi salvo será perdido). Continuar?')) return;
+        carregarPropostaNoFormulario(prop);
+        render();
+        const banner = document.getElementById('propEdicaoBanner');
+        if(banner && banner.scrollIntoView) banner.scrollIntoView({behavior:'smooth', block:'start'});
+      };
+    });
+    const propSairEdicaoBtn = document.getElementById('propSairEdicaoBtn');
+    if(propSairEdicaoBtn){
+      propSairEdicaoBtn.onclick = ()=>{
+        if(!confirm('Sair da edição? Alterações não salvas serão perdidas e o formulário volta ao estado em branco.')) return;
+        limparFormularioProposta();
+        render();
+      };
+    }
+    const propSalvarEdicaoBtn = document.getElementById('propSalvarEdicaoBtn');
+    if(propSalvarEdicaoBtn){
+      propSalvarEdicaoBtn.onclick = async ()=>{
+        if(!state.propostaNomeAvulso){ alert('Informe o nome do cliente.'); return; }
+        const ok = await salvarEdicaoProposta();
+        alert(ok ? 'Proposta atualizada.' : 'Não encontrei a proposta original — ela pode ter sido excluída. Use "Salvar como nova proposta".');
+      };
+    }
+    const propSalvarComoNovaBtn = document.getElementById('propSalvarComoNovaBtn');
+    if(propSalvarComoNovaBtn){
+      propSalvarComoNovaBtn.onclick = async ()=>{
+        if(!state.propostaNomeAvulso){ alert('Informe o nome do cliente.'); return; }
+        const nova = montarPropostaSnapshot();
+        await savePropostaItem(nova); // atribui o id da nova proposta
+        state.propostaEditandoId = nova.id; // passa a editar a cópia, para um novo clique em Salvar não duplicar de novo
+        render();
+        alert('Nova proposta criada a partir desta. Você agora está editando a cópia — a original não foi alterada.');
+      };
+    }
 
     // ===== Controle de Honorários =====
     const honorarioEmpresaSelect = document.getElementById('honorarioEmpresaSelect');
