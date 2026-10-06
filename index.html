@@ -3775,7 +3775,160 @@
     doc.save('guia-' + tipo.toLowerCase() + '-' + state.competenciaAtiva + '.pdf');
   }
 
+  // ---- Ficha de Registro de Funcionário (modelo do escritório, 2 páginas) ----
   function gerarFichaRegistroPDF(func){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!func){ alert('Selecione um funcionário.'); return; }
+    const emp = dpEmpregador(func.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const x0 = 20, W = 170, xr = x0 + W, azul = [47,84,150];
+    let y = 24;
+    const pagina = (alt)=>{ if(y + alt > 281){ doc.addPage(); y = 22; } };
+    const secao = (titulo)=>{
+      pagina(16);
+      doc.setFont('helvetica','bold'); doc.setFontSize(11.5); doc.setTextColor(azul[0],azul[1],azul[2]);
+      doc.text(titulo, x0, y);
+      doc.setDrawColor(azul[0],azul[1],azul[2]); doc.setLineWidth(0.4); doc.line(x0, y + 1.6, xr, y + 1.6);
+      y += 8; doc.setTextColor(0,0,0);
+    };
+    const texto = (t, tam, negrito)=>{ doc.setFont('helvetica', negrito ? 'bold' : 'normal'); doc.setFontSize(tam); doc.setTextColor(0,0,0); doc.text(t, x0, y); };
+
+    // Título
+    dpLogo(doc, emp, x0, 10, 14, 14);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(azul[0],azul[1],azul[2]);
+    doc.text('FICHA DE REGISTRO DE FUNCIONÁRIO', pageW/2, y, {align:'center'}); y += 6.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(0,0,0);
+    doc.splitTextToSize('Documento disponibilizado pela JP Consultoria Contábil para empresas regularizarem admissões de forma prática e segura.', W - 40).forEach(l=>{ doc.text(l, pageW/2, y, {align:'center'}); y += 4.4; });
+    if(emp.nome){ doc.setFontSize(8.5); doc.setTextColor(70,70,70); doc.text('Empresa: ' + emp.nome + (emp.doc ? ' — CNPJ/CPF ' + emp.doc : ''), pageW/2, y + 1, {align:'center'}); doc.setTextColor(0,0,0); y += 5; }
+    y += 4;
+
+    // Documentos obrigatórios para admissão
+    secao('Documentos Obrigatórios para Admissão');
+    const docs = [
+      'Para efetivar a contratação, envie os seguintes documentos:',
+      '1. Livro de Registro de Empregado ou Ficha de Registro;', '2. CTPS (Carteira de Trabalho);', '3. Atestado Médico Admissional;', '4. 1 (uma) foto 3x4;', '5. Cópias dos documentos:',
+      '     - CPF;', '     - RG (Identidade);', '     - Título de Eleitor;', '     - Certidão de Casamento ou Nascimento;', '     - Carteira de Reservista (para homens);',
+      '     - Comprovante de Residência com CEP;', '     - Carteira de Trabalho (parte da foto e verso);', '     - Cadastro do PIS (Cartão ou Extrato do PIS ativo da Caixa).',
+      '',
+      'Observação: Caso possua filhos menores de 14 anos ou com deficiência, incluir:', '- Certidão de nascimento;', '- Cartão de vacina (para menores de 5 anos);', '- Comprovante de escolaridade (para maiores de 7 anos).',
+    ];
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    docs.forEach(l=>{ if(l) doc.text(l, x0, y); y += 3.7; });
+    y += 4;
+
+    // Dados do funcionário
+    secao('DADOS DO FUNCIONÁRIO');
+    const passo = 8, T = 9.5;
+    const v = (x)=> (x === undefined || x === null) ? '' : String(x);
+    const dt = (iso)=> iso ? fmtDate(iso) : '';
+    // Várias linhas "Rótulo: ____" na mesma linha; o último campo vai até a margem direita.
+    const linha = (campos)=>{
+      pagina(passo);
+      let xx = x0;
+      campos.forEach((c, i)=>{
+        if(c.data !== undefined){ xx = dpDataCampo(doc, xx, y, c.r, c.data, T) + 3; return; }
+        if(i === campos.length - 1 && !c.w) xx = dpCampoAte(doc, xx, y, c.r, c.v, xr, T);
+        else xx = dpCampo(doc, xx, y, c.r, c.v, c.w, T) + 3;
+      });
+      y += passo;
+    };
+    const marcas = (rotulo, opcoes, marcada, sufixo)=>{
+      pagina(passo);
+      doc.setFont('helvetica','normal'); doc.setFontSize(T); doc.setTextColor(0,0,0);
+      doc.text(rotulo, x0, y);
+      let xx = x0 + doc.getTextWidth(rotulo) + 3;
+      opcoes.forEach(o=>{ const t = '(' + (o === marcada ? ' X ' : '   ') + ') ' + o; doc.text(t, xx, y); xx += doc.getTextWidth(t) + 4; });
+      if(sufixo) doc.text('—  ' + sufixo, xx, y);
+      y += passo;
+    };
+    const norm = (t)=> String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const racas = ['Branca','Preta','Parda','Amarela','Indígena'];
+    const raca = racas.find(r=> norm(func.racaCor).indexOf(norm(r).slice(0,4)) !== -1) || '';
+    const endereco = [func.logradouro, func.numeroEndereco, func.bairro].filter(Boolean).join(', ');
+    const grau = norm(func.grauInstrucao);
+    const escol = !grau ? '' : (/incomplet|cursando/.test(grau) ? 'Incompleto/Cursando' : (/complet/.test(grau) ? 'Completo' : ''));
+
+    linha([{r:'1. Nome completo:', v:func.nome}]);
+    linha([{r:'2. Endereço:', v:endereco}]);
+    linha([{r:'3. Cidade:', v:func.municipioUf, w:52}, {r:'CEP:', v:func.cep, w:26}, {r:'Tel.:', v:func.telefone||func.celular}]);
+    linha([{r:'4. Nacionalidade:', v:func.nacionalidade, w:60}]);
+    linha([{r:'5. Data de Nascimento:', data:func.dataNascimento}, {r:'Local:', v:func.naturalidade, w:46}, {r:'UF:', v:func.ufNaturalidade}]);
+    linha([{r:'6. RG:', v:func.rg, w:28}, {r:'Data de Emissão:', v:dt(func.dataEmissaoRg), w:22}, {r:'Órgão Emissor:', v:func.orgaoEmissorRg, w:16}, {r:'UF:', v:func.ufRg}]);
+    linha([{r:'7. CPF:', v:func.cpf, w:50}]);
+    linha([{r:'8. Título de Eleitor:', v:func.tituloEleitor, w:38}, {r:'Zona:', v:func.zonaEleitoral, w:16}, {r:'Seção:', v:func.secaoEleitoral}]);
+    linha([{r:'9. Reservista:', v:func.reservista, w:42}, {r:'Categoria:', v:func.categoriaReservista, w:34}]);
+    linha([{r:'10. CTPS:', v:func.ctpsNumero, w:24}, {r:'Série:', v:func.ctpsSerie, w:18}, {r:'UF:', v:func.ctpsUf, w:10}, {r:'Data de Emissão:', v:dt(func.ctpsDataEmissao)}]);
+    linha([{r:'11. PIS/PASEP:', v:func.pis, w:50}]);
+    marcas('12. Raça/Cor:', racas, raca);
+    pagina(passo * 3);
+    texto('13. Filiação:', T); y += passo - 1.5;
+    linha([{r:'- Pai:', v:func.nomePai}]);
+    linha([{r:'- Mãe:', v:func.nomeMae}]);
+    linha([{r:'14. Estado Civil:', v:func.estadoCivil, w:42}, {r:'Cônjuge:', v:func.conjuge}]);
+    {
+      pagina(passo);
+      doc.setFont('helvetica','normal'); doc.setFontSize(T); doc.setTextColor(0,0,0);
+      let xx = x0; const t0 = '15. Escolaridade:'; doc.text(t0, xx, y); xx += doc.getTextWidth(t0) + 3;
+      ['Completo', 'Incompleto/Cursando'].forEach(o=>{ const t = '(' + (o === escol ? ' X ' : '   ') + ') ' + o; doc.text(t, xx, y); xx += doc.getTextWidth(t) + 3; });
+      doc.text('—  Grau:', xx, y); xx += doc.getTextWidth('—  Grau:') + 1.5;
+      dpCampoAte(doc, xx, y, '', func.grauInstrucao, xr, T);
+      y += passo;
+    }
+    y += 3;
+
+    // Informações do empregador
+    secao('INFORMAÇÕES DO EMPREGADOR');
+    const horas = (/(\d{2})\s*h/i.exec(v(func.jornada)) || [])[1];
+    const semanal = horas ? Number(horas) : 0;
+    const vtMarca = func.valeTransporte === true || norm(func.valeTransporte) === 'sim' ? 'Sim' : ((func.valeTransporte === false || norm(func.valeTransporte) === 'nao') ? 'Não' : '');
+    linha([{r:'1. Data de Admissão:', data:func.dataAdmissao}]);
+    {
+      pagina(passo);
+      doc.setFont('helvetica','normal'); doc.setFontSize(T); doc.setTextColor(0,0,0);
+      let xx = x0; const t0 = '2. Salário: R$'; doc.text(t0, xx, y); xx += doc.getTextWidth(t0) + 1.5;
+      xx = dpCampo(doc, xx, y, '', func.salarioBase ? fmtBRL(func.salarioBase).replace(/^R\$\s*/, '') : '', 30, T) + 3;
+      doc.text('(', xx, y); xx += 2;
+      dpCampoAte(doc, xx, y, '', func.salarioBase ? valorPorExtenso(Number(func.salarioBase)) : '', xr - 3, T);
+      doc.text(')', xr - 2, y);
+      y += passo;
+    }
+    linha([{r:'3. Função:', v:func.cargo}]);
+    linha([{r:'4. Carga Horária: Mensal:', v:semanal ? (semanal * 5) + ' h' : '', w:22}, {r:'/ Semanal:', v:semanal ? semanal + ' h' : '', w:22}, {r:'/ Dia de Folga:', v:func.diaFolga}]);
+    marcas('5. Vale Transporte:', ['Sim','Não'], vtMarca, 'Desconto de 6% conforme CLT');
+    pagina(passo * 3);
+    texto('6. Jornada:', T); y += passo - 1.5;
+    {
+      doc.setFont('helvetica','normal'); doc.setFontSize(T); doc.setTextColor(0,0,0);
+      const horario = (r1, extra)=>{
+        let xx = x0; doc.text(r1, xx, y); xx += doc.getTextWidth(r1) + 1.5;
+        ['das','às','e das','às'].forEach((t, i)=>{ doc.text(t, xx, y); xx += doc.getTextWidth(t) + 1.5; xx = dpCampo(doc, xx, y, '', '', 13, T) + 2; });
+        if(extra){ doc.text('(   ) Não trabalha aos sábados', xx + 1, y); }
+        y += passo;
+      };
+      horario('- Segunda a Sexta:');
+      horario('- Sábado:', true);
+    }
+    y += 2;
+    pagina(52);
+    dpDataCampo(doc, x0, y, 'Ciente:', '', T);
+    y += 20;
+    dpAssinatura(doc, x0 + 32, y, 64, 'Assinatura do Empregador', 9); y += 18;
+    dpAssinatura(doc, x0 + 32, y, 64, 'Assinatura do Empregado', 9);
+
+    // Rodapé em todas as páginas
+    const total = doc.internal.getNumberOfPages();
+    for(let i = 1; i <= total; i++){
+      doc.setPage(i);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120,120,120);
+      doc.text('JP Consultoria Contábil — Departamento Pessoal', x0, 289);
+      doc.text('Página ' + i + ' de ' + total, xr, 289, {align:'right'});
+    }
+    doc.save(dpNomeArquivo('ficha-registro-funcionario', func.nome));
+  }
+
+  function gerarFichaRegistroClassicaPDF(func){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     if(!func){ alert('Selecione um funcionário.'); return; }
     const cliente = state.clients.find(c=>c.id===func.clientId);
@@ -4710,170 +4863,462 @@
     doc.save('recibo-prolabore-' + (pl.socioNome||'socio').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (pl.competencia||'') + '.pdf');
   }
 
+  // =====================================================================================
+  // DOCUMENTOS DO DEPARTAMENTO PESSOAL — seguem os modelos entregues pelo escritório
+  // (Recibo de Férias, Aviso de Férias, Aviso Prévio, Recibo de Vale-Transporte, Folha de
+  // Ponto e Ficha de Registro de Funcionário). Campos sem dado ficam como linhas em branco
+  // para preenchimento manual, como nos modelos.
+  // =====================================================================================
+  function dpEmpregador(clientId){
+    const c = state.clients.find(x=>x.id===clientId) || null;
+    return { nome: c ? (c.name||'') : '', doc: c ? (c.doc||'') : '', cidade: c ? (c.city||'') : '', uf: c ? (c.uf||'') : '', logo: c ? (c.logo||'') : '' };
+  }
+  function dpNomeArquivo(prefixo, nome){ return prefixo + '-' + String(nome||'documento').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf'; }
+  function dpLogo(doc, emp, x, y, w, h){
+    if(!emp || !emp.logo) return;
+    try{ doc.addImage(emp.logo, emp.logo.indexOf('image/png')!==-1 ? 'PNG' : 'JPEG', x, y, w, h); }catch(e){}
+  }
+  // Caixa só com contorno (retangular ou de cantos arredondados).
+  function dpCaixa(doc, x, y, w, h, raio, espessura){
+    doc.setDrawColor(0,0,0); doc.setLineWidth(espessura||0.3);
+    if(raio) doc.roundedRect(x, y, w, h, raio, raio, 'S'); else doc.rect(x, y, w, h, 'S');
+  }
+  // "Rótulo: ______" — o valor, quando existe, é escrito sobre a linha. Devolve o x onde o campo termina.
+  function dpCampo(doc, x, y, rotulo, valor, largura, tam, negritoRotulo){
+    tam = tam || 10;
+    doc.setFont('helvetica', negritoRotulo ? 'bold' : 'normal'); doc.setFontSize(tam); doc.setTextColor(0,0,0);
+    if(rotulo) doc.text(rotulo, x, y);
+    const xi = rotulo ? x + doc.getTextWidth(rotulo) + 1.5 : x;
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.line(xi, y+0.8, xi+largura, y+0.8);
+    if(valor !== undefined && valor !== null && String(valor) !== ''){
+      let fs = tam; doc.setFont('helvetica','normal'); doc.setFontSize(fs);
+      while(fs > 6 && doc.getTextWidth(String(valor)) > largura - 1){ fs -= 0.5; doc.setFontSize(fs); }
+      doc.text(String(valor), xi + 0.8, y);
+      doc.setFontSize(tam);
+    }
+    return xi + largura;
+  }
+  // Igual ao dpCampo, mas a linha vai até a posição xFim.
+  function dpCampoAte(doc, x, y, rotulo, valor, xFim, tam, negritoRotulo){
+    tam = tam || 10;
+    doc.setFont('helvetica', negritoRotulo ? 'bold' : 'normal'); doc.setFontSize(tam);
+    const larg = xFim - (x + doc.getTextWidth(rotulo||'') + 1.5);
+    return dpCampo(doc, x, y, rotulo, valor, Math.max(larg, 8), tam, negritoRotulo);
+  }
+  // Data no formato do modelo: ____/____/______ (preenchida quando informada). Devolve o x final.
+  function dpData(doc, x, y, iso, tam){
+    tam = tam || 10;
+    doc.setFont('helvetica','normal'); doc.setFontSize(tam); doc.setTextColor(0,0,0);
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+    const m = String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const partes = m ? [m[3], m[2], m[1]] : ['','',''];
+    const larg = [7.5, 7.5, 12];
+    let cx = x;
+    partes.forEach((p, i)=>{
+      doc.line(cx, y+0.8, cx+larg[i], y+0.8);
+      if(p) doc.text(p, cx + larg[i]/2, y, {align:'center'});
+      cx += larg[i];
+      if(i < 2){ doc.text('/', cx + 1.2, y, {align:'center'}); cx += 2.4; }
+    });
+    return cx;
+  }
+  function dpDataCampo(doc, x, y, rotulo, iso, tam){
+    tam = tam || 10; doc.setFont('helvetica','normal'); doc.setFontSize(tam); doc.setTextColor(0,0,0);
+    doc.text(rotulo, x, y);
+    return dpData(doc, x + doc.getTextWidth(rotulo) + 1.5, y, iso, tam);
+  }
+  // Linha de assinatura com a legenda centralizada embaixo.
+  function dpAssinatura(doc, xCentro, y, largura, legenda, tam, negrito){
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.25);
+    doc.line(xCentro - largura/2, y, xCentro + largura/2, y);
+    doc.setFont('helvetica', negrito ? 'bold' : 'normal'); doc.setFontSize(tam || 9); doc.setTextColor(0,0,0);
+    doc.text(legenda, xCentro, y + 4.2, {align:'center'});
+  }
+  // Período aquisitivo: o ciclo de 12 meses (a partir da admissão) mais recente já concluído na data de
+  // início do gozo. Funcionário com menos de 12 meses (ex.: férias coletivas): da admissão até a véspera.
+  function dpPeriodoAquisitivo(dataAdmissao, dataInicioGozo){
+    if(!dataAdmissao) return { inicio:'', fim:'' };
+    const [ya, ma, da] = dataAdmissao.split('-').map(Number);
+    const ref = dataInicioGozo || todayStr();
+    const aniv = (n)=> new Date(Date.UTC(ya + n, ma - 1, da)).toISOString().slice(0,10);
+    let n = 0;
+    while(n < 60 && aniv(n + 1) <= ref) n++;
+    if(n === 0) return { inicio: dataAdmissao, fim: addDaysStr(ref, -1) };
+    return { inicio: aniv(n - 1), fim: addDaysStr(aniv(n), -1) };
+  }
+  function dpPeriodoAquisitivoDe(ferias, func){
+    if(ferias && ferias.aquisitivoInicio && ferias.aquisitivoFim) return { inicio: ferias.aquisitivoInicio, fim: ferias.aquisitivoFim };
+    return dpPeriodoAquisitivo(func ? func.dataAdmissao : '', ferias ? ferias.dataInicioGozo : '');
+  }
+  function dpFimGozo(ferias){
+    return (ferias && ferias.dataInicioGozo && (ferias.diasGozo||0) > 0) ? addDaysStr(ferias.dataInicioGozo, (ferias.diasGozo||0) - 1) : '';
+  }
+
+  // ---- Recibo de Férias (modelo do escritório) ----
   function gerarReciboFeriasPDF(ferias){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     if(!ferias){ alert('Recibo não encontrado.'); return; }
     const func = state.funcionarios.find(f=>f.id===ferias.funcionarioId);
-    const cliente = state.clients.find(c=>c.id===ferias.clientId);
+    const emp = dpEmpregador(ferias.clientId);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    const mx = 12, cw = pageW - mx*2;
+    const x0 = 17.5, W = 175, xr = x0 + W, xi = x0 + 3, wi = W - 6;
+    const aquis = dpPeriodoAquisitivoDe(ferias, func);
+    const fimGozo = dpFimGozo(ferias);
 
-    doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(20,25,30);
-    doc.text('Recibo de Férias', pageW/2, 18, {align:'center'});
-    if(cliente && cliente.logo){
-      try{
-        const fmtLogo = cliente.logo.indexOf('image/png')!==-1 ? 'PNG' : 'JPEG';
-        doc.addImage(cliente.logo, fmtLogo, mx, 6, 16, 16);
-      }catch(e){}
+    doc.setFont('helvetica','normal'); doc.setFontSize(16); doc.setTextColor(20,20,20);
+    doc.text('Recibo de Férias', pageW/2, 21, {align:'center'});
+    dpLogo(doc, emp, x0, 9, 14, 14);
+
+    // ---- Quadro 1: empregador e empregado ----
+    dpCaixa(doc, x0, 29, W, 49, 3, 0.3);
+    const rot = (t, yy)=>{ doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(0,0,0); doc.text(t, xi, yy); };
+    const caixinha = (x, y, w, rotulo, valor)=>{
+      dpCaixa(doc, x, y, w, 7.5, 1.5, 0.3);
+      dpCampoAte(doc, x + 2, y + 5, rotulo, valor, x + w - 2, 8.5);
+    };
+    const wA = 113, xB = xi + wA + 4, wB = xr - 3 - xB;
+    rot('EMPREGADOR:', 36);
+    caixinha(xi, 38.5, wA, 'Nome:', emp.nome);
+    caixinha(xB, 38.5, wB, 'CPF/CNPJ:', emp.doc);
+    rot('EMPREGADO:', 53);
+    caixinha(xi, 55.5, wA, 'Nome:', func ? func.nome : '');
+    caixinha(xB, 55.5, wB, 'CPF:', func ? func.cpf : '');
+    caixinha(xi, 65.5, wA, 'Matrícula:', func ? func.matricula : '');
+    caixinha(xB, 65.5, wB, 'Data da Admissão:', func && func.dataAdmissao ? fmtDate(func.dataAdmissao) : '');
+
+    // ---- Quadro 2: períodos, base de cálculo, proventos e descontos ----
+    let y = 82.5;
+    const topoQ2 = 80;
+    const barra = (titulo)=>{
+      doc.setFillColor(217,217,217); doc.rect(xi, y, wi, 4.6, 'F');
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.25); doc.rect(xi, y, wi, 4.6, 'S');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(0,0,0);
+      doc.text(titulo, pageW/2, y + 3.3, {align:'center'});
+      y += 4.6;
+    };
+    // linha de duas células: rótulo | valor
+    const linha2 = (rotulo, valor, wEsq, h, opts)=>{
+      opts = opts || {};
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      if(opts.fundo){ doc.setFillColor(opts.fundo[0], opts.fundo[1], opts.fundo[2]); doc.rect(xi, y, wi, h, 'F'); }
+      doc.rect(xi, y, wEsq, h, 'S'); doc.rect(xi + wEsq, y, wi - wEsq, h, 'S');
+      doc.setFont('helvetica', opts.negrito ? 'bold' : 'normal'); doc.setFontSize(opts.tam || 7.8); doc.setTextColor(0,0,0);
+      if(rotulo) doc.text(rotulo, xi + 1.5, y + h - 1.3);
+      if(valor) doc.text(valor, opts.valorAlinhado === 'dir' ? xi + wi - 1.5 : xi + wEsq + 1.5, y + h - 1.3, opts.valorAlinhado === 'dir' ? {align:'right'} : undefined);
+      y += h;
+    };
+    barra('PERÍODOS');
+    linha2('De Aquisição:', 'DE:  ' + (aquis.inicio ? fmtDate(aquis.inicio) : '___/___/________') + '   a   ' + (aquis.fim ? fmtDate(aquis.fim) : '___/___/________'), 57, 4.4, {negrito:true});
+    linha2('De Gozo de Férias:', 'DE:  ' + (ferias.dataInicioGozo ? fmtDate(ferias.dataInicioGozo) : '___/___/________') + '   a   ' + (fimGozo ? fmtDate(fimGozo) : '___/___/________'), 57, 4.4, {negrito:true});
+    y += 2.5;
+    barra('BASE DE CÁLCULO DA REMUNERAÇÃO DAS FÉRIAS');
+    {
+      const h = 4.4, cw = [36, 52, 42, wi - 130]; let cx = xi;
+      const txt = ['Salário contratual:', 'R$ ' + (func && func.salarioBase ? fmtBRL(func.salarioBase).replace(/^R\$\s*/, '') : '____________'), 'Salário base das férias:', 'R$ ' + (func && func.salarioBase ? fmtBRL(func.salarioBase).replace(/^R\$\s*/, '') : '____________')];
+      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.setFont('helvetica','bold'); doc.setFontSize(7.8); doc.setTextColor(0,0,0);
+      cw.forEach((w, i)=>{ doc.rect(cx, y, w, h, 'S'); doc.text(txt[i], cx + 1.5, y + h - 1.3); cx += w; });
+      y += h;
+    }
+    y += 2.5;
+    const wVal = 43, wRot = wi - wVal;
+    const brl = (v)=> (v !== undefined && v !== null && Number(v) !== 0) ? fmtBRL(v) : null;
+    barra('PROVENTOS');
+    linha2('Adiantamento de férias', brl(ferias.valorFeriasGozo) || 'R$', wRot, 4.3, {valorAlinhado:'esq'});
+    linha2('Adiantamento do adicional de 1/3 sobre férias', brl(ferias.tercoGozo) || 'R$', wRot, 4.3);
+    linha2('Abono pecuniário de férias (venda de férias)', brl(ferias.valorAbono) || '', wRot, 4.3);
+    linha2(brl(ferias.tercoAbono) ? '1/3 sobre o abono pecuniário' : '', brl(ferias.tercoAbono) || '', wRot, 4.3, {fundo:[236,236,236]});
+    linha2('', '', wRot, 4.3, {fundo:[236,236,236]});
+    linha2('', '', wRot, 4.3, {fundo:[236,236,236]});
+    const totalProventos = (Number(ferias.valorFeriasGozo)||0) + (Number(ferias.tercoGozo)||0) + (Number(ferias.valorAbono)||0) + (Number(ferias.tercoAbono)||0);
+    linha2('Total de Proventos', fmtBRL(totalProventos), wRot, 4.5, {negrito:true});
+    y += 2.5;
+    barra('DESCONTOS');
+    const compInss = ferias.dataInicioGozo ? (ferias.dataInicioGozo.slice(5,7) + '/' + ferias.dataInicioGozo.slice(0,4)) : '__________/20___';
+    linha2('Provisão de INSS (reserva para desconto na folha)  - Férias - ' + compInss, brl(ferias.inss) || 'R$', wRot, 4.3);
+    linha2(brl(ferias.irrf) ? 'IRRF sobre férias + 1/3' : '', brl(ferias.irrf) || '', wRot, 4.3, {fundo:[236,236,236]});
+    linha2('', '', wRot, 4.3, {fundo:[236,236,236]});
+    linha2('', '', wRot, 4.3, {fundo:[236,236,236]});
+    const totalDescontos = (Number(ferias.inss)||0) + (Number(ferias.irrf)||0);
+    linha2('Total de Descontos', fmtBRL(totalDescontos), wRot, 4.5, {negrito:true});
+    y += 2.5;
+    linha2('LÍQUIDO A RECEBER', fmtBRL(ferias.totalLiquido), wRot, 5.2, {negrito:true, fundo:[217,217,217], tam:8.5});
+    dpCaixa(doc, x0, topoQ2, W, y + 2.5 - topoQ2, 3, 0.3);
+
+    // ---- Quadro 3: declaração, local/data e assinatura ----
+    const yQ3 = y + 8;
+    dpCaixa(doc, x0, yQ3, W, 66, 3, 0.3);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(0,0,0);
+    const liq = (ferias.totalLiquido !== undefined && ferias.totalLiquido !== null) ? fmtBRL(ferias.totalLiquido) : 'R$ __________,___';
+    const p1 = doc.splitTextToSize('Recebi do empregador acima identificado a quantia líquida de ' + liq + ' por motivo de minhas férias regulamentares, ora concedidas e que vou gozar de acordo com a descrição acima.', W - 8);
+    doc.text(p1, x0 + 4, yQ3 + 8);
+    doc.text('Por ser verdade, firmo o presente recibo, dando plena quitação.', x0 + 4, yQ3 + 8 + p1.length * 4.3 + 3);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9);
+    doc.text((emp.cidade || '_______________________________') + ', _______ de _____________________ de ________', x0 + 4, yQ3 + 36);
+    dpAssinatura(doc, pageW/2, yQ3 + 55, 95, 'Assinatura do trabalhador', 9, true);
+
+    // ---- Data de emissão ----
+    const dEmissao = fmtDate(todayStr());
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(0,0,0);
+    const wData = doc.getTextWidth(': ' + dEmissao);
+    doc.text(': ' + dEmissao, xr, 283, {align:'right'});
+    doc.setFont('helvetica','bold');
+    doc.text('DATA DE EMISSÃO', xr - wData, 283, {align:'right'});
+
+    doc.save(dpNomeArquivo('recibo-ferias', func ? func.nome : 'funcionario'));
+  }
+
+  // ---- Aviso de Férias (modelo do escritório) ----
+  function gerarAvisoFeriasPDF(ferias){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!ferias){ alert('Registro de férias não encontrado.'); return; }
+    const func = state.funcionarios.find(f=>f.id===ferias.funcionarioId);
+    const emp = dpEmpregador(ferias.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const bx = 23, bw = 164, xi = bx + 4, xf = bx + bw - 4;
+    const aquis = dpPeriodoAquisitivoDe(ferias, func);
+    const fimGozo = dpFimGozo(ferias);
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(0,0,0);
+    doc.text('AVISO DE FÉRIAS', pageW/2, 27, {align:'center'});
+    dpLogo(doc, emp, bx, 12, 14, 14);
+
+    // Quadro 1 — empregador e empregado
+    dpCaixa(doc, bx, 34, bw, 49, 0, 0.3);
+    dpCampoAte(doc, xi, 43, 'Empregador:', emp.nome, xf - 10);
+    dpCampoAte(doc, xi, 51, 'CPF/CNPJ:', emp.doc, xi + 98);
+    dpCampoAte(doc, xi, 66.5, 'Empregado:', func ? func.nome : '', xf - 10);
+    dpCampoAte(doc, xi, 74, 'CPF:', func ? func.cpf : '', xi + 78);
+
+    // Quadro 2 — períodos
+    dpCaixa(doc, bx, 93, bw, 48, 0, 0.3);
+    let xx = dpDataCampo(doc, xi + 38, 101.5, '', aquis.inicio);
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.text('Período Aquisitivo:', xi, 101.5);
+    doc.text('a', xx + 3, 101.5); dpData(doc, xx + 8, 101.5, aquis.fim);
+    const par = doc.splitTextToSize('Nos termos das disposições legais vigentes, comunico que suas férias serão concedidas conforme demonstrado abaixo:', bw - 8);
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
+    doc.text(par, xi, 110);
+    xx = dpDataCampo(doc, xi, 124.5, 'Início das férias:', ferias.dataInicioGozo);
+    dpDataCampo(doc, xx + 10, 124.5, 'Término das férias:', fimGozo);
+    dpCampo(doc, xi, 134, 'Total de dias de gozo:', ferias.diasGozo ? String(ferias.diasGozo) : '', 10);
+
+    // Quadro 3 — local, data e assinatura do empregador
+    dpCaixa(doc, bx, 146, bw, 39, 0, 0.3);
+    const hoje = dataPorExtenso(todayStr());
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(0,0,0);
+    doc.text((emp.cidade || '____________________') + ', ' + hoje + '.', bx + bw - 4, 155, {align:'right'});
+    dpAssinatura(doc, pageW/2, 173, 85, 'Assinatura do empregador', 10);
+
+    // Quadro 4 — ciência e opção pelo abono pecuniário
+    dpCaixa(doc, bx, 194.5, bw, 48.5, 0, 0.3);
+    dpDataCampo(doc, pageW/2 - 28, 203, 'Ciente em:', '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(0,0,0);
+    doc.text('Desejo converter', xi, 215);
+    const xAb = xi + doc.getTextWidth('Desejo converter') + 1.5;
+    dpCampo(doc, xAb, 215, '', ferias.diasVendidos ? String(ferias.diasVendidos) : '', 12);
+    doc.text('dias de férias em dinheiro (abono pecuniário), conforme artigo', xAb + 13, 215);
+    doc.text('143 da CLT (Decreto-Lei nº 5.452/1943).', xi, 221);
+    dpAssinatura(doc, pageW/2, 235.8, 85, 'Assinatura do empregado', 10);
+
+    doc.save(dpNomeArquivo('aviso-ferias', func ? func.nome : 'funcionario'));
+  }
+
+  // ---- Aviso Prévio — carta do empregador (modelo do escritório) ----
+  // opts: { dias (se vazio, calcula pela Lei 12.506/2011: 30 dias + 3 por ano completo, até 90), dataAviso (AAAA-MM-DD; padrão: hoje) }
+  function gerarAvisoPrevioPDF(func, opts){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!func){ alert('Selecione um funcionário.'); return; }
+    opts = opts || {};
+    const emp = dpEmpregador(func.clientId);
+    const dataAviso = opts.dataAviso || todayStr();
+    let dias = parseInt(opts.dias) || 0;
+    if(!dias) dias = calcAvisoPrevioDias(calcAvosRescisaoPorDatas(func.dataAdmissao, dataAviso).anosCasa);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const x0 = 29, W = 152;
+
+    doc.setFont('helvetica','normal'); doc.setFontSize(16); doc.setTextColor(0,0,0);
+    doc.text('Aviso prévio', pageW/2, 40, {align:'center'});
+    dpLogo(doc, emp, x0, 12, 16, 16);
+
+    doc.setFontSize(10.5);
+    doc.text('Senhor(a) ', x0, 57.5);
+    doc.setFont('helvetica','bold');
+    doc.text(func.nome || '', x0 + doc.getTextWidth('Senhor(a) ') , 57.5);
+
+    // Corpo: espaçamento 1,5 como no modelo
+    doc.setFont('helvetica','normal'); doc.setFontSize(10.5);
+    const passo = 7.4; let y = 72;
+    const corpo = [
+      'Servimo-nos do presente para comunicar a V. Sa. que os seus serviços não mais serão utilizados por este empregador.',
+      'O período de cumprimento do aviso é de ' + dias + ' dias, conforme determina a legislação trabalhista vigente, contados a partir do primeiro dia subsequente a entrega deste, a ser cumprido na forma escolhida por V.Sa.',
+    ];
+    corpo.forEach(par=>{ doc.splitTextToSize(par, W).forEach(l=>{ doc.text(l, x0, y); y += passo; }); });
+
+    y = 115.4;
+    const marca = (opts.modalidade === 'reducao') ? 'X' : ' ';
+    const marca2 = (opts.modalidade === 'ausencia') ? 'X' : ' ';
+    doc.text('(' + (marca === 'X' ? ' X ' : '   ') + ') Redução de 2 (duas) horas diárias', x0 + 12, y);
+    doc.text('(' + (marca2 === 'X' ? ' X ' : '   ') + ') Ausência ao trabalho por 7 dias corridos', x0 + 12, y + 7.4);
+
+    doc.text('Atenciosamente,', x0, 144.7);
+    doc.text((emp.cidade ? emp.cidade + ', ' : '') + dataPorExtenso(dataAviso), x0, 160);
+
+    // Assinatura da empresa (com o nome/CNPJ no lugar do carimbo, quando cadastrados)
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.25);
+    doc.line(x0, 175.8, x0 + 90, 175.8);
+    doc.text('(carimbo e assinatura da empresa)', x0, 182.2);
+    if(emp.nome){
+      doc.setFontSize(8.5); doc.setTextColor(70,70,70);
+      doc.text(emp.nome + (emp.doc ? ' — CNPJ/CPF ' + emp.doc : ''), x0, 187.2);
+      doc.setTextColor(0,0,0); doc.setFontSize(10.5);
     }
 
-    let y = 26;
-    const outerStartY = y;
+    doc.text('Ciente: __/__/__', x0, 204.7);
+    doc.line(x0, 220.6, x0 + 90, 220.6);
+    doc.text(' (assinatura do empregado ou do seu responsável legal)', x0, 227.2);
 
-    // ---- Cabeçalho: EMPREGADOR / EMPREGADO em duas caixas lado a lado ----
-    const boxLabel = (x, yy, w, h, titulo)=>{
-      doc.setDrawColor(0,0,0); doc.setLineWidth(0.3); doc.rect(x, yy, w, h);
-      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(90,90,90);
-      doc.text(titulo, x+2, yy+3.2);
-    };
-    const boxValue = (x, yy, w, h, valor)=>{
-      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(20,25,30);
-      doc.text(String(valor||''), x+2, yy+h-2.2);
-    };
+    doc.save(dpNomeArquivo('aviso-previo', func.nome));
+  }
 
-    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(20,25,30);
-    doc.text('EMPREGADOR:', mx, y+4);
-    doc.setFont('helvetica','normal');
-    doc.text(cliente ? cliente.name : '—', mx+32, y+4);
-    y += 6.5;
-    doc.setFont('helvetica','bold');
-    doc.text('CNPJ:', mx, y+4);
-    doc.setFont('helvetica','normal');
-    doc.text(cliente && cliente.doc ? cliente.doc : '—', mx+15, y+4);
-    y += 9;
+  // ---- Recibo de Entrega de Vale-Transporte (modelo do escritório) ----
+  // opts: { quantidade, mes (AAAA-MM), data (AAAA-MM-DD), local } — campos não informados ficam em branco
+  // para preenchimento manual pelo empregado no momento do recebimento, como no modelo.
+  function gerarReciboValeTransportePDF(func, opts){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!func){ alert('Selecione um funcionário.'); return; }
+    opts = opts || {};
+    const emp = dpEmpregador(func.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const bx = 27.5, by = 38.8, bw = 158.5, bh = 164, xi = bx + 3, xf = bx + bw - 3;
 
-    doc.setFont('helvetica','bold');
-    doc.text('EMPREGADO:', mx, y+4);
-    doc.setFont('helvetica','normal');
-    doc.text(func ? func.nome : '—', mx+32, y+4);
-    y += 6.5;
-    doc.setFont('helvetica','bold');
-    doc.text('CPF:', mx, y+4);
-    doc.setFont('helvetica','normal');
-    doc.text(func && func.cpf ? func.cpf : '—', mx+15, y+4);
-    doc.setFont('helvetica','bold');
-    doc.text('Admissão:', mx+90, y+4);
-    doc.setFont('helvetica','normal');
-    doc.text(func && func.dataAdmissao ? fmtDate(func.dataAdmissao) : '—', mx+112, y+4);
-    y += 9;
+    dpCaixa(doc, bx, by, bw, bh, 0, 0.6);
+    dpLogo(doc, emp, bx + 3, by + 3, 14, 14);
+    doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(0,0,0);
+    doc.text('RECIBO', pageW/2, 49, {align:'center'});
+    doc.setFontSize(11);
+    doc.text('Entrega Vale-Transporte', pageW/2, 55, {align:'center'});
 
-    // ---- Tabela PERÍODOS ----
-    const tabHeader = (titulo, h)=>{
-      doc.setFillColor(225,228,232); doc.setDrawColor(0,0,0); doc.setLineWidth(0.3);
-      doc.rect(mx, y, cw, h, 'FD');
-      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(20,25,30);
-      doc.text(titulo, pageW/2, y+h-1.8, {align:'center'});
-      y += h;
-    };
-    const rowTwoCol = (label, valor, h)=>{
-      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
-      doc.rect(mx, y, cw*0.32, h);
-      doc.rect(mx+cw*0.32, y, cw*0.68, h);
-      doc.setFont('helvetica','bold'); doc.setFontSize(8);
-      doc.text(label, mx+2, y+h-2);
-      doc.setFont('helvetica','normal');
-      doc.text(String(valor||''), mx+cw*0.32+2, y+h-2);
-      y += h;
-    };
+    doc.setFont('helvetica','normal'); doc.setFontSize(11);
+    dpCampoAte(doc, xi, 82, 'Empregador(a)', emp.nome, xf, 11);
+    dpCampoAte(doc, xi, 93, 'Empregado(a)', func.nome, xf, 11);
 
-    tabHeader('PERÍODOS', 5.5);
-    const aquisicaoTxt = func && func.dataAdmissao ? (fmtDate(func.dataAdmissao) + ' a ' + (ferias.dataInicioGozo?fmtDate(ferias.dataInicioGozo):'—')) : '—';
-    rowTwoCol('De Aquisição:', aquisicaoTxt, 6);
-    const fimGozo = ferias.dataInicioGozo ? addDaysStr(ferias.dataInicioGozo, (ferias.diasGozo||0)-1) : '';
-    rowTwoCol('De Gozo de Férias:', (ferias.dataInicioGozo?fmtDate(ferias.dataInicioGozo):'—') + ' a ' + (fimGozo?fmtDate(fimGozo):'—') + '  (' + (ferias.diasGozo||0) + ' dias)', 6);
-    y += 3;
+    // "Recebi ___ Vales-transporte, referentes ao mês de ______ pelo que firmo o presente."
+    const mesTxt = opts.mes ? (MESES_PT[Number(opts.mes.slice(5,7)) - 1] + '/' + opts.mes.slice(0,4)) : '';
+    let xx = xi; const yR = 113.7;
+    doc.setFont('helvetica','normal'); doc.setFontSize(11);
+    doc.text('Recebi', xx, yR); xx += doc.getTextWidth('Recebi') + 1.5;
+    xx = dpCampo(doc, xx, yR, '', opts.quantidade ? String(opts.quantidade) : '', 14, 11);
+    doc.text('Vales-transporte, referentes ao mês de', xx + 1.5, yR); xx += 1.5 + doc.getTextWidth('Vales-transporte, referentes ao mês de') + 1.5;
+    dpCampo(doc, xx, yR, '', mesTxt, Math.max(xf - xx, 20), 11);
+    doc.text('pelo que firmo o presente.', xi, yR + 5.6);
 
-    // ---- BASE DE CÁLCULO ----
-    tabHeader('BASE DE CÁLCULO DA REMUNERAÇÃO DAS FÉRIAS', 5.5);
-    doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
-    doc.rect(mx, y, cw/2, 6); doc.rect(mx+cw/2, y, cw/2, 6);
-    doc.setFont('helvetica','bold'); doc.setFontSize(8);
-    doc.text('Salário contratual:', mx+2, y+4);
-    doc.text('Salário base das férias:', mx+cw/2+2, y+4);
-    doc.setFont('helvetica','normal');
-    doc.text(fmtBRL(func?func.salarioBase:0), mx+38, y+4);
-    doc.text(fmtBRL(func?func.salarioBase:0), mx+cw/2+42, y+4);
-    y += 6 + 3;
-
-    // ---- PROVENTOS ----
-    tabHeader('PROVENTOS', 5.5);
-    const provRow = (label, valor, h)=>{
-      doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
-      doc.rect(mx, y, cw*0.78, h);
-      doc.rect(mx+cw*0.78, y, cw*0.22, h);
-      doc.setFont('helvetica','normal'); doc.setFontSize(8);
-      doc.text(label, mx+2, y+h-2);
-      doc.text(valor!=null ? fmtBRL(valor) : '', mx+cw*0.78+2, y+h-2);
-      y += h;
-    };
-    provRow('Férias (' + (ferias.diasGozo||0) + ' dias de gozo)', ferias.valorFeriasGozo, 5.5);
-    provRow('Adicional de 1/3 constitucional sobre férias', ferias.tercoGozo, 5.5);
-    if(ferias.diasVendidos){
-      provRow('Abono pecuniário de férias — venda de ' + ferias.diasVendidos + ' dias (isento)', ferias.valorAbono, 5.5);
-      provRow('1/3 sobre o abono pecuniário (isento)', ferias.tercoAbono, 5.5);
+    const local = opts.local || emp.cidade;
+    doc.setFontSize(11);
+    doc.text((local ? local : '<Local>') + '.', xi, 135);
+    xx = dpDataCampo(doc, xi, 157.4, 'Data', opts.data);
+    const completo = !!(opts.quantidade && opts.mes && opts.data);
+    if(!completo){
+      doc.setFontSize(8);
+      doc.text(doc.splitTextToSize('Obs: Campo livre para preenchimento manual pelo empregado no momento do recebimento dos vales.', bw - 6), xi, 162.7);
     }
-    const totalProventos = (ferias.valorFeriasGozo||0)+(ferias.tercoGozo||0)+(ferias.valorAbono||0)+(ferias.tercoAbono||0);
-    doc.setFillColor(240,240,240);
-    doc.rect(mx, y, cw*0.78, 6, 'FD'); doc.rect(mx+cw*0.78, y, cw*0.22, 6, 'FD');
-    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
-    doc.text('Total de Proventos', mx+2, y+4.2);
-    doc.text(fmtBRL(totalProventos), mx+cw*0.78+2, y+4.2);
-    y += 6 + 3;
+    dpAssinatura(doc, pageW/2, 185.3, 107, 'Assinatura do Empregado', 11);
 
-    // ---- DESCONTOS ----
-    tabHeader('DESCONTOS', 5.5);
-    provRow('INSS (sobre férias + 1/3)', ferias.inss, 5.5);
-    provRow('IRRF (sobre férias + 1/3)', ferias.irrf, 5.5);
-    const totalDescontos = (ferias.inss||0)+(ferias.irrf||0);
-    doc.setFillColor(240,240,240);
-    doc.rect(mx, y, cw*0.78, 6, 'FD'); doc.rect(mx+cw*0.78, y, cw*0.22, 6, 'FD');
-    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
-    doc.text('Total de Descontos', mx+2, y+4.2);
-    doc.text(fmtBRL(totalDescontos), mx+cw*0.78+2, y+4.2);
-    y += 6;
+    doc.save(dpNomeArquivo('recibo-vale-transporte', func.nome));
+  }
 
-    // ---- LÍQUIDO A RECEBER ----
-    doc.setFillColor(220,225,232);
-    doc.rect(mx, y, cw*0.78, 7, 'FD'); doc.rect(mx+cw*0.78, y, cw*0.22, 7, 'FD');
-    doc.setFont('helvetica','bold'); doc.setFontSize(10);
-    doc.text('LÍQUIDO A RECEBER', mx+2, y+5);
-    doc.text(fmtBRL(ferias.totalLiquido), mx+cw*0.78+2, y+5);
-    y += 7 + 4;
+  // ---- Folha de Ponto (modelo do escritório) ----
+  // mes: 'AAAA-MM'. preenchida=true → traz os horários lançados em "Controle de Ponto"; false → só a
+  // identificação (empregador, empregado, período) com o quadro de dias em branco para marcação manual.
+  function gerarFolhaPontoPDF(func, mes, preenchida){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    if(!func){ alert('Selecione um funcionário.'); return; }
+    const emp = dpEmpregador(func.clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const x0 = 15, W = 180, meio = x0 + W/2;
+    const [ano, mm] = String(mes||'').split('-').map(Number);
+    const diasNoMes = (ano && mm) ? new Date(ano, mm, 0).getDate() : 31;
 
-    // ---- Moldura geral ----
-    doc.setDrawColor(0,0,0); doc.setLineWidth(0.5);
-    doc.rect(mx-2, outerStartY-2, cw+4, y-outerStartY+2);
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(0,0,0);
+    doc.text('Folha de Ponto - Período: ' + ((ano && mm) ? String(mm).padStart(2,'0') + ' / ' + ano : '____ / ________'), pageW/2, 14.5, {align:'center'});
+    dpLogo(doc, emp, x0, 5, 12, 12);
 
-    y += 8;
-    if(y > 250){ doc.addPage(); y = 20; }
-    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(20,25,30);
-    const declaracao = doc.splitTextToSize('Recebi do empregador acima identificado a quantia líquida de ' + fmtBRL(ferias.totalLiquido) + ' por motivo de minhas férias regulamentares, ora concedidas e que vou gozar de acordo com a descrição acima. Por ser verdade, firmo o presente recibo, dando plena quitação.', cw);
-    doc.text(declaracao, mx, y);
-    y += declaracao.length*4.6 + 12;
+    // Empregador(a) e Empregado(a)
+    doc.setDrawColor(0,0,0); doc.setLineWidth(0.25);
+    const cabec = (y, titulo)=>{ doc.rect(x0, y, W, 4.8, 'S'); doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.text(titulo, x0 + 1.2, y + 3.4); };
+    const celula2 = (y, rotEsq, valEsq, rotDir, valDir)=>{
+      doc.rect(x0, y, W/2, 4.8, 'S'); doc.rect(meio, y, W/2, 4.8, 'S');
+      doc.setFontSize(8.5);
+      [[x0, rotEsq, valEsq],[meio, rotDir, valDir]].forEach(([cx, r, v])=>{
+        doc.setFont('helvetica','bold'); doc.text(r, cx + 1.2, y + 3.5);
+        if(v){ doc.setFont('helvetica','normal'); doc.text(String(v), cx + 1.2 + doc.getTextWidth(r) + 1.5, y + 3.5, {maxWidth: W/2 - doc.getTextWidth(r) - 4}); }
+      });
+    };
+    cabec(22.5, 'Empregador(a)');
+    celula2(27.3, 'Nome:', emp.nome, 'CPF/CNPJ:', emp.doc);
+    cabec(37.2, 'Empregado(a)');
+    celula2(42, 'Nome:', func.nome, 'CPF:', func.cpf);
+    celula2(46.8, 'Cargo:', func.cargo, 'CTPS:', func.ctpsNumero ? func.ctpsNumero + (func.ctpsSerie ? ' / Série ' + func.ctpsSerie : '') : '');
 
-    if(y > 260){ doc.addPage(); y = 20; }
-    doc.text((cliente?cliente.city||'':'') + ', ____ de _______________ de ______', mx, y);
-    y += 20;
-    if(y > 265){ doc.addPage(); y = 20; }
-    doc.line(mx+30, y, mx+cw-30, y);
-    y += 4.5;
-    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
-    doc.text('Assinatura do trabalhador — ' + (func?func.nome:''), pageW/2, y, {align:'center'});
+    // Quadro de dias
+    const cols = [
+      {t:'Dia', w:11.6, a:'center'}, {t:'Entrada', w:20}, {t:'Início do\nIntervalo', w:21.4}, {t:'Fim do\nIntervalo', w:20.7},
+      {t:'Saída', w:18.1}, {t:'Hora Extra', w:20}, {t:'Assinatura do Empregado(a)', w:68.2, a:'center'},
+    ];
+    let y = 57; const hCab = 10, hLin = 5.15;
+    let cx = x0;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    cols.forEach(c=>{
+      doc.rect(cx, y, c.w, hCab, 'S');
+      const linhas = c.t.split('\n');
+      linhas.forEach((l, i)=>{
+        const yy = (linhas.length > 1 ? y + 4 : y + 4) + i * 3.9;
+        if(c.a === 'center') doc.text(l, cx + c.w/2, yy, {align:'center'}); else doc.text(l, cx + 1.3, yy);
+      });
+      cx += c.w;
+    });
+    y += hCab;
 
-    pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema, conforme Art. 129 a 145 da CLT. Não considera adicionais (insalubridade, periculosidade) além do salário base cadastrado.');
-    doc.save('recibo-ferias-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    // registros do mês (um por dia — o último lançado prevalece)
+    const porDia = {};
+    if(preenchida && ano && mm){
+      const pref = String(ano) + '-' + String(mm).padStart(2,'0');
+      state.pontoRegistros.filter(p=>p.funcionarioId===func.id && (p.data||'').slice(0,7)===pref).forEach(p=>{ porDia[Number((p.data||'').slice(8,10))] = p; });
+    }
+    let totalMin = 0, faltas = 0;
+    for(let d = 1; d <= diasNoMes; d++){
+      cx = x0;
+      const r = porDia[d];
+      cols.forEach((c, i)=>{
+        doc.rect(cx, y, c.w, hLin, 'S');
+        let txt = '';
+        if(i === 0) txt = String(d);
+        else if(r && (r.entrada || r.saida)){ txt = [r.entrada, r.saidaAlmoco, r.voltaAlmoco, r.saida, ''][i-1] || ''; }
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+        if(txt) doc.text(txt, cx + c.w/2, y + 3.6, {align:'center'});
+        cx += c.w;
+      });
+      // Dia sem horários, mas com ocorrência (falta, atestado, feriado...): escreve o tipo no meio de Entrada→Saída
+      if(r && !(r.entrada || r.saida) && r.tipo && r.tipo !== 'Normal'){
+        doc.setFont('helvetica','italic'); doc.setFontSize(8.5);
+        doc.text(r.tipo, x0 + cols[0].w + (cols[1].w + cols[2].w + cols[3].w + cols[4].w)/2, y + 3.6, {align:'center'});
+      }
+      if(r){ const h = calcHorasTrabalhadas(r.entrada, r.saidaAlmoco, r.voltaAlmoco, r.saida); if(h) totalMin += h.totalMin; if(r.tipo === 'Falta') faltas++; }
+      y += hLin;
+    }
+    if(preenchida){
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(60,60,60);
+      doc.text('Total de horas trabalhadas no mês: ' + Math.floor(totalMin/60) + 'h' + (totalMin%60 ? String(totalMin%60).padStart(2,'0') + 'min' : '') + '   |   Faltas: ' + faltas, x0, y + 5.5);
+    }
+    doc.save(dpNomeArquivo('folha-ponto' + (preenchida ? '' : '-em-branco') + (mes ? '-' + mes : ''), func.nome));
   }
 
   function gerarTRCTPDF(resc){
@@ -8557,7 +9002,11 @@
         <div class="field"><label>Mês</label><input type="month" id="pontoMesSelect" value="${mes}"/></div>
       </div>
       ${!funcId ? `<div class="empty">Selecione um funcionário para ver e lançar o ponto dele.</div>` : `
-        <button type="button" class="btn-add" id="novoPontoBtn" style="margin-bottom:14px;">+ Lançar dia</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+          <button type="button" class="btn-add" id="novoPontoBtn">+ Lançar dia</button>
+          <button type="button" class="btn-detail" id="pontoPdfPreenchidaBtn">📄 Folha de Ponto do mês (PDF)</button>
+          <button type="button" class="btn-detail" id="pontoPdfBrancaBtn">📄 Folha de Ponto em branco (PDF)</button>
+        </div>
         <div class="cc-list" style="margin-bottom:16px;">
           <div class="cc-row"><div class="cr-main"><div class="cr-title">Total de horas no mês</div></div><span class="tag sit-outra">${totalH}h${totalM?totalM+'min':''}</span></div>
           <div class="cc-row"><div class="cr-main"><div class="cr-title">Faltas no mês</div></div><span class="tag ${faltas?'sit-baixada':'sit-ativa'}">${faltas}</span></div>
@@ -13295,6 +13744,11 @@
         <div class="field"><label>Dias de gozo (máx. 30)</label><input type="number" min="0" max="30" id="feriasDias" value="30"/></div>
         <div class="field"><label>Dias vendidos — abono (máx. 10)</label><input type="number" min="0" max="10" id="feriasVendidos" value="0"/></div>
       </div>
+      <div class="form-row">
+        <div class="field"><label>Período aquisitivo — início (opcional)</label><input type="date" id="feriasAquisInicio"/></div>
+        <div class="field"><label>Período aquisitivo — fim (opcional)</label><input type="date" id="feriasAquisFim"/></div>
+      </div>
+      <div class="form-hint" style="margin:-6px 0 12px;">Aparece no Aviso e no Recibo de Férias. Se deixar em branco, o sistema usa o ciclo de 12 meses (contado da admissão) mais recente já concluído na data de início do gozo.</div>
       <button type="button" class="btn-calc" id="calcFeriasBtn">Calcular e Salvar</button>
       <div id="feriasResult"></div>
       <div class="legis-note">Cálculo conforme Art. 129 a 145 da CLT: 1/3 constitucional sobre os dias gozados e sobre o abono pecuniário; INSS e IRRF incidem sobre férias gozadas + 1/3 (o abono pecuniário é isento). Não considera adicionais (insalubridade, periculosidade) além do salário base informado no cadastro do funcionário.</div>
@@ -13311,7 +13765,7 @@
                 <td>${f.dataInicioGozo?fmtDate(f.dataInicioGozo):'—'}</td>
                 <td>${f.diasGozo||0} gozo${f.diasVendidos?' + '+f.diasVendidos+' vendidos':''}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(f.totalLiquido)}</td>
-                <td><button class="btn-detail" data-recibo-ferias="${f.id}">Recibo</button> <button class="btn-sm danger" data-del-ferias="${f.id}">Excluir</button></td>
+                <td style="white-space:nowrap;"><button class="btn-detail" data-aviso-ferias="${f.id}">Aviso</button> <button class="btn-detail" data-recibo-ferias="${f.id}">Recibo</button> <button class="btn-sm danger" data-del-ferias="${f.id}">Excluir</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -13389,6 +13843,14 @@
       <div id="rescResult"></div>
       <div class="legis-note">Cálculo estimado das principais verbas rescisórias conforme a CLT: saldo de salário, férias vencidas/proporcionais + 1/3, 13º proporcional, aviso prévio proporcional (Lei 12.506/2011) e multa do FGTS (40% sem justa causa / 20% em acordo mútuo). Não inclui verbas de convenção coletiva, PPP, seguro-desemprego ou benefícios específicos — revise com a equipe antes de homologar.</div>
 
+      <div class="form-section-title">Aviso Prévio (carta ao empregado)</div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Gera a carta de aviso prévio do empregador (modelo do escritório) para o funcionário escolhido em "Funcionário", no formulário acima.</div>
+      <div class="form-row">
+        <div class="field"><label>Data do aviso</label><input type="date" id="avisoPrevioData" value="${todayStr()}"/></div>
+        <div class="field"><label>Dias de aviso (vazio = calcula pela Lei 12.506/2011)</label><input type="number" min="1" max="90" id="avisoPrevioDias" placeholder="Ex: 30"/></div>
+      </div>
+      <button type="button" class="btn-add" id="gerarAvisoPrevioBtn">📄 Gerar Aviso Prévio (PDF)</button>
+
       <div class="form-section-title">Rescisões registradas</div>
       ${listaResc.length ? `
         <table>
@@ -13465,7 +13927,19 @@
         <div class="msg-actions">
           <button type="button" class="btn-add" id="gerarFichaRegistroBtn">📄 Gerar Ficha de Registro (PDF)</button>
           <button type="button" class="btn-add" id="gerarContratoCltBtn">📄 Gerar Contrato de Trabalho CLT (PDF)</button>
+          <button type="button" class="btn-detail" id="gerarFichaClassicaBtn">📄 Ficha de Registro — modelo clássico (3 páginas)</button>
         </div>
+        <div class="form-section-title">Recibo de Entrega de Vale-Transporte</div>
+        <div class="form-hint" style="margin:-4px 0 12px;">Empregador e empregado saem preenchidos. Mês, quantidade, local e data são opcionais — se ficarem em branco, o empregado preenche à mão ao receber os vales, como no modelo.</div>
+        <div class="form-row">
+          <div class="field"><label>Mês de referência</label><input type="month" id="vtMes"/></div>
+          <div class="field"><label>Quantidade de vales</label><input type="number" min="1" id="vtQtd"/></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Local (padrão: cidade da empresa)</label><input type="text" id="vtLocal"/></div>
+          <div class="field"><label>Data da entrega</label><input type="date" id="vtData"/></div>
+        </div>
+        <button type="button" class="btn-add" id="gerarReciboVtBtn">📄 Gerar Recibo de Vale-Transporte (PDF)</button>
       ` : `<div class="empty">Selecione um funcionário para gerar os documentos.</div>`}
 
       <div class="form-section-title">Contrato de Prestação de Serviços (Pessoa Física / Autônomo)</div>
@@ -18637,6 +19111,7 @@
           const r = calcFerias(func.salarioBase, 30, 0, func.dependentes, dataInicioGozo);
           const feriasData = {
             id: uid(), funcionarioId: func.id, clientId: func.clientId, dataInicioGozo, diasGozo:30, diasVendidos:0,
+            aquisitivoInicio: dpPeriodoAquisitivo(func.dataAdmissao, dataInicioGozo).inicio, aquisitivoFim: dpPeriodoAquisitivo(func.dataAdmissao, dataInicioGozo).fim,
             valorFeriasGozo: r.valorFeriasGozo, tercoGozo: r.tercoGozo, valorAbono: r.valorAbono, tercoAbono: r.tercoAbono,
             inss: r.inss, irrf: r.irrf, totalBruto: r.totalBruto, totalLiquido: r.totalLiquido,
           };
@@ -18679,8 +19154,11 @@
             <div class="pr-line total"><span>Total líquido</span><span>${fmtBRL(r.totalLiquido)}</span></div>
           </div>
         `;
+        const aqIni = document.getElementById('feriasAquisInicio').value, aqFim = document.getElementById('feriasAquisFim').value;
+        const aqAuto = dpPeriodoAquisitivo(func.dataAdmissao, dataInicioGozo);
         const feriasData = {
           funcionarioId: funcId, clientId: func.clientId, dataInicioGozo, diasGozo, diasVendidos,
+          aquisitivoInicio: (aqIni && aqFim) ? aqIni : aqAuto.inicio, aquisitivoFim: (aqIni && aqFim) ? aqFim : aqAuto.fim,
           valorFeriasGozo: r.valorFeriasGozo, tercoGozo: r.tercoGozo, valorAbono: r.valorAbono, tercoAbono: r.tercoAbono,
           inss: r.inss, irrf: r.irrf, totalBruto: r.totalBruto, totalLiquido: r.totalLiquido,
         };
@@ -18812,6 +19290,9 @@
         gerarReciboPagamentoPDF(f);
       };
     });
+    root.querySelectorAll('[data-aviso-ferias]').forEach(el=>{
+      el.onclick = ()=> gerarAvisoFeriasPDF(state.ferias.find(x=>x.id===el.getAttribute('data-aviso-ferias')));
+    });
     root.querySelectorAll('[data-recibo-ferias]').forEach(el=>{
       el.onclick = ()=>{
         const f = state.ferias.find(x=>x.id===el.getAttribute('data-recibo-ferias'));
@@ -18832,6 +19313,32 @@
     if(gerarFichaRegistroBtn) gerarFichaRegistroBtn.onclick = ()=>{
       const func = state.funcionarios.find(f=>f.id===(state.fichasContratosData||{}).funcionarioId);
       gerarFichaRegistroPDF(func);
+    };
+    const gerarFichaClassicaBtn = document.getElementById('gerarFichaClassicaBtn');
+    if(gerarFichaClassicaBtn) gerarFichaClassicaBtn.onclick = ()=>{
+      gerarFichaRegistroClassicaPDF(state.funcionarios.find(f=>f.id===(state.fichasContratosData||{}).funcionarioId));
+    };
+    const gerarReciboVtBtn = document.getElementById('gerarReciboVtBtn');
+    if(gerarReciboVtBtn) gerarReciboVtBtn.onclick = ()=>{
+      const func = state.funcionarios.find(f=>f.id===(state.fichasContratosData||{}).funcionarioId);
+      gerarReciboValeTransportePDF(func, {
+        mes: document.getElementById('vtMes').value, quantidade: parseInt(document.getElementById('vtQtd').value) || 0,
+        local: document.getElementById('vtLocal').value.trim(), data: document.getElementById('vtData').value,
+      });
+    };
+    const gerarAvisoPrevioBtn = document.getElementById('gerarAvisoPrevioBtn');
+    if(gerarAvisoPrevioBtn) gerarAvisoPrevioBtn.onclick = ()=>{
+      const func = state.funcionarios.find(f=>f.id===document.getElementById('rescFunc').value);
+      if(!func){ alert('Selecione um funcionário no campo "Funcionário" do formulário acima.'); return; }
+      gerarAvisoPrevioPDF(func, { dataAviso: document.getElementById('avisoPrevioData').value || todayStr(), dias: parseInt(document.getElementById('avisoPrevioDias').value) || 0 });
+    };
+    const pontoPdfPreenchidaBtn = document.getElementById('pontoPdfPreenchidaBtn');
+    if(pontoPdfPreenchidaBtn) pontoPdfPreenchidaBtn.onclick = ()=>{
+      gerarFolhaPontoPDF(state.funcionarios.find(f=>f.id===state.pontoFuncionarioAtivo), state.pontoMesAtivo, true);
+    };
+    const pontoPdfBrancaBtn = document.getElementById('pontoPdfBrancaBtn');
+    if(pontoPdfBrancaBtn) pontoPdfBrancaBtn.onclick = ()=>{
+      gerarFolhaPontoPDF(state.funcionarios.find(f=>f.id===state.pontoFuncionarioAtivo), state.pontoMesAtivo, false);
     };
     const gerarContratoCltBtn = document.getElementById('gerarContratoCltBtn');
     if(gerarContratoCltBtn) gerarContratoCltBtn.onclick = ()=>{
