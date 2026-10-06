@@ -856,6 +856,71 @@
 
   // Opções comuns exigidas pelo eSocial no evento S-2200 (Admissão de Trabalhador).
   const ESOCIAL_SEXO = ['Masculino', 'Feminino'];
+  // Tabela 07 do eSocial — Tipos de dependente (códigos conferidos na documentação do eSocial).
+  const ESOCIAL_TIPOS_DEPENDENTE = [
+    {codigo:'01', curto:'Cônjuge', label:'Cônjuge'},
+    {codigo:'02', curto:'Companheiro(a)', label:'Companheiro(a) com o(a) qual tenha filho ou viva há mais de 5 anos ou possua declaração de união estável'},
+    {codigo:'03', curto:'Filho(a) ou enteado(a)', label:'Filho(a) ou enteado(a)'},
+    {codigo:'04', curto:'Filho(a)/enteado(a) universitário(a) ou escola técnica', label:'Filho(a) ou enteado(a), universitário(a) ou cursando escola técnica de 2º grau (até 24 anos)'},
+    {codigo:'06', curto:'Irmão(ã), neto(a) ou bisneto(a) com guarda', label:'Irmão(ã), neto(a) ou bisneto(a) sem arrimo dos pais, do(a) qual detenha a guarda judicial'},
+    {codigo:'09', curto:'Pais, avós e bisavós', label:'Pais, avós e bisavós'},
+    {codigo:'10', curto:'Menor pobre sob guarda', label:'Menor pobre do qual detenha a guarda judicial'},
+    {codigo:'11', curto:'Pessoa absolutamente incapaz (tutela/curatela)', label:'Pessoa absolutamente incapaz, da qual seja tutor ou curador'},
+    {codigo:'12', curto:'Ex-cônjuge', label:'Ex-cônjuge'},
+    {codigo:'99', curto:'Agregado/Outros', label:'Agregado/Outros'},
+  ];
+  function dpDependenteTipo(codigo){ return ESOCIAL_TIPOS_DEPENDENTE.find(t=>t.codigo===codigo) || null; }
+  // Idade em anos completos na data de referência (padrão: hoje).
+  function dpIdadeEm(nascIso, refIso){
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(nascIso || ''); if(!m) return null;
+    const r = /^(\d{4})-(\d{2})-(\d{2})/.exec(refIso || todayStr());
+    let a = Number(r[1]) - Number(m[1]);
+    if(Number(r[2]) < Number(m[2]) || (Number(r[2]) === Number(m[2]) && Number(r[3]) < Number(m[3]))) a--;
+    return a;
+  }
+  // Quantidade de dependentes marcados para a dedução do IRRF — é o número usado nos cálculos de folha.
+  function dpDependentesIrrf(lista){ return (lista || []).filter(d=>d.irrf).length; }
+  // Valida a lista de dependentes; devolve '' se estiver tudo certo, ou a mensagem do primeiro problema.
+  function dpValidarDependentes(lista, cpfFuncionario){
+    const dig = v=>String(v || '').replace(/\D/g, '');
+    const vistos = new Set();
+    for(let i = 0; i < lista.length; i++){
+      const d = lista[i], n = 'Dependente ' + (i + 1) + (d.nome ? ' (' + d.nome + ')' : '');
+      if(!String(d.nome || '').trim()) return n + ': informe o nome completo.';
+      if(!validarCpf(d.cpf)) return n + ': CPF inválido ou incompleto — o eSocial exige o CPF do dependente.';
+      if(dig(d.cpf) === dig(cpfFuncionario)) return n + ': o CPF do dependente não pode ser o mesmo do funcionário.';
+      if(vistos.has(dig(d.cpf))) return n + ': este CPF já foi informado para outro dependente.';
+      vistos.add(dig(d.cpf));
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(d.dataNascimento || '')) return n + ': informe a data de nascimento.';
+      if(d.dataNascimento > todayStr()) return n + ': a data de nascimento não pode ser no futuro.';
+      if(!dpDependenteTipo(d.tipo)) return n + ': escolha o grau de parentesco / tipo de dependência.';
+      if(d.tipo === '99' && !String(d.descricao || '').trim()) return n + ': para "Agregado/Outros" o eSocial exige a descrição do parentesco.';
+    }
+    return '';
+  }
+  // Avisos (não bloqueiam) quando um dependente marcado para IRRF foge das regras da Lei 9.250/1995, art. 35.
+  function dpAvisosIrrfDependentes(lista){
+    const avisos = [];
+    (lista || []).forEach((d, i)=>{
+      if(!d.irrf) return;
+      const nome = d.nome || ('Dependente ' + (i + 1)), idade = dpIdadeEm(d.dataNascimento), t = dpDependenteTipo(d.tipo);
+      if(d.tipo === '99' || d.tipo === '12') avisos.push(nome + ': "' + t.curto + '" não está entre os dependentes previstos para dedução do IRRF (Lei 9.250/1995, art. 35).');
+      else if(d.tipo === '03' && idade !== null && idade > 21) avisos.push(nome + ' tem ' + idade + ' anos: filho(a)/enteado(a) só conta para o IRRF até 21 anos — acima disso, apenas se universitário/escola técnica (tipo 04, até 24 anos) ou incapaz para o trabalho.');
+      else if(d.tipo === '04' && idade !== null && idade > 24) avisos.push(nome + ' tem ' + idade + ' anos: o limite para universitário/escola técnica é 24 anos (salvo incapacidade para o trabalho).');
+      else if(d.tipo === '10' && idade !== null && idade > 21) avisos.push(nome + ' tem ' + idade + ' anos: menor pobre sob guarda só conta para o IRRF até 21 anos.');
+      else if(d.tipo === '06' && idade !== null && idade > 24) avisos.push(nome + ' tem ' + idade + ' anos: irmão(ã)/neto(a)/bisneto(a) só conta para o IRRF até 21 anos (24 se universitário/escola técnica), salvo incapacidade para o trabalho.');
+    });
+    return avisos;
+  }
+  // Dependentes no formato do evento S-2200 (nmDep, cpfDep, dtNascto, tpDep, depIRRF, descrDep).
+  function dpDependentesEsocial(f){
+    return (f.dependentesLista || []).map(d=>({
+      nome: d.nome, cpf: d.cpf, dataNascimento: d.dataNascimento,
+      tipoDependente: d.tipo, descricaoTipo: (dpDependenteTipo(d.tipo) || {}).curto || '',
+      descricaoParentesco: d.tipo === '99' ? d.descricao : undefined,
+      depIRRF: d.irrf ? 'S' : 'N',
+    }));
+  }
   const ESOCIAL_RACA_COR = ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Não informado'];
   const ESOCIAL_GRAU_INSTRUCAO = [
     'Analfabeto', 'Fundamental incompleto', 'Fundamental completo', 'Médio incompleto',
@@ -9613,6 +9678,7 @@
         sexo: f.sexo, racaCor: f.racaCor, grauInstrucao: f.grauInstrucao,
         ctps: { numero: f.ctpsNumero, serie: f.ctpsSerie },
       },
+      dependentes: dpDependentesEsocial(f),
       vinculo: {
         dataAdmissao: f.dataAdmissao, cargo: f.cargo, cbo: f.cbo, categoriaEsocial: f.categoriaEsocial,
         tipoContrato: f.tipoContrato, salarioBase: f.salarioBase,
@@ -13428,7 +13494,7 @@
         <tbody>
           ${list.map(f=>`
             <tr>
-              <td>${escapeHtml(f.nome)}</td>
+              <td>${escapeHtml(f.nome)}${(f.dependentesLista||[]).length ? `<div style="font-size:10.5px; color:var(--ink-soft);">${f.dependentesLista.length} dependente(s) · ${dpDependentesIrrf(f.dependentesLista)} p/ IRRF</div>` : ''}</td>
               <td>${escapeHtml(clientName(f.clientId))}</td>
               <td>${escapeHtml(f.cargo||'—')}</td>
               <td>${f.dataAdmissao?fmtDate(f.dataAdmissao):'—'}</td>
@@ -13460,9 +13526,38 @@
     `;
   }
 
+  // Seção "Dependentes" do cadastro de funcionário (eSocial + dedução do IRRF).
+  function funcDependentesSecaoHtml(deps){
+    const opcoes = (sel)=> '<option value="">— Selecione —</option>' + ESOCIAL_TIPOS_DEPENDENTE.map(t=>`<option value="${t.codigo}" ${t.codigo===sel?'selected':''}>${t.codigo} — ${escapeHtml(t.label)}</option>`).join('');
+    return `
+      <div class="form-section-title" id="fcDepSecao">Dependentes (eSocial e dedução do IRRF)</div>
+      <div class="form-hint" style="margin:-4px 0 10px;">O eSocial (evento S-2200) exige nome, CPF, data de nascimento e o tipo de dependência de cada dependente. Marque "Considerar no IRRF" para o dependente entrar na dedução mensal do imposto de renda: o número de dependentes usado nos cálculos de folha, férias, 13º e rescisão passa a ser a quantidade de dependentes marcados.</div>
+      ${deps.length ? deps.map((dep, i)=>`
+        <div id="depCard_${i}" style="border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:#FAFBFC;">
+          <div style="font-size:12px; font-weight:700; color:var(--ink-soft); margin-bottom:6px;">Dependente ${i + 1}</div>
+          <div class="form-row">
+            <div class="field"><label>Nome completo do dependente</label><input type="text" id="depNome_${i}" value="${escapeHtml(dep.nome||'')}" required/></div>
+            <div class="field"><label>CPF do dependente</label><input type="text" id="depCpf_${i}" placeholder="000.000.000-00" value="${escapeHtml(dep.cpf||'')}" required/></div>
+          </div>
+          <div class="form-row">
+            <div class="field"><label>Data de nascimento</label><input type="date" id="depNasc_${i}" value="${escapeHtml(dep.dataNascimento||'')}" required/></div>
+            <div class="field"><label>Grau de parentesco / tipo de dependência</label><select id="depTipo_${i}" data-dep-tipo="${i}" required>${opcoes(dep.tipo)}</select></div>
+          </div>
+          ${dep.tipo === '99' ? `<div class="field"><label>Descrição do parentesco (obrigatória para "Agregado/Outros")</label><input type="text" id="depDesc_${i}" value="${escapeHtml(dep.descricao||'')}" placeholder="Ex: sogra, sobrinho sob guarda..."/></div>` : ''}
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;"><input type="checkbox" id="depIrrf_${i}" data-dep-irrf="${i}" ${dep.irrf?'checked':''}/> Considerar no IRRF (dedução mensal)</label>
+            <button type="button" class="btn-sm danger" data-rm-dep="${i}">Remover dependente</button>
+          </div>
+        </div>
+      `).join('') : `<div class="empty" style="margin-bottom:10px;">Nenhum dependente cadastrado.</div>`}
+      <button type="button" class="btn-sm" id="fcAddDependente">+ Adicionar dependente</button>
+    `;
+  }
+
   function funcModalHtml(){
     const d = state.funcModalData;
     if(!d) return '';
+    const deps = Array.isArray(d.dependentesLista) ? d.dependentesLista : [];
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal modal-wide">
@@ -13485,7 +13580,7 @@
               <div class="field"><label>Salário base (R$)</label><input type="number" step="0.01" min="0" id="fcSalario" value="${d.salarioBase||''}" required/></div>
             </div>
             <div class="form-row">
-              <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="fcDependentes" value="${d.dependentes!=null?d.dependentes:0}"/></div>
+              <div class="field"><label>Dependentes (IRRF)</label><input type="number" min="0" step="1" id="fcDependentes" value="${deps.length ? dpDependentesIrrf(deps) : (d.dependentes!=null?d.dependentes:0)}" ${deps.length ? 'readonly title="Calculado pela lista de dependentes abaixo"' : ''}/></div>
               <div class="field"><label>Status</label>
                 <select id="fcStatus">
                   <option value="Ativo" ${d.status==='Ativo'?'selected':''}>Ativo</option>
@@ -13494,6 +13589,9 @@
                 </select>
               </div>
             </div>
+
+            ${deps.length ? `<div class="form-hint" style="margin:-4px 0 12px;">Dependentes (IRRF) calculado pela lista de dependentes mais abaixo (só contam os marcados para IRRF).</div>`
+              : (Number(d.dependentes) > 0 ? `<div class="form-hint" style="margin:-4px 0 12px; color:#b45309;">Há ${Number(d.dependentes)} dependente(s) informado(s) só pelo número. Cadastre-os na seção "Dependentes" abaixo (o eSocial exige CPF e data de nascimento) — ao adicionar o primeiro, o número passa a ser calculado pela lista, então inclua todos.</div>` : '')}
 
             <div class="form-section-title">Dados obrigatórios para o eSocial (evento S-2200)</div>
             <div class="form-row">
@@ -13527,6 +13625,8 @@
               <div class="field"><label>Número</label><input type="text" id="fcNumeroEndereco" value="${escapeHtml(d.numeroEndereco||'')}"/></div>
             </div>
             <div class="field"><label>Bairro</label><input type="text" id="fcBairro" value="${escapeHtml(d.bairro||'')}"/></div>
+
+            ${funcDependentesSecaoHtml(deps)}
 
             <div class="form-section-title">Envio ao eSocial</div>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-soft); margin-bottom:6px;">
@@ -18864,9 +18964,51 @@
 
     // Funcionários
     const novoFuncBtn = document.getElementById('novoFuncBtn');
-    if(novoFuncBtn) novoFuncBtn.onclick = ()=>{ state.funcModalData = {}; state.modal='func'; render(); };
+    if(novoFuncBtn) novoFuncBtn.onclick = ()=>{ state.funcModalData = { dependentesLista: [] }; state.modal='func'; render(); };
     const fcCancel = document.getElementById('fcCancel');
     if(fcCancel) fcCancel.onclick = ()=>{ state.modal=null; state.funcModalData=null; render(); };
+    // ---- Dependentes no cadastro de funcionário ----
+    // Lê as linhas de dependentes que estão na tela (os campos não são sincronizados enquanto se digita).
+    const fcLerDependentes = ()=>{
+      const atual = (state.funcModalData && Array.isArray(state.funcModalData.dependentesLista)) ? state.funcModalData.dependentesLista : [];
+      const g = (id)=>{ const el = document.getElementById(id); return el ? el.value : ''; };
+      return atual.map((dep, i)=>({
+        id: dep.id || uid(), nome: g('depNome_' + i).trim(), cpf: g('depCpf_' + i).trim(), dataNascimento: g('depNasc_' + i),
+        tipo: g('depTipo_' + i), irrf: !!(document.getElementById('depIrrf_' + i) || {}).checked, descricao: g('depDesc_' + i).trim(),
+      }));
+    };
+    // Guarda todo o formulário no estado antes de redesenhar (adicionar/remover dependente), para não perder o que foi digitado.
+    const fcColetar = ()=>{
+      const d = state.funcModalData; if(!d) return;
+      const mapa = { fcNome:'nome', fcCpf:'cpf', fcCargo:'cargo', fcCliente:'clientId', fcAdmissao:'dataAdmissao', fcSalario:'salarioBase', fcStatus:'status',
+        fcPis:'pis', fcNascimento:'dataNascimento', fcNomeMae:'nomeMae', fcSexo:'sexo', fcRacaCor:'racaCor', fcGrauInstrucao:'grauInstrucao',
+        fcCtpsNumero:'ctpsNumero', fcCtpsSerie:'ctpsSerie', fcCbo:'cbo', fcCategoriaEsocial:'categoriaEsocial', fcTipoContrato:'tipoContrato',
+        fcJornada:'jornada', fcCep:'cep', fcMunicipioUf:'municipioUf', fcLogradouro:'logradouro', fcNumeroEndereco:'numeroEndereco', fcBairro:'bairro' };
+      Object.keys(mapa).forEach(id=>{ const el = document.getElementById(id); if(el) d[mapa[id]] = el.value; });
+      const envio = document.getElementById('fcEnvioAutomatico'); if(envio) d.envioAutomaticoEsocial = !!envio.checked;
+      d.dependentesLista = fcLerDependentes();
+      if(!d.dependentesLista.length){ const el = document.getElementById('fcDependentes'); if(el) d.dependentes = el.value; }
+    };
+    const fcRolarPara = (id)=>{ const el = document.getElementById(id); if(el && el.scrollIntoView) el.scrollIntoView({block:'center'}); };
+    const fcAddDependente = document.getElementById('fcAddDependente');
+    if(fcAddDependente) fcAddDependente.onclick = ()=>{
+      fcColetar();
+      state.funcModalData.dependentesLista.push({ id: uid(), nome:'', cpf:'', dataNascimento:'', tipo:'', irrf:true, descricao:'' });
+      render(); fcRolarPara('depCard_' + (state.funcModalData.dependentesLista.length - 1));
+    };
+    root.querySelectorAll('[data-rm-dep]').forEach(el=>{
+      el.onclick = ()=>{ fcColetar(); state.funcModalData.dependentesLista.splice(Number(el.getAttribute('data-rm-dep')), 1); render(); fcRolarPara('fcDepSecao'); };
+    });
+    root.querySelectorAll('[data-dep-tipo]').forEach(el=>{
+      el.onchange = ()=>{
+        fcColetar(); const i = Number(el.getAttribute('data-dep-tipo')), dep = state.funcModalData.dependentesLista[i];
+        if(dep && (dep.tipo === '99' || dep.tipo === '12')) dep.irrf = false; // não estão entre os dependentes de IRRF da lei
+        render(); fcRolarPara('depCard_' + i);
+      };
+    });
+    root.querySelectorAll('[data-dep-irrf]').forEach(el=>{
+      el.onchange = ()=>{ const i = Number(el.getAttribute('data-dep-irrf')); fcColetar(); render(); fcRolarPara('depCard_' + i); }; // atualiza a contagem
+    });
     const funcForm = document.getElementById('funcForm');
     if(funcForm){
       funcForm.onsubmit = (e)=>{
@@ -18902,16 +19044,25 @@
           envioAutomaticoEsocial: document.getElementById('fcEnvioAutomatico').checked,
           statusEsocial: (editingId && state.funcModalData.statusEsocial) || 'Não enviado',
         };
+        const listaDeps = fcLerDependentes();
+        const erroDeps = dpValidarDependentes(listaDeps, f.cpf);
+        if(erroDeps){ alert(erroDeps); return; }
+        const avisosDeps = dpAvisosIrrfDependentes(listaDeps);
+        if(avisosDeps.length && !confirm('Atenção:\n\n• ' + avisosDeps.join('\n• ') + '\n\nSalvar mesmo assim?')) return;
+        f.dependentesLista = listaDeps;
+        // Com lista cadastrada, o nº de dependentes do IRRF é a contagem dos marcados; sem lista, vale o número digitado.
+        f.dependentes = listaDeps.length ? dpDependentesIrrf(listaDeps) : (parseInt(document.getElementById('fcDependentes').value) || 0);
+        const registroAtual = editingId ? (state.funcionarios.find(x=>x.id===editingId) || {}) : {};
         state.modal=null; state.funcModalData=null;
         render();
-        saveFuncionario(f);
+        saveFuncionario(Object.assign({}, registroAtual, f)); // mescla: não perde campos que o formulário não mostra
       };
     }
     root.querySelectorAll('[data-edit-func]').forEach(el=>{
       el.onclick = ()=>{
         const f = state.funcionarios.find(x=>x.id===el.getAttribute('data-edit-func'));
         if(!f) return;
-        state.funcModalData = Object.assign({}, f);
+        state.funcModalData = Object.assign({}, f, { dependentesLista: (f.dependentesLista || []).map(x=>Object.assign({}, x)) }); // cópia: cancelar não altera o cadastro
         state.modal = 'func'; render();
       };
     });
