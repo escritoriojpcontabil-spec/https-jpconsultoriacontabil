@@ -9254,7 +9254,7 @@
     const cfg = Object.assign({}, spedCfgDe(clientId) || {});
     if(!cfg.ie){
       const ie = (state.inscricoes||[]).find(i=>i.clientId===clientId && i.tipo==='Inscrição Estadual');
-      if(ie) cfg.ie = ie.numero;
+      if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero;
     }
     const ent = spedEntradas(clientId, comp);
     const notas = state.notasFiscais
@@ -10726,6 +10726,17 @@
     await Store.delete('transactions:'+id, true);
     await loadAll(); render();
   }
+  // Comércio/indústria é contribuinte de ICMS: a Inscrição Estadual é obrigatória no cadastro.
+  function clienteExigeIE(d){
+    if(!d) return false;
+    if(d.personType==='PF') return false;
+    if(['Comércio / Indústria','Revenda de combustíveis'].indexOf(d.atividadePresumido)>=0) return true;
+    const txt = [d.mainActivity, d.secondaryActivities].join(' ');
+    return /(com[eé]rcio|varejist|atacadist|ind[uú]stria|fabrica[cç][aã]o|revenda)/i.test(txt);
+  }
+  function clienteIEAtual(clientId){
+    return (state.inscricoes||[]).find(i=>i.clientId===clientId && i.tipo==='Inscrição Estadual') || null;
+  }
   async function saveClient(c){
     if(!c.id) c.id = uid();
     try{
@@ -11500,6 +11511,7 @@
       doc: c.doc||'', name: c.name||'', phone: c.phone||'', email: c.email||'',
       departments: Array.isArray(c.departments) ? c.departments.slice() : [], address: c.address||'', city: c.city||'', uf: c.uf||'',
       situacao: c.situacao||'', mainActivity: c.mainActivity||'', lookupMsg:'', lookupType:'info', lookupLoading:false,
+      ie: (clienteIEAtual(c.id)||{}).numero && (clienteIEAtual(c.id)||{}).numero!=='ISENTO' ? clienteIEAtual(c.id).numero : '', ieIsento: !!(clienteIEAtual(c.id) && clienteIEAtual(c.id).numero==='ISENTO'),
       personType: c.personType||'', porte: c.porte||'', regimeTributario: c.regimeTributario||'',
       dataAbertura: c.dataAbertura||'', secondaryActivities: c.secondaryActivities||'',
       anexoSimples: c.anexoSimples||'', fatorRAtivo: !!c.fatorRAtivo,
@@ -11819,6 +11831,7 @@
             <div class="detail-item"><div class="dl">Regime tributário</div><div class="dv">${escapeHtml(c.regimeTributario||'—')}</div></div>
             ${c.regimeTributario==='Simples Nacional' ? `<div class="detail-item"><div class="dl">Anexo do Simples</div><div class="dv">${escapeHtml(c.anexoSimples||'—')}${c.fatorRAtivo?' <span class="tag sit-outra">Fator R automático (III/V)</span>':''}</div></div>` : ''}
             ${c.regimeTributario==='Lucro Presumido' ? `<div class="detail-item"><div class="dl">Atividade (presunção)</div><div class="dv">${escapeHtml(c.atividadePresumido||'—')}${c.issAliquotaPresumido?' · ISS '+escapeHtml(c.issAliquotaPresumido)+'%':''}</div></div>` : ''}
+            <div class="detail-item"><div class="dl">Inscrição Estadual</div><div class="dv">${(()=>{ const ie = clienteIEAtual(c.id); if(ie) return escapeHtml(ie.numero==='ISENTO'?'Isento / não contribuinte':ie.numero); return clienteExigeIE(c) ? '<span class="tag sit-baixada">Obrigatória — não cadastrada</span>' : '—'; })()}</div></div>
             <div class="detail-item"><div class="dl">Data de abertura</div><div class="dv">${c.dataAbertura?fmtDate(c.dataAbertura):'—'}</div></div>
             <div class="detail-item detail-full"><div class="dl">Atividade principal</div><div class="dv">${escapeHtml(c.mainActivity||'—')}</div></div>
             <div class="detail-item detail-full"><div class="dl">Atividade(s) secundária(s)</div><div class="dv">${escapeHtml(c.secondaryActivities||'—')}</div></div>
@@ -16039,6 +16052,11 @@
             ` : ''}
             <div class="field"><label>Atividade principal</label><input type="text" id="clMainActivity" value="${escapeHtml(d.mainActivity||'')}"/></div>
             <div class="field"><label>Atividade(s) secundária(s)</label><input type="text" id="clSecondaryActivities" placeholder="Separe por ; se houver mais de uma" value="${escapeHtml(d.secondaryActivities||'')}"/></div>
+            <div class="field"><label>Inscrição Estadual (ICMS) <span id="clIeObrig" style="color:var(--danger,#b3261e); font-weight:700;">${clienteExigeIE(d)?'— obrigatória (atividade de comércio/indústria)':''}</span></label>
+              <input type="text" id="clIE" value="${escapeHtml(d.ie||'')}" placeholder="Somente números, conforme a SEFAZ" ${d.ieIsento?'disabled':''}/>
+              <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:6px; font-weight:400;"><input type="checkbox" id="clIEIsento" ${d.ieIsento?'checked':''}/> Isento / não contribuinte de ICMS</label>
+              <div class="form-hint" style="margin-top:4px;">Fica gravada também em Legal &gt; Inscrições e é usada no SPED Fiscal.</div>
+            </div>
 
             <div class="form-section-title">Logomarca</div>
             <div class="form-hint" style="margin:-4px 0 8px;">Usada automaticamente no cabeçalho dos relatórios e documentos desta empresa (PNG ou JPG, fundo transparente ou branco funciona melhor). Tamanho máximo: 400KB.</div>
@@ -16252,7 +16270,7 @@
       state.clientModalData = {
         doc:'', name:'', phone:'', email:'', address:'', city:'', uf:'',
         situacao:'', mainActivity:'', lookupMsg:'', lookupType:'info', lookupLoading:false,
-        personType:'', porte:'', regimeTributario:'', dataAbertura:'', secondaryActivities:'',
+        personType:'', porte:'', regimeTributario:'', dataAbertura:'', secondaryActivities:'', ie:'', ieIsento:false,
         anexoSimples:'', fatorRAtivo:false, atividadePresumido:'', issAliquotaPresumido:'5',
         capitalSocial:'', capitalIntegralizado:'', capitalAIntegralizar:'', socios:[],
         contractStart:'', contractEnd:'', contractValue:'', contractPeriodicity:'Mensal', contractStatus:'Ativo', contractNotes:'',
@@ -17932,7 +17950,7 @@
     if(spedConfigBtn) spedConfigBtn.onclick = ()=>{
       if(!spedEmp){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
       const cfg = Object.assign({}, spedCfgDe(spedEmp) || {});
-      if(!cfg.ie){ const ie = (state.inscricoes||[]).find(i=>i.clientId===spedEmp && i.tipo==='Inscrição Estadual'); if(ie) cfg.ie = ie.numero; }
+      if(!cfg.ie){ const ie = (state.inscricoes||[]).find(i=>i.clientId===spedEmp && i.tipo==='Inscrição Estadual'); if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero; }
       cfg.clientId = spedEmp;
       state.spedModalData = cfg; state.modal = 'spedConfig'; render();
     };
@@ -20366,6 +20384,20 @@
     if(clFatorRAtivoEl) clFatorRAtivoEl.onchange = (e)=>{ if(state.clientModalData) state.clientModalData.fatorRAtivo = e.target.checked; };
     const clAtividadePresumidoEl = document.getElementById('clAtividadePresumido');
     if(clAtividadePresumidoEl) clAtividadePresumidoEl.onchange = (e)=>{ if(state.clientModalData) state.clientModalData.atividadePresumido = e.target.value; };
+    const clIeEl = document.getElementById('clIE');
+    const clIeIsentoEl = document.getElementById('clIEIsento');
+    const atualizarAvisoIE = ()=>{
+      const sp = document.getElementById('clIeObrig');
+      if(sp && state.clientModalData) sp.textContent = clienteExigeIE(state.clientModalData) ? '— obrigatória (atividade de comércio/indústria)' : '';
+    };
+    if(clIeEl) clIeEl.oninput = (e)=>{ if(state.clientModalData) state.clientModalData.ie = e.target.value; };
+    if(clIeIsentoEl) clIeIsentoEl.onchange = (e)=>{
+      if(!state.clientModalData) return;
+      state.clientModalData.ieIsento = e.target.checked;
+      if(clIeEl){ clIeEl.disabled = e.target.checked; if(e.target.checked){ clIeEl.value=''; state.clientModalData.ie=''; } }
+    };
+    ['clMainActivity','clSecondaryActivities'].forEach(id=>{ const el=document.getElementById(id); if(el){ const prev=el.oninput; el.oninput=(e)=>{ if(prev) prev(e); atualizarAvisoIE(); }; } });
+    if(clAtividadePresumidoEl){ const prevA = clAtividadePresumidoEl.onchange; clAtividadePresumidoEl.onchange = (e)=>{ prevA(e); atualizarAvisoIE(); }; }
     const clIssPresumidoEl = document.getElementById('clIssPresumido');
     if(clIssPresumidoEl) clIssPresumidoEl.oninput = (e)=>{ if(state.clientModalData) state.clientModalData.issAliquotaPresumido = e.target.value; };
 
@@ -20542,9 +20574,23 @@
           contractStatus: document.getElementById('clContractStatus').value,
           contractNotes: document.getElementById('clContractNotes').value,
         };
+        const ieDigitos = (document.getElementById('clIE').value||'').replace(/\D/g,'');
+        const ieIsento = document.getElementById('clIEIsento').checked;
+        if(clienteExigeIE(c) && !ieDigitos && !ieIsento){
+          alert('Esta empresa tem atividade de comércio/indústria: a Inscrição Estadual é obrigatória no cadastro.\n\nInforme o número da IE ou, se realmente não for contribuinte de ICMS, marque "Isento / não contribuinte de ICMS".');
+          document.getElementById('clIE').focus();
+          return;
+        }
         const submitBtn = clientForm.querySelector('button[type="submit"]');
         if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
         const ok = await saveClient(c);
+        if(ok){
+          const ieExist = clienteIEAtual(c.id);
+          const numeroIE = ieIsento ? 'ISENTO' : ieDigitos;
+          if(numeroIE && (!ieExist || ieExist.numero!==numeroIE)){
+            await saveInscricaoItem(Object.assign({}, ieExist||{}, { clientId:c.id, tipo:'Inscrição Estadual', numero:numeroIE, dataEmissao:(ieExist&&ieExist.dataEmissao)||todayStr(), observacoes:(ieExist&&ieExist.observacoes)||'Cadastrada no cadastro do cliente' }));
+          }
+        }
         if(!ok){
           if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = c.id ? 'Salvar alterações' : 'Salvar'; }
           return;
