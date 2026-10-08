@@ -655,6 +655,7 @@
     impostoModalData: null,
     tiposImpostoCustom: [],
     obrigacoesAcessorias: [],
+    dtFiltro: null,
     spedConfigs: [],
     spedGeracoes: [],
     spedCompetencia: '',
@@ -9348,6 +9349,162 @@
 
 
   // PDF do comprovante de entrega do SPED Fiscal (logomarca do escritório, seções e assinatura).
+  // ===== Relatório de Declarações Transmitidas =====
+  const DT_SPED_NOME = 'SPED Fiscal (EFD ICMS/IPI)';
+  function dtNomeNorm(n){ return String(n||'').replace(/IPIS\)/,'IPI)').trim(); }
+  function dtCompNorm(c){ // -> 'AAAA-MM' | 'AAAA' | ''
+    const t = String(c||'').trim();
+    let m = t.match(/^(\d{1,2})\s*\/\s*(\d{4})$/); if(m) return m[2]+'-'+m[1].padStart(2,'0');
+    m = t.match(/^(\d{4})-(\d{2})$/); if(m) return t;
+    m = t.match(/^(\d{4})$/); if(m) return t;
+    return '';
+  }
+  function dtFmtDataHora(iso, hora){ // 'AAAA-MM-DDTHH:mm' ou data + hora
+    const d = String(iso||'').slice(0,10);
+    const h = hora || (String(iso||'').length>=16 ? String(iso).slice(11,16) : '');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return '—';
+    return d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4) + (h ? ' às '+h : '');
+  }
+  // Reúne as declarações transmitidas (obrigações marcadas como Entregue + SPED Fiscal transmitido).
+  function dtColetar(obrigacoes, geracoes){
+    const linhas = [];
+    (obrigacoes||[]).forEach(o=>{
+      if(o.status!=='Entregue') return;
+      const comp = dtCompNorm(o.competencia);
+      linhas.push({ clientId:o.clientId, decl: dtNomeNorm(o.nome), comp, compTxt:o.competencia||'', dataHora:(o.transmitidoEm||''), hora:'', recibo:o.recibo||'', origem:'obrigacao' });
+    });
+    (geracoes||[]).forEach(g=>{
+      if(g.status!=='Transmitido' && g.status!=='Retificado') return;
+      const k = g.clientId+'|'+DT_SPED_NOME+'|'+g.competencia;
+      for(let i=linhas.length-1;i>=0;i--){ if(linhas[i].clientId+'|'+linhas[i].decl+'|'+linhas[i].comp===k) linhas.splice(i,1); }
+      linhas.push({ clientId:g.clientId, decl:DT_SPED_NOME, comp:g.competencia, compTxt:'', dataHora:g.dataTransmissao||'', hora:g.horaTransmissao||'', recibo:g.recibo||'', origem:'sped', retif: g.status==='Retificado' });
+    });
+    return linhas;
+  }
+  function dtFiltrar(linhas, f){
+    return linhas.filter(l=>{
+      if(f.empresa && l.clientId!==f.empresa) return false;
+      if(f.decl && l.decl!==f.decl) return false;
+      const ano = l.comp.slice(0,4);
+      if(f.ano && ano!==String(f.ano)) return false;
+      if(f.meses && f.meses.length){
+        if(l.comp.length!==7) return false;
+        if(f.meses.indexOf(l.comp.slice(5,7))<0) return false;
+      }
+      return true;
+    }).sort((a,b)=> (a.clientId===b.clientId ? 0 : 0) || (a.comp||'').localeCompare(b.comp||'') || (a.dataHora||'').localeCompare(b.dataHora||''));
+  }
+  function dtCompLabel(l){ return l.comp.length===7 ? l.comp.slice(5,7)+'/'+l.comp.slice(0,4) : (l.comp || l.compTxt || '—'); }
+
+  function dtFiltro(){
+    if(!state.dtFiltro) state.dtFiltro = { empresa:'', decl:'', ano:String(new Date().getFullYear()), meses:[] };
+    return state.dtFiltro;
+  }
+  function dtLinhasFiltradas(){
+    return dtFiltrar(dtColetar(state.obrigacoesAcessorias, state.spedGeracoes), dtFiltro());
+  }
+  function declaracoesTransmitidasPanelHtml(){
+    const f = dtFiltro();
+    const todas = dtColetar(state.obrigacoesAcessorias, state.spedGeracoes);
+    const nomes = Array.from(new Set(OBRIGACAO_NOME_PADRAO.map(dtNomeNorm).concat(todas.map(l=>l.decl)))).filter(n=>n!=='Outra').sort();
+    const anos = Array.from(new Set(todas.map(l=>l.comp.slice(0,4)).filter(Boolean).concat([String(new Date().getFullYear())]))).sort().reverse();
+    const MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const linhas = dtFiltrar(todas, f);
+    const cli = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const empSel = f.empresa ? state.clients.find(c=>c.id===f.empresa) : null;
+    return `
+      <div class="panel-head"><h3>Relatório de Declarações Transmitidas</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Escolha a empresa, a declaração, o ano e os meses. O relatório lista as declarações marcadas como entregues/transmitidas (em Obrigações Acessórias e no SPED Fiscal), com data e hora da transmissão e número do recibo, e gera um PDF para enviar ao cliente.</div>
+      <div class="form-row" style="grid-template-columns:repeat(3,1fr);">
+        <div class="field"><label>Empresa</label><select id="dtEmpresa"><option value="">Todas as empresas</option>${cli.map(c=>`<option value="${c.id}" ${f.empresa===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Declaração</label><select id="dtDecl"><option value="">Todas as declarações</option>${nomes.map(n=>`<option value="${escapeHtml(n)}" ${f.decl===n?'selected':''}>${escapeHtml(n)}</option>`).join('')}</select></div>
+        <div class="field"><label>Ano</label><select id="dtAno"><option value="">Todos os anos</option>${anos.map(a=>`<option ${f.ano===a?'selected':''}>${a}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label>Meses <span style="font-weight:400;">(nenhum marcado = todos)</span></label>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;">
+          ${MESES.map((m,i)=>{ const v=String(i+1).padStart(2,'0'); return `<label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" class="dt-mes" value="${v}" ${f.meses.indexOf(v)>=0?'checked':''}/> ${m}</label>`; }).join('')}
+          <button type="button" class="btn-sm" id="dtLimparMeses">Limpar meses</button>
+        </div>
+      </div>
+      ${linhas.length ? `
+        <table>
+          <thead><tr><th>Empresa</th><th>Declaração</th><th>Competência</th><th>Data e hora da transmissão</th><th>Recibo</th></tr></thead>
+          <tbody>${linhas.map(l=>`<tr><td>${escapeHtml(clientName(l.clientId))}</td><td>${escapeHtml(l.decl)}${l.retif?' <span class="tag sit-outra">Retificadora</span>':''}</td><td>${escapeHtml(dtCompLabel(l))}</td><td>${dtFmtDataHora(l.dataHora, l.hora)}</td><td>${escapeHtml(l.recibo||'—')}</td></tr>`).join('')}</tbody>
+        </table>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
+          <button type="button" class="btn-add" id="dtGerarPdf">Gerar PDF para o cliente (${linhas.length})</button>
+          ${empSel && empSel.email ? `<button type="button" class="btn-sm" id="dtEmail">Abrir e-mail para ${escapeHtml(empSel.email)}</button>` : ''}
+        </div>
+        ${empSel && empSel.email ? `<div class="form-hint" style="margin-top:6px;">O e-mail abre já endereçado ao cliente; anexe o PDF baixado.</div>` : ''}
+      ` : `<div class="empty">Nenhuma declaração transmitida encontrada com esses filtros. Marque a obrigação como "Entregue" (informando data e hora) em Obrigações Acessórias, ou registre a transmissão do SPED Fiscal.</div>`}
+    `;
+  }
+  function dtGerarPdf(){
+    const linhas = dtLinhasFiltradas();
+    const f = dtFiltro();
+    if(!linhas.length){ alert('Não há declarações para os filtros escolhidos.'); return; }
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+    const M = 14, CW = W - 2*M;
+    const cab = ()=>{
+      doc.setFillColor(27,58,92); doc.rect(0,0,W,32,'F');
+      try{ doc.setFillColor(255,255,255); doc.roundedRect(M, 5, 22, 22, 2, 2, 'F'); doc.addImage(LOGO, 'JPEG', M+1, 6, 20, 20); }catch(e){}
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.text('JP CONSULTORIA CONTÁBIL', M+28, 14);
+      doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.text('Relatório de Declarações Transmitidas', M+28, 21);
+      doc.setFontSize(8.5); doc.text('Emitido em ' + new Date().toLocaleString('pt-BR'), M+28, 27);
+      doc.setTextColor(20,25,30);
+    };
+    cab();
+    let y = 42;
+    const MESES_L = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+    const filtroTxt = [
+      'Declaração: ' + (f.decl || 'todas'),
+      'Ano: ' + (f.ano || 'todos'),
+      'Meses: ' + (f.meses.length ? f.meses.map(m=>MESES_L[parseInt(m,10)-1]).join(', ') : 'todos'),
+    ].join('   ·   ');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90,105,120);
+    doc.splitTextToSize(filtroTxt, CW).forEach(t=>{ doc.text(t, M, y); y += 5; });
+    doc.setTextColor(20,25,30); y += 3;
+    const cols = [ {t:'Declaração', x:M+2, w:60}, {t:'Competência', x:M+64, w:24}, {t:'Data e hora da transmissão', x:M+90, w:42}, {t:'Recibo', x:M+134, w:CW-134} ];
+    const cabTab = ()=>{
+      doc.setFillColor(232,238,245); doc.rect(M, y, CW, 7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(27,58,92);
+      cols.forEach(c=>doc.text(c.t, c.x, y+4.8));
+      doc.setTextColor(20,25,30); y += 9;
+    };
+    const rodape = ()=>{
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(140,150,160);
+      doc.text('JP Consultoria Contábil — relatório de controle das declarações transmitidas. Os comprovantes oficiais são os recibos emitidos pelos órgãos receptores.', M, H-10);
+    };
+    const porEmpresa = {};
+    linhas.forEach(l=>{ (porEmpresa[l.clientId] = porEmpresa[l.clientId] || []).push(l); });
+    Object.keys(porEmpresa).sort((a,b)=>clientName(a).localeCompare(clientName(b))).forEach(cid=>{
+      if(y > H-50){ rodape(); doc.addPage(); cab(); y = 42; }
+      const c = state.clients.find(x=>x.id===cid) || {};
+      doc.setFont('helvetica','bold'); doc.setFontSize(11.5); doc.text(c.name || clientName(cid), M, y); y += 5;
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90,105,120); doc.text('CNPJ/CPF ' + (c.doc||'—'), M, y); doc.setTextColor(20,25,30); y += 6;
+      cabTab();
+      porEmpresa[cid].forEach(l=>{
+        const decl = doc.splitTextToSize(l.decl + (l.retif?' (retificadora)':''), cols[0].w);
+        const rec = doc.splitTextToSize(l.recibo || '—', cols[3].w);
+        const alt = Math.max(decl.length, rec.length) * 4.6 + 2.4;
+        if(y + alt > H-40){ rodape(); doc.addPage(); cab(); y = 42; cabTab(); }
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+        doc.text(decl, cols[0].x, y+3.4);
+        doc.text(dtCompLabel(l), cols[1].x, y+3.4);
+        doc.text(dtFmtDataHora(l.dataHora, l.hora), cols[2].x, y+3.4);
+        doc.text(rec, cols[3].x, y+3.4);
+        doc.setDrawColor(225,230,236); doc.line(M, y+alt-0.6, M+CW, y+alt-0.6);
+        y += alt;
+      });
+      y += 7;
+    });
+    rodape();
+    const nomeArq = 'declaracoes-transmitidas' + (f.empresa ? '-' + (clientName(f.empresa)||'').replace(/[^a-z0-9]+/gi,'-').toLowerCase() : '') + (f.ano ? '-'+f.ano : '') + '.pdf';
+    doc.save(nomeArq);
+  }
+
   function spedCompLabel(c){ return c ? c.slice(5,7)+'/'+c.slice(0,4) : '—'; }
   function spedMontarComprovantePdf(g, cl, comp){
     const doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
@@ -9396,7 +9553,7 @@
     secao('Transmissão');
     linha('Situação', g.status||'—');
     linha('Nº do recibo (PVA)', g.recibo||'—', true);
-    linha('Data da transmissão', fmtDate(g.dataTransmissao));
+    linha('Data e hora da transmissão', dtFmtDataHora(g.dataTransmissao, g.horaTransmissao));
     linha('Recibo oficial arquivado', g.reciboArqNome||'não anexado');
     linha('Registrado por', (state.user && (state.user.name||state.user.email)) || '—');
     // Assinatura
@@ -9456,7 +9613,7 @@
           <div class="form-row" style="grid-template-columns:repeat(3,1fr);">
             <div class="field"><label>Situação</label><select id="spedStatus">${SPED_STATUS.map(s=>`<option ${g.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
             <div class="field"><label>Nº do recibo de transmissão</label><input type="text" id="spedRecibo" value="${escapeHtml(g.recibo||'')}"/></div>
-            <div class="field"><label>Data da transmissão</label><input type="date" id="spedDtTransm" value="${g.dataTransmissao||''}"/></div>
+            <div class="field"><label>Data e hora da transmissão</label><div style="display:flex; gap:6px;"><input type="date" id="spedDtTransm" value="${g.dataTransmissao||''}"/><input type="time" id="spedHoraTransm" value="${g.horaTransmissao||''}" style="max-width:120px;"/></div></div>
           </div>
           <div class="field" style="margin-top:4px;"><label>Recibo oficial do PVA (PDF ou .rec, até 500KB)</label><input type="file" id="spedReciboArq" accept=".pdf,.rec,.txt"/>
             ${g.reciboArqNome ? `<div class="form-hint">Arquivado: ${escapeHtml(g.reciboArqNome)} <button type="button" class="btn-sm" id="spedBaixarRecibo">Baixar</button></div>` : ''}</div>
@@ -9524,6 +9681,11 @@
                 <option value="Entregue" ${d.status==='Entregue'?'selected':''}>Entregue</option>
               </select>
             </div>
+            <div class="form-row">
+              <div class="field"><label>Data e hora da transmissão</label><input type="datetime-local" id="obrTransmitidoEm" value="${escapeHtml(d.transmitidoEm||'')}"/></div>
+              <div class="field"><label>Nº do recibo (opcional)</label><input type="text" id="obrRecibo" value="${escapeHtml(d.recibo||'')}"/></div>
+            </div>
+            <div class="form-hint" style="margin:-8px 0 12px;">Se marcar "Entregue" sem informar data e hora, o sistema usa o momento atual. Esses dados aparecem no Relatório de Declarações Transmitidas.</div>
             <div class="field"><label>Observações</label><input type="text" id="obrObservacoes" value="${escapeHtml(d.observacoes||'')}"/></div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="obrCancel">Cancelar</button>
@@ -15070,6 +15232,7 @@
     {k:'situacao-fiscal', label:'Situação Fiscal'},
     {k:'impostos-guias', label:'Impostos & Guias'},
     {k:'obrigacoes', label:'Obrigações Acessórias'},
+    {k:'declaracoes-transmitidas', label:'Declarações Transmitidas (relatório)'},
     {k:'parcelamentos', label:'Parcelamentos (Fed/Est/Mun)'},
     {k:'planejamento', label:'Planejamento & Regimes'},
     {k:'calculo-impostos', label:'Cálculo de Impostos'},
@@ -15092,6 +15255,7 @@
     else if(state.fiscalTab==='situacao-fiscal') tabContent = situacaoFiscalPanelHtml();
     else if(state.fiscalTab==='impostos-guias') tabContent = impostosPagarPanelHtml();
     else if(state.fiscalTab==='obrigacoes') tabContent = obrigacoesAcessoriasPanelHtml();
+    else if(state.fiscalTab==='declaracoes-transmitidas') tabContent = declaracoesTransmitidasPanelHtml();
     else if(state.fiscalTab==='parcelamentos') tabContent = parcelamentosPanelHtml();
     else if(state.fiscalTab==='planejamento') tabContent = planejamentoRegimesPanelHtml();
     else if(state.fiscalTab==='calculo-impostos') tabContent = calculadoraImpostosHtml();
@@ -18006,7 +18170,10 @@
           vencimento: document.getElementById('obrVencimento').value,
           status: document.getElementById('obrStatus').value,
           observacoes: document.getElementById('obrObservacoes').value,
+          transmitidoEm: document.getElementById('obrTransmitidoEm').value,
+          recibo: document.getElementById('obrRecibo').value.trim(),
         };
+        if(o.status==='Entregue' && !o.transmitidoEm){ const n = new Date(); const p2=(x)=>String(x).padStart(2,'0'); o.transmitidoEm = n.getFullYear()+'-'+p2(n.getMonth()+1)+'-'+p2(n.getDate())+'T'+p2(n.getHours())+':'+p2(n.getMinutes()); }
         const submitBtn = obrigacaoForm.querySelector('button[type="submit"]');
         if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
         const ok = await saveObrigacaoAcessoria(o);
@@ -18029,6 +18196,26 @@
     root.querySelectorAll('[data-del-obrigacao]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir esta obrigação?')) deleteObrigacaoAcessoria(el.getAttribute('data-del-obrigacao')); };
     });
+
+    // ===== Relatório de Declarações Transmitidas =====
+    const dtBind = (id, fn)=>{ const el = document.getElementById(id); if(el) el.onchange = ()=>{ fn(el); render(); }; };
+    dtBind('dtEmpresa', el=>{ dtFiltro().empresa = el.value; });
+    dtBind('dtDecl', el=>{ dtFiltro().decl = el.value; });
+    dtBind('dtAno', el=>{ dtFiltro().ano = el.value; });
+    document.querySelectorAll('.dt-mes').forEach(cb=>{
+      cb.onchange = ()=>{ dtFiltro().meses = Array.from(document.querySelectorAll('.dt-mes:checked')).map(x=>x.value); render(); };
+    });
+    const dtLimpar = document.getElementById('dtLimparMeses');
+    if(dtLimpar) dtLimpar.onclick = ()=>{ dtFiltro().meses = []; render(); };
+    const dtPdfBtn = document.getElementById('dtGerarPdf');
+    if(dtPdfBtn) dtPdfBtn.onclick = ()=> dtGerarPdf();
+    const dtEmailBtn = document.getElementById('dtEmail');
+    if(dtEmailBtn) dtEmailBtn.onclick = ()=>{
+      const f = dtFiltro(); const c = state.clients.find(x=>x.id===f.empresa); if(!c || !c.email) return;
+      const assunto = 'Declarações transmitidas' + (f.ano ? ' — ' + f.ano : '') + ' — ' + (c.name||'');
+      const corpo = 'Prezado(a) cliente,\n\nSegue em anexo o relatório das declarações transmitidas' + (f.ano ? ' referentes a ' + f.ano : '') + '.\n\nAtenciosamente,\nJP Consultoria Contábil';
+      window.location.href = 'mailto:' + encodeURIComponent(c.email) + '?subject=' + encodeURIComponent(assunto) + '&body=' + encodeURIComponent(corpo);
+    };
 
     // ===== SPED Fiscal =====
     const spedEmp = deptOneSelectedClient();
@@ -18120,6 +18307,7 @@
         status: document.getElementById('spedStatus').value,
         recibo: document.getElementById('spedRecibo').value.trim(),
         dataTransmissao: document.getElementById('spedDtTransm').value,
+        horaTransmissao: document.getElementById('spedHoraTransm').value,
       });
       if(arq){ n.reciboArqNome = arq.nome; n.reciboArqBase64 = arq.base64; n.reciboArqMime = arq.mime; }
       return n;
