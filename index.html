@@ -9157,6 +9157,7 @@
     // montar arrays por bloco
     const linhasPorBloco = {};
     linhasPorBloco['0'] = B0;
+    linhasPorBloco['B'] = [spedLinha(['B001','1']), null];
     linhasPorBloco['C'] = [spedLinha(['C001', indMovC]), ...C, null];
     linhasPorBloco['D'] = [spedLinha(['D001','1']), null];
     linhasPorBloco['E'] = [...E, null];
@@ -9165,7 +9166,7 @@
     linhasPorBloco['K'] = [spedLinha(['K001','1']), null];
     linhasPorBloco['1'] = [spedLinha(['1001','0']), spedLinha(['1010','N','N','N','N','N','N','N','N','N','N','N','N','N']), null];
 
-    const ordem = ['0','C','D','E','G','H','K','1'];
+    const ordem = ['0','B','C','D','E','G','H','K','1'];
     const out = [];
     const contagem = {}; // REG -> qtd
     const cont = (l)=>{ const r = l.slice(1,5); contagem[r] = (contagem[r]||0)+1; };
