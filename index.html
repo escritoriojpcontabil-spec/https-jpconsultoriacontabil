@@ -8993,6 +8993,9 @@
     if(spedDigits(cfg.codMun).length!==7) erros.push('Informe o código IBGE do município (7 dígitos) na configuração.');
     if(!cl.uf) erros.push('UF da empresa não cadastrada.');
     if(!spedTxt(cfg.contabNome) || spedDigits(cfg.contabCpf).length!==11 || !spedTxt(cfg.contabCrc)) erros.push('Dados do contabilista (nome, CPF e CRC) são obrigatórios no registro 0100.');
+    if(!spedTxt(cfg.logradouro)) erros.push('Informe o endereço (logradouro) da empresa na configuração — campo obrigatório do registro 0005.');
+    if(!spedTxt(cfg.bairro)) erros.push('Informe o bairro da empresa na configuração — campo obrigatório do registro 0005.');
+    if(!spedTxt(cfg.contabEmail || cfg.email)) erros.push('Informe o e-mail do contabilista (ou da empresa) — campo obrigatório do registro 0100.');
     if(spedDigits(cfg.contabCep).length!==8 && spedDigits(cfg.cep).length!==8) erros.push('Informe o CEP (da empresa e/ou do contabilista).');
     if(spedDigits(cfg.contabMun || cfg.codMun).length!==7) erros.push('Código IBGE do município do contabilista inválido.');
     if(cl.regimeTributario==='Simples Nacional') avisos.push('Empresa optante do Simples Nacional normalmente é dispensada da EFD ICMS/IPI (salvo exigência da SEFAZ). Confirme a obrigatoriedade.');
@@ -9127,8 +9130,8 @@
     const nome = spedTxt(cl.name,100);
     B0.push(spedLinha(['0000', codVer, opts.retificadora?'1':'0', dtIni, dtFim, nome, cnpj, '', cl.uf||'', spedDigits(cfg.ie), spedDigits(cfg.codMun), spedDigits(cfg.im), '', cfg.perfil||'A', cfg.indAtiv||'1']));
     B0.push(spedLinha(['0001','0']));
-    B0.push(spedLinha(['0005', spedTxt(cfg.fantasia||cl.name,60), spedDigits(cfg.cep), spedTxt(cfg.logradouro,60), spedTxt(cfg.numero,10), spedTxt(cfg.complemento,60), spedTxt(cfg.bairro,60), spedDigits(cfg.fone).slice(0,11), '', spedTxt(cfg.email,60)]));
-    B0.push(spedLinha(['0100', spedTxt(cfg.contabNome,100), spedDigits(cfg.contabCpf), spedTxt(cfg.contabCrc,15), spedDigits(cfg.contabCnpj), spedDigits(cfg.contabCep||cfg.cep), spedTxt(cfg.contabEnd||cfg.logradouro,60), spedTxt(cfg.contabNum||cfg.numero,10), spedTxt(cfg.contabCompl,60), spedTxt(cfg.contabBairro||cfg.bairro,60), spedDigits(cfg.contabFone).slice(0,11), '', spedTxt(cfg.contabEmail,60), spedDigits(cfg.contabMun||cfg.codMun)]));
+    B0.push(spedLinha(['0005', spedTxt(cfg.fantasia||cl.name,60), spedDigits(cfg.cep), spedTxt(cfg.logradouro,60), spedTxt(cfg.numero,10)||'S/N', spedTxt(cfg.complemento,60), spedTxt(cfg.bairro,60), spedDigits(cfg.fone).slice(0,11), '', spedTxt(cfg.email,60)]));
+    B0.push(spedLinha(['0100', spedTxt(cfg.contabNome,100), spedDigits(cfg.contabCpf), spedTxt(cfg.contabCrc,15), spedDigits(cfg.contabCnpj), spedDigits(cfg.contabCep||cfg.cep), spedTxt(cfg.contabEnd||cfg.logradouro,60), (spedTxt(cfg.contabNum||cfg.numero,10)||'S/N'), spedTxt(cfg.contabCompl,60), spedTxt(cfg.contabBairro||cfg.bairro,60), spedDigits(cfg.contabFone).slice(0,11), '', spedTxt(cfg.contabEmail||cfg.email,60), spedDigits(cfg.contabMun||cfg.codMun)]));
     Array.from(parts.values()).sort((a,b)=>a.cod.localeCompare(b.cod)).forEach(x=>{
       const pt = x.pt;
       const pais = pt.codPais && pt.codPais!=='1058' ? pt.codPais : '1058';
@@ -9250,10 +9253,28 @@
       retif: t.retif!==undefined ? !!t.retif : !!g.retificadora,
     };
   }
+  // Completa logradouro/número/bairro/e-mail/telefone da configuração a partir do cadastro do cliente (endereço em texto único).
+  function spedPreencherDoCliente(cfg, cl){
+    if(!cl) return cfg;
+    const end = separarCepDoEndereco(cl.address).address;
+    let logr = end, bairro = '';
+    const ic = end.lastIndexOf(',');
+    if(ic>=0){ logr = end.slice(0, ic).trim(); bairro = end.slice(ic+1).trim(); }
+    let numero = '';
+    const m = logr.match(/^(.*?)[,\s]+(\d+[A-Za-z]?|S\/N)$/i);
+    if(m){ logr = m[1].replace(/[,\s]+$/,''); numero = m[2]; }
+    if(!cfg.logradouro) cfg.logradouro = logr;
+    if(!cfg.numero) cfg.numero = numero;
+    if(!cfg.bairro) cfg.bairro = bairro;
+    if(!cfg.email && cl.email) cfg.email = cl.email;
+    if(!cfg.fone && cl.phone) cfg.fone = String(cl.phone).replace(/\D/g,'');
+    return cfg;
+  }
   function spedMontar(clientId, comp){
     const cl = state.clients.find(c=>c.id===clientId) || {};
     const cfg = Object.assign({}, spedCfgDe(clientId) || {});
     if(!cfg.cep) cfg.cep = clienteCep(cl);
+    spedPreencherDoCliente(cfg, cl);
     if(!cfg.ie){
       const ie = (state.inscricoes||[]).find(i=>i.clientId===clientId && i.tipo==='Inscrição Estadual');
       if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero;
@@ -9276,7 +9297,7 @@
     ['Contabilista responsável (registro 0100)', [
       ['contabNome','Nome do contabilista'], ['contabCpf','CPF'], ['contabCrc','CRC (ex.: PE-012345/O-0)'], ['contabCnpj','CNPJ do escritório (opcional)'],
       ['contabCep','CEP (vazio = o da empresa)'], ['contabMun','Cód. IBGE município (vazio = o da empresa)'], ['contabEnd','Endereço (vazio = o da empresa)'], ['contabNum','Número'],
-      ['contabBairro','Bairro'], ['contabFone','Telefone'], ['contabEmail','E-mail'],
+      ['contabBairro','Bairro'], ['contabFone','Telefone'], ['contabEmail','E-mail (obrigatório)'],
     ]],
     ['Recolhimento do ICMS (registro E116)', [
       ['codRec','Código da receita estadual (COD_REC) — conforme a SEFAZ da UF'], ['diaVcto','Dia do vencimento do ICMS (mês seguinte)'],
@@ -17967,6 +17988,7 @@
       if(!cfg.ie){ const ie = (state.inscricoes||[]).find(i=>i.clientId===spedEmp && i.tipo==='Inscrição Estadual'); if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero; }
       cfg.clientId = spedEmp;
       if(!cfg.cep) cfg.cep = clienteCep(state.clients.find(c=>c.id===spedEmp));
+      spedPreencherDoCliente(cfg, state.clients.find(c=>c.id===spedEmp));
       state.spedModalData = cfg; state.modal = 'spedConfig'; render();
     };
     const spedCfgCancel = document.getElementById('spedCfgCancel');
