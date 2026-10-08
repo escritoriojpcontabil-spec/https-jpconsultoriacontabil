@@ -9252,6 +9252,7 @@
   function spedMontar(clientId, comp){
     const cl = state.clients.find(c=>c.id===clientId) || {};
     const cfg = Object.assign({}, spedCfgDe(clientId) || {});
+    if(!cfg.cep) cfg.cep = clienteCep(cl);
     if(!cfg.ie){
       const ie = (state.inscricoes||[]).find(i=>i.clientId===clientId && i.tipo==='Inscrição Estadual');
       if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero;
@@ -10727,6 +10728,14 @@
     await loadAll(); render();
   }
   // Comércio/indústria é contribuinte de ICMS: a Inscrição Estadual é obrigatória no cadastro.
+  function cepFmt(v){ const d = String(v||'').replace(/\D/g,'').slice(0,8); return d.length>5 ? d.slice(0,5)+'-'+d.slice(5) : d; }
+  // Endereços antigos traziam o CEP no fim do texto ("..., BAIRRO - 53439000"): separa para o campo próprio.
+  function separarCepDoEndereco(addr){
+    const m = String(addr||'').match(/(?:\s*-\s*|,\s*|\s+)(\d{5}-?\d{3})\s*$/);
+    if(!m) return {address: String(addr||''), cep:''};
+    return {address: String(addr).slice(0, m.index).replace(/[\s,\-]+$/,''), cep: cepFmt(m[1])};
+  }
+  function clienteCep(c){ if(!c) return ''; return c.cep ? cepFmt(c.cep) : separarCepDoEndereco(c.address).cep; }
   function clienteExigeIE(d){
     if(!d) return false;
     if(d.personType==='PF') return false;
@@ -11509,7 +11518,7 @@
     state.clientModalData = {
       id: c.id,
       doc: c.doc||'', name: c.name||'', phone: c.phone||'', email: c.email||'',
-      departments: Array.isArray(c.departments) ? c.departments.slice() : [], address: c.address||'', city: c.city||'', uf: c.uf||'',
+      departments: Array.isArray(c.departments) ? c.departments.slice() : [], address: (c.cep ? (c.address||'') : separarCepDoEndereco(c.address).address), cep: clienteCep(c), city: c.city||'', uf: c.uf||'',
       situacao: c.situacao||'', mainActivity: c.mainActivity||'', lookupMsg:'', lookupType:'info', lookupLoading:false,
       ie: (clienteIEAtual(c.id)||{}).numero && (clienteIEAtual(c.id)||{}).numero!=='ISENTO' ? clienteIEAtual(c.id).numero : '', ieIsento: !!(clienteIEAtual(c.id) && clienteIEAtual(c.id).numero==='ISENTO'),
       personType: c.personType||'', porte: c.porte||'', regimeTributario: c.regimeTributario||'',
@@ -11837,7 +11846,8 @@
             <div class="detail-item detail-full"><div class="dl">Atividade(s) secundária(s)</div><div class="dv">${escapeHtml(c.secondaryActivities||'—')}</div></div>
             <div class="detail-item"><div class="dl">Telefone</div><div class="dv">${escapeHtml(c.phone||'—')}</div></div>
             <div class="detail-item"><div class="dl">Email</div><div class="dv">${escapeHtml(c.email||'—')}</div></div>
-            <div class="detail-item detail-full"><div class="dl">Endereço</div><div class="dv">${escapeHtml(c.address||'—')}${c.city?', '+escapeHtml(c.city):''}${c.uf?'/'+escapeHtml(c.uf):''}</div></div>
+            <div class="detail-item"><div class="dl">CEP</div><div class="dv">${escapeHtml(clienteCep(c)||'—')}</div></div>
+            <div class="detail-item detail-full"><div class="dl">Endereço</div><div class="dv">${escapeHtml((c.cep?c.address:separarCepDoEndereco(c.address).address)||'—')}${c.city?', '+escapeHtml(c.city):''}${c.uf?'/'+escapeHtml(c.uf):''}</div></div>
           </div>
           <div class="form-section-title">Capital social</div>
           <div class="detail-grid">
@@ -16071,7 +16081,10 @@
               <div class="field"><label>Telefone</label><input type="text" id="clPhone" value="${escapeHtml(d.phone||'')}"/></div>
               <div class="field"><label>Email</label><input type="email" id="clEmail" value="${escapeHtml(d.email||'')}"/></div>
             </div>
-            <div class="field"><label>Endereço</label><input type="text" id="clAddress" value="${escapeHtml(d.address||'')}"/></div>
+            <div class="form-row">
+              <div class="field"><label>CEP</label><input type="text" id="clCep" inputmode="numeric" maxlength="9" placeholder="00000-000" value="${escapeHtml(d.cep||'')}"/></div>
+              <div class="field" style="flex:2;"><label>Endereço (logradouro, número, bairro)</label><input type="text" id="clAddress" value="${escapeHtml(d.address||'')}"/></div>
+            </div>
             <div class="form-row">
               <div class="field"><label>Cidade</label><input type="text" id="clCity" value="${escapeHtml(d.city||'')}"/></div>
               <div class="field"><label>UF</label><input type="text" id="clUf" maxlength="2" style="text-transform:uppercase;" value="${escapeHtml(d.uf||'')}"/></div>
@@ -16268,7 +16281,7 @@
     const newClient = document.getElementById('newClient');
     if(newClient) newClient.onclick = ()=>{
       state.clientModalData = {
-        doc:'', name:'', phone:'', email:'', address:'', city:'', uf:'',
+        doc:'', name:'', phone:'', email:'', address:'', cep:'', city:'', uf:'',
         situacao:'', mainActivity:'', lookupMsg:'', lookupType:'info', lookupLoading:false,
         personType:'', porte:'', regimeTributario:'', dataAbertura:'', secondaryActivities:'', ie:'', ieIsento:false,
         anexoSimples:'', fatorRAtivo:false, atividadePresumido:'', issAliquotaPresumido:'5',
@@ -17952,6 +17965,7 @@
       const cfg = Object.assign({}, spedCfgDe(spedEmp) || {});
       if(!cfg.ie){ const ie = (state.inscricoes||[]).find(i=>i.clientId===spedEmp && i.tipo==='Inscrição Estadual'); if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero; }
       cfg.clientId = spedEmp;
+      if(!cfg.cep) cfg.cep = clienteCep(state.clients.find(c=>c.id===spedEmp));
       state.spedModalData = cfg; state.modal = 'spedConfig'; render();
     };
     const spedCfgCancel = document.getElementById('spedCfgCancel');
@@ -20384,6 +20398,8 @@
     if(clFatorRAtivoEl) clFatorRAtivoEl.onchange = (e)=>{ if(state.clientModalData) state.clientModalData.fatorRAtivo = e.target.checked; };
     const clAtividadePresumidoEl = document.getElementById('clAtividadePresumido');
     if(clAtividadePresumidoEl) clAtividadePresumidoEl.onchange = (e)=>{ if(state.clientModalData) state.clientModalData.atividadePresumido = e.target.value; };
+    const clCepEl = document.getElementById('clCep');
+    if(clCepEl) clCepEl.oninput = (e)=>{ const v = cepFmt(e.target.value); e.target.value = v; if(state.clientModalData) state.clientModalData.cep = v; };
     const clIeEl = document.getElementById('clIE');
     const clIeIsentoEl = document.getElementById('clIEIsento');
     const atualizarAvisoIE = ()=>{
@@ -20483,8 +20499,8 @@
         const razao = info.razao_social || info.nome_fantasia || '';
         const fantasia = info.nome_fantasia || '';
         const enderecoParts = [info.descricao_tipo_de_logradouro, info.logradouro, info.numero].filter(Boolean).join(' ');
-        const bairroCep = [info.bairro, info.cep].filter(Boolean).join(' - ');
-        const enderecoFull = [enderecoParts, bairroCep].filter(Boolean).join(', ');
+        const enderecoFull = [enderecoParts, info.bairro].filter(Boolean).join(', ');
+        if(info.cep) state.clientModalData.cep = cepFmt(info.cep);
         const telefone = info.ddd_telefone_1 ? info.ddd_telefone_1 : '';
         state.clientModalData.name = razao || fantasia || state.clientModalData.name;
         state.clientModalData.phone = telefone || state.clientModalData.phone;
@@ -20559,6 +20575,7 @@
           phone: document.getElementById('clPhone').value,
           email: document.getElementById('clEmail').value,
           address: document.getElementById('clAddress').value,
+          cep: cepFmt(document.getElementById('clCep').value),
           city: document.getElementById('clCity').value,
           uf: document.getElementById('clUf').value,
           departments: Array.from(document.querySelectorAll('.cl-dept-check:checked')).map(el=>el.value),
@@ -20574,6 +20591,8 @@
           contractStatus: document.getElementById('clContractStatus').value,
           contractNotes: document.getElementById('clContractNotes').value,
         };
+        const cepDig = (document.getElementById('clCep').value||'').replace(/\D/g,'');
+        if(cepDig && cepDig.length!==8){ alert('CEP inválido: informe os 8 dígitos (ex.: 53439-000).'); document.getElementById('clCep').focus(); return; }
         const ieDigitos = (document.getElementById('clIE').value||'').replace(/\D/g,'');
         const ieIsento = document.getElementById('clIEIsento').checked;
         if(clienteExigeIE(c) && !ieDigitos && !ieIsento){
