@@ -9319,7 +9319,7 @@
             `).join('')}
             <div style="font-size:12px; font-weight:700; text-transform:uppercase; color:var(--ink-soft); margin:14px 0 8px;">Perfil e atividade</div>
             <div class="form-row">
-              <div class="field"><label>Perfil do arquivo</label><select id="spc_perfil">${SPED_PERFIS.map(p=>`<option value="${p}" ${((d.perfil||'A')===p)?'selected':''}>Perfil ${p}</option>`).join('')}</select></div>
+              <div class="field"><label>Perfil do arquivo (definido pela SEFAZ — A, B ou C)</label><select id="spc_perfil">${SPED_PERFIS.map(p=>`<option value="${p}" ${((d.perfil||'A')===p)?'selected':''}>Perfil ${p}</option>`).join('')}</select></div>
               <div class="field"><label>Atividade</label><select id="spc_indAtiv">
                 <option value="1" ${(d.indAtiv||'1')==='1'?'selected':''}>Outros (comércio/serviços com ICMS)</option>
                 <option value="0" ${d.indAtiv==='0'?'selected':''}>Industrial ou equiparado</option>
@@ -9335,6 +9335,7 @@
                 <option value="0" ${d.aproveitarCredito===false?'selected':''}>Não aproveitar nenhum</option>
               </select></div>
             </div>
+            <div class="form-hint"><b>Perfil:</b> não é uma escolha livre — é o perfil que a SEFAZ da UF atribui ao contribuinte (o PVA recusa a transmissão se for outro: "perfil não é válido para o contribuinte"). Confira no portal da SEFAZ ou em uma EFD já transmitida da empresa (o recibo/arquivo anterior mostra o perfil). Se não souber, teste B ou C com o PVA antes de assinar.</div>
             <div class="form-hint">Estes dados valem para todos os meses desta empresa. O PVA é quem valida o arquivo — confira a COD_REC e o vencimento na legislação/portal da SEFAZ da UF.</div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="spedCfgCancel">Cancelar</button>
@@ -9343,6 +9344,70 @@
           </form>
         </div>
       </div>`;
+  }
+
+
+  // PDF do comprovante de entrega do SPED Fiscal (logomarca do escritório, seções e assinatura).
+  function spedCompLabel(c){ return c ? c.slice(5,7)+'/'+c.slice(0,4) : '—'; }
+  function spedMontarComprovantePdf(g, cl, comp){
+    const doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+    const M = 16, CW = W - 2*M;
+    // Cabeçalho
+    doc.setFillColor(27,58,92); doc.rect(0,0,W,34,'F');
+    try{ doc.setFillColor(255,255,255); doc.roundedRect(M, 6, 22, 22, 2, 2, 'F'); doc.addImage(LOGO, 'JPEG', M+1, 7, 20, 20); }catch(e){}
+    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15);
+    doc.text('JP CONSULTORIA CONTÁBIL', M+28, 14);
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
+    doc.text('Comprovante de Entrega — SPED Fiscal (EFD ICMS/IPI)', M+28, 21);
+    doc.setFontSize(8.5); doc.text('Emitido em ' + new Date().toLocaleString('pt-BR'), M+28, 27);
+    doc.setTextColor(20,25,30);
+    let y = 46;
+    // Empresa
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text(cl.name || clientName(g.clientId), M, y); y += 6;
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(90,105,120);
+    doc.text('CNPJ ' + (cl.doc||'—') + '   ·   Competência ' + spedCompLabel(comp) + '   ·   ' + (g.retificadora ? 'Escrituração substituta (retificação)' : 'Escrituração original'), M, y); y += 9;
+    doc.setTextColor(20,25,30);
+    const secao = (titulo)=>{
+      doc.setFillColor(232,238,245); doc.rect(M, y, CW, 7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(27,58,92); doc.text(titulo.toUpperCase(), M+3, y+4.9);
+      doc.setTextColor(20,25,30); y += 11;
+    };
+    const linha = (k, v, destaque)=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(90,105,120); doc.text(k, M+3, y);
+      doc.setFont(destaque?'helvetica':'helvetica', destaque?'bold':'normal'); doc.setFontSize(destaque?10.5:9.5); doc.setTextColor(20,25,30);
+      const partes = doc.splitTextToSize(String(v), CW-62);
+      doc.text(partes, M+62, y); y += 5.6*partes.length + 1.4;
+    };
+    secao('Arquivo transmitido');
+    linha('Arquivo', g.arquivoNome||'—');
+    linha('Versão do leiaute (COD_VER)', g.codVer||'—');
+    linha('Linhas do arquivo', String(g.linhas||'—'));
+    linha('Hash SHA-256', g.hash||'—');
+    y += 3;
+    const ap = g.apuracao || {};
+    secao('Apuração do ICMS');
+    linha('ICMS débito (saídas)', fmtBRL(ap.debitos||0));
+    linha('ICMS crédito (entradas)', fmtBRL(ap.creditos||0));
+    linha('Saldo credor anterior', fmtBRL(ap.saldoAnterior||0));
+    linha('ICMS a recolher', fmtBRL(ap.recolher||0), true);
+    linha('Saldo credor a transportar', fmtBRL(ap.saldoCredorTransportar||0));
+    y += 3;
+    secao('Transmissão');
+    linha('Situação', g.status||'—');
+    linha('Nº do recibo (PVA)', g.recibo||'—', true);
+    linha('Data da transmissão', fmtDate(g.dataTransmissao));
+    linha('Recibo oficial arquivado', g.reciboArqNome||'não anexado');
+    linha('Registrado por', (state.user && (state.user.name||state.user.email)) || '—');
+    // Assinatura
+    const ys = Math.max(y + 22, H - 82);
+    doc.setDrawColor(120,130,140); doc.line(M+30, ys, W-M-30, ys);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('JP Consultoria Contábil', W/2, ys+5, {align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Responsável pela escrituração', W/2, ys+10, {align:'center'});
+    pdfFooterDisclaimer(doc, 'Comprovante interno de controle da entrega. O documento oficial de entrega é o recibo emitido pelo PVA da EFD ICMS/IPI no ato da transmissão.');
+    return doc;
   }
 
   function spedPanelHtml(empresa){
@@ -9387,7 +9452,7 @@
       </div>
       ${g ? `
         <div class="attach-box">
-          <div style="font-weight:600; margin-bottom:8px;">Acompanhamento — ${monthLabel(comp)} · gerado em ${escapeHtml(g.geradoEm?new Date(g.geradoEm).toLocaleString('pt-BR'):'—')}</div>
+          <div style="font-weight:600; margin-bottom:8px;">Acompanhamento — ${spedCompLabel(comp)} · gerado em ${escapeHtml(g.geradoEm?new Date(g.geradoEm).toLocaleString('pt-BR'):'—')}</div>
           <div class="form-row" style="grid-template-columns:repeat(3,1fr);">
             <div class="field"><label>Situação</label><select id="spedStatus">${SPED_STATUS.map(s=>`<option ${g.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
             <div class="field"><label>Nº do recibo de transmissão</label><input type="text" id="spedRecibo" value="${escapeHtml(g.recibo||'')}"/></div>
@@ -9405,7 +9470,7 @@
       ${hist.length ? `
         <table style="margin-top:12px;">
           <thead><tr><th>Competência</th><th>Situação</th><th>Recibo</th><th>ICMS a recolher</th></tr></thead>
-          <tbody>${hist.map(x=>`<tr><td>${monthLabel(x.competencia)}</td><td>${escapeHtml(x.status||'—')}</td><td>${escapeHtml(x.recibo||'—')}</td><td>${fmtBRL((x.apuracao||{}).recolher||0)}</td></tr>`).join('')}</tbody>
+          <tbody>${hist.map(x=>`<tr><td>${spedCompLabel(x.competencia)}</td><td>${escapeHtml(x.status||'—')}</td><td>${escapeHtml(x.recibo||'—')}</td><td>${fmtBRL((x.apuracao||{}).recolher||0)}</td></tr>`).join('')}</tbody>
         </table>` : ''}
       <details style="margin-top:14px;">
         <summary style="cursor:pointer; font-weight:600;">Como transmitir com o certificado digital (passo a passo)</summary>
@@ -18084,27 +18149,7 @@
       if(g.status!=='Transmitido'){ alert('Marque a situação como "Transmitido" e informe o nº do recibo e a data antes de gerar o comprovante de entrega.'); return; }
       if(!g.recibo || !g.dataTransmissao){ alert('Informe o número do recibo e a data da transmissão (constam no recibo do PVA).'); return; }
       const cl = state.clients.find(c=>c.id===spedEmp) || {};
-      const doc = new window.jspdf.jsPDF();
-      let y = pdfHeader(doc, 'Comprovante de Entrega — SPED Fiscal (EFD ICMS/IPI)', clientName(spedEmp));
-      const ap = g.apuracao || {};
-      const linhas = [
-        ['Empresa', cl.name||clientName(spedEmp)], ['CNPJ', cl.doc||'—'], ['Competência', monthLabel(comp)],
-        ['Finalidade', g.retificadora ? 'Substituto (retificação)' : 'Original'], ['Versão do leiaute (COD_VER)', g.codVer||'—'],
-        ['Arquivo gerado', g.arquivoNome||'—'], ['Linhas do arquivo', String(g.linhas||'—')], ['Hash SHA-256 do arquivo', g.hash||'—'],
-        ['ICMS débito', fmtBRL(ap.debitos||0)], ['ICMS crédito', fmtBRL(ap.creditos||0)], ['ICMS a recolher', fmtBRL(ap.recolher||0)],
-        ['Saldo credor a transportar', fmtBRL(ap.saldoCredorTransportar||0)],
-        ['Nº do recibo de transmissão (PVA)', g.recibo], ['Data da transmissão', fmtDate(g.dataTransmissao)],
-        ['Recibo oficial arquivado', g.reciboArqNome||'não anexado'],
-        ['Registrado por', (state.user && (state.user.name||state.user.email)) || '—'], ['Emitido em', new Date().toLocaleString('pt-BR')],
-      ];
-      y += 4;
-      linhas.forEach(([k,v])=>{
-        doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(k+':', 14, y);
-        doc.setFont('helvetica','normal');
-        const partes = doc.splitTextToSize(String(v), 110);
-        doc.text(partes, 76, y); y += 6.5 * partes.length;
-      });
-      pdfFooterDisclaimer(doc, 'Comprovante interno de controle da entrega. O documento oficial de entrega é o recibo emitido pelo PVA da EFD ICMS/IPI no ato da transmissão.');
+      const doc = spedMontarComprovantePdf(g, cl, comp);
       const b64 = doc.output('datauristring').split(',')[1];
       doc.save('comprovante-entrega-sped-fiscal-' + comp + '.pdf');
       g.comprovanteBase64 = b64; g.comprovanteEm = new Date().toISOString();
