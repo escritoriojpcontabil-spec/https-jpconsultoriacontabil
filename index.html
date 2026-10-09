@@ -565,16 +565,11 @@
     if(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId){
       try{
         firebase.initializeApp(FIREBASE_CONFIG);
-        // Autentica (anonimamente) junto ao Firebase antes de usar o banco de dados — isso
-        // permite travar as regras de segurança do Firestore para exigir "request.auth != null",
-        // bloqueando acesso direto ao banco por quem não passar por essa autenticação.
-        BOOT_STAGE = 'autenticação anônima do Firebase (signInAnonymously)';
-        await firebase.auth().signInAnonymously();
-        BOOT_STAGE = 'primeira leitura do Firestore';
+        // Login seguro: cada usuário entra com e-mail/senha do Firebase Authentication. Nada é lido
+        // do banco antes do login — as regras do Firestore só liberam quem está em "jp_autorizados".
+        BOOT_STAGE = 'iniciando o Firebase';
         FirebaseStore.db = firebase.firestore();
-        // Sanity check the connection so we fall back gracefully if config is wrong.
-        await FirebaseStore.db.collection(FIREBASE_COLLECTION).limit(1).get();
-        BOOT_STAGE = 'carregando os dados do sistema';
+        firebase.auth();
         Store = FirebaseStore;
         USING_FIREBASE = true;
         STORAGE_MODE = 'firebase';
@@ -11411,6 +11406,7 @@
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    try{ localStorage.setItem('jp_ultimo_backup', String(Date.now())); }catch(e){}
   }
 
   async function importAllData(file){
@@ -11507,7 +11503,142 @@
     render();
   }
 
+
+  // ===== Login seguro (Firebase Authentication) =====
+  const AUTH_DOMAIN = 'usuarios.jpconsultoriacontabil.com.br';
+  const AUTORIZADOS_COL = 'jp_autorizados';
+  const SENHA_MIN = 8;
+  function authEmail(username){ return username + '@' + AUTH_DOMAIN; }
+  // O Firebase exige 6+ caracteres. Senhas antigas mais curtas recebem um complemento fixo (só no envio ao Firebase).
+  function fbPass(p){ p = String(p||''); return p.length < 6 ? p + '#jp#jp' : p; }
+  function authMsgErro(e){
+    const c = (e && e.code) || '';
+    if(c==='auth/too-many-requests') return 'Muitas tentativas. Aguarde alguns minutos e tente de novo.';
+    if(c==='auth/network-request-failed') return 'Sem conexão com a internet.';
+    if(c==='auth/weak-password') return 'Senha muito fraca (mínimo de 6 caracteres).';
+    if(c==='auth/email-already-in-use') return 'Este usuário já possui login.';
+    if(c==='auth/requires-recent-login' || c==='auth/wrong-password' || c==='auth/invalid-credential') return 'Senha atual incorreta.';
+    return (e && e.message) ? e.message : 'erro desconhecido';
+  }
+  function autorizadosDoc(uid){ return FirebaseStore.db.collection(AUTORIZADOS_COL).doc(uid); }
+  let _secApp = null;
+  function secondaryAuth(){
+    if(!_secApp){
+      try{ _secApp = firebase.app('sec'); }catch(e){ _secApp = firebase.initializeApp(FIREBASE_CONFIG, 'sec'); }
+    }
+    return _secApp.auth();
+  }
+  // Cria o login (Authentication) de outra pessoa sem desconectar o administrador.
+  async function criarLoginFirebase(username, password){
+    const a = secondaryAuth();
+    const cred = await a.createUserWithEmailAndPassword(authEmail(username), fbPass(password));
+    const uid = cred.user.uid;
+    await a.signOut();
+    return uid;
+  }
+  // Conta antiga (senha só no banco, sem login no Authentication): confere a senha antiga e cria o login.
+  // Só funciona durante a transição (login anônimo ainda ligado e regras antigas).
+  async function migrarContaLegada(username, password){
+    const auth = firebase.auth();
+    let anon = null;
+    try{ anon = (await auth.signInAnonymously()).user; }catch(e){ return false; }
+    let u = null;
+    try{
+      const rec = await Store.get('users:'+username, true);
+      u = rec ? JSON.parse(rec.value) : null;
+    }catch(e){ u = null; }
+    try{ await anon.delete(); }catch(e){ try{ await auth.signOut(); }catch(_){} }
+    if(!u || !u.passwordHash) return false;
+    if((await sha256(password)) !== u.passwordHash) return false;
+    let cred;
+    try{ cred = await auth.createUserWithEmailAndPassword(authEmail(username), fbPass(password)); }
+    catch(e){ return false; }
+    const uid = cred.user.uid;
+    await autorizadosDoc(uid).set({ username, role: u.role==='admin' ? 'admin' : 'user' });
+    u.authUid = uid; delete u.passwordHash;
+    await Store.set('users:'+username, JSON.stringify(u), true);
+    return true;
+  }
+  async function entrarFirebase(fu){
+    const username = String(fu.email||'').split('@')[0];
+    let aut = null;
+    try{ const d = await autorizadosDoc(fu.uid).get(); if(d.exists) aut = d.data(); }catch(e){ aut = null; }
+    if(!aut){
+      try{ await firebase.auth().signOut(); }catch(e){}
+      state.authError = 'Seu acesso não está autorizado. Fale com o administrador do escritório.';
+      return false;
+    }
+    let u = null;
+    try{ const r = await Store.get('users:'+username, true); if(r) u = JSON.parse(r.value); }catch(e){}
+    if(!u) u = { username, name: username, departments: [], createdAt: new Date().toISOString() };
+    u.role = aut.role==='admin' ? 'admin' : 'user';
+    if(u.role==='admin') u.departments = DEPARTMENTS.slice();
+    u.authUid = fu.uid;
+    state.user = u;
+    return true;
+  }
+  async function trocarMinhaSenha(atual, nova){
+    const fu = firebase.auth().currentUser;
+    if(!fu) throw new Error('Sessão expirada. Entre novamente.');
+    const cred = firebase.auth.EmailAuthProvider.credential(fu.email, fbPass(atual));
+    await fu.reauthenticateWithCredential(cred);
+    await fu.updatePassword(fbPass(nova));
+  }
+  function abrirTrocaSenha(){
+    if(document.getElementById('jpTrocaSenha')) return;
+    const bg = document.createElement('div');
+    bg.id = 'jpTrocaSenha';
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    bg.innerHTML = `<div style="background:#fff;border-radius:12px;padding:24px;width:340px;max-width:92vw;font-family:inherit;">
+      <h3 style="margin:0 0 14px;">Alterar minha senha</h3>
+      <div class="field"><label>Senha atual</label><input type="password" id="tsAtual" autocomplete="current-password"/></div>
+      <div class="field"><label>Nova senha (mínimo ${SENHA_MIN} caracteres)</label><input type="password" id="tsNova" autocomplete="new-password"/></div>
+      <div class="field"><label>Repetir nova senha</label><input type="password" id="tsNova2" autocomplete="new-password"/></div>
+      <div id="tsMsg" style="font-size:13px;color:#C0392B;min-height:18px;margin:6px 0;"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;"><button type="button" class="btn-sm" id="tsCancel">Cancelar</button><button type="button" class="btn-sm" id="tsOk" style="background:#1E3A5F;color:#fff;">Salvar</button></div></div>`;
+    document.body.appendChild(bg);
+    const msg = (t, ok)=>{ const m = document.getElementById('tsMsg'); m.style.color = ok ? '#1E9E5A' : '#C0392B'; m.textContent = t; };
+    document.getElementById('tsCancel').onclick = ()=> bg.remove();
+    document.getElementById('tsOk').onclick = async ()=>{
+      const a = document.getElementById('tsAtual').value, n = document.getElementById('tsNova').value, n2 = document.getElementById('tsNova2').value;
+      if(!a) return msg('Informe a senha atual.');
+      if(n.length < SENHA_MIN) return msg('A nova senha deve ter ao menos ' + SENHA_MIN + ' caracteres.');
+      if(n !== n2) return msg('As senhas novas não coincidem.');
+      if(n === a) return msg('A nova senha deve ser diferente da atual.');
+      try{ await trocarMinhaSenha(a, n); msg('Senha alterada com sucesso.', true); setTimeout(()=>bg.remove(), 1200); }
+      catch(e){ msg(authMsgErro(e)); }
+    };
+  }
+  // Lembrete semanal de backup (administradores)
+  function lembreteBackupHtml(){
+    if(!state.user || state.user.role!=='admin') return '';
+    let ult = 0; try{ ult = Number(localStorage.getItem('jp_ultimo_backup')||0); }catch(e){}
+    const dias = ult ? Math.floor((Date.now()-ult)/86400000) : 999;
+    if(dias < 7) return '';
+    return `<div style="background:#FFF4E0;color:#8A5A00;padding:10px 16px;border-radius:8px;margin-bottom:14px;font-size:13px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <span>⚠ ${ult ? 'Último backup há ' + dias + ' dias.' : 'Nenhum backup feito neste computador.'} Faça um backup semanal dos dados.</span>
+      <button type="button" class="btn-sm" id="lembreteBackupBtn">Baixar backup agora</button></div>`;
+  }
+
   async function trySession(){
+    if(USING_FIREBASE){
+      // Sessão do Firebase Authentication (fica salva no navegador até clicar em Sair)
+      const fu = await new Promise(res=>{ const un = firebase.auth().onAuthStateChanged(x=>{ un(); res(x); }); });
+      if(fu && fu.isAnonymous){ try{ await firebase.auth().signOut(); }catch(e){} }
+      else if(fu){
+        state.loading = false;
+        if(await entrarFirebase(fu)){
+          await loadAll();
+          await loadCentroControleData();
+          if(state.user.role==='admin') await loadUsers();
+          if(BOOT_FALHOU) return;
+        }
+      }
+      state.loading = false;
+      BOOT_OK = true;
+      render();
+      return;
+    }
     try{
       const r = await SessionStore.get('session:username');
       if(r && r.value){
@@ -11529,6 +11660,26 @@
     const username = slugifyUsername(rawInput);
     const legacyKey = String(rawInput||'').trim().toLowerCase(); // contas antigas criadas por email, antes da troca para usuário
     if(!username || !password){ state.authError = 'Preencha usuário e senha.'; render(); return; }
+    if(USING_FIREBASE){
+      try{
+        try{ await firebase.auth().signInWithEmailAndPassword(authEmail(username), fbPass(password)); }
+        catch(e){
+          const c = (e && e.code) || '';
+          if(c==='auth/user-not-found' || c==='auth/invalid-credential' || c==='auth/invalid-login-credentials' || c==='auth/wrong-password'){
+            const migrou = await migrarContaLegada(username, password);
+            if(!migrou){ state.authError = 'Usuário ou senha incorretos.'; render(); return; }
+          } else { throw e; }
+        }
+        const fu = firebase.auth().currentUser;
+        if(!(await entrarFirebase(fu))){ render(); return; }
+        await loadAll();
+        await loadCentroControleData();
+        if(state.user.role==='admin') await loadUsers();
+        state.view = 'dashboard';
+        render();
+      }catch(e){ console.error('Erro no login:', e); state.authError = 'Não foi possível entrar agora (' + authMsgErro(e) + ').'; render(); }
+      return;
+    }
     try{
       let rec = await Store.get('users:'+username, true).catch(()=>null);
       let migratedFromLegacy = false;
@@ -11562,6 +11713,7 @@
 
   async function handleRegister(name, username, password, password2){
     state.authError = '';
+    if(USING_FIREBASE){ state.authMode='login'; state.authError='Cadastro livre desativado. Peça ao administrador para criar seu acesso.'; render(); return; }
     username = slugifyUsername(username || name);
     if(!name || !username || !password){ state.authError='Preencha todos os campos.'; render(); return; }
     if(password.length < 4){ state.authError='A senha deve ter ao menos 4 caracteres.'; render(); return; }
@@ -11587,12 +11739,39 @@
     }catch(e){ console.error('Erro no cadastro:', e); state.authError='Não foi possível cadastrar agora (' + (e && e.message ? e.message : 'erro desconhecido') + ').'; render(); }
   }
 
+  async function sincronizarAutorizado(u){
+    if(!USING_FIREBASE || !u || !u.authUid) return;
+    try{ await autorizadosDoc(u.authUid).set({ username: u.username, role: u.role==='admin' ? 'admin' : 'user' }); }
+    catch(e){ alert('Atenção: não foi possível atualizar a autorização no banco (' + authMsgErro(e) + ').'); }
+  }
+  async function definirSenhaUsuario(username){
+    const u = state.users.find(x=>x.username===username);
+    if(!u) return;
+    if(username === state.user.username){ abrirTrocaSenha(); return; }
+    const nova = prompt('Nova senha para "' + username + '" (mínimo ' + SENHA_MIN + ' caracteres):');
+    if(nova === null) return;
+    if(nova.length < SENHA_MIN){ alert('A senha deve ter ao menos ' + SENHA_MIN + ' caracteres.'); return; }
+    try{
+      const uid = await criarLoginFirebase(username, nova);
+      if(u.authUid && u.authUid !== uid){ try{ await autorizadosDoc(u.authUid).delete(); }catch(e){} }
+      u.authUid = uid; delete u.passwordHash;
+      await Store.set('users:'+username, JSON.stringify(u), true);
+      await autorizadosDoc(uid).set({ username, role: u.role==='admin' ? 'admin' : 'user' });
+      alert('Acesso criado. Usuário: "' + username + '" / senha: "' + nova + '". Entregue essas informações à pessoa.');
+    }catch(e){
+      if(e && e.code==='auth/email-already-in-use'){
+        alert('Este usuário já tem login. Para trocar a senha dele: no Firebase, abra Authentication > Usuários, exclua o usuário "' + authEmail(username) + '" e clique neste botão de novo. (Cada pessoa também pode trocar a própria senha no botão "Alterar senha", na barra lateral.)');
+      } else alert('Não foi possível definir a senha: ' + authMsgErro(e));
+    }
+    await loadUsers(); render();
+  }
   async function toggleUserRole(username){
     if(username === state.user.username){ alert('Você não pode alterar seu próprio nível de acesso.'); return; }
     const u = state.users.find(u=>u.username===username);
     if(!u) return;
     u.role = u.role==='admin' ? 'user' : 'admin';
     await Store.set('users:'+username, JSON.stringify(u), true);
+    await sincronizarAutorizado(u);
     await loadUsers(); render();
   }
 
@@ -11606,6 +11785,7 @@
     u.role = role;
     u.departments = departments;
     await Store.set('users:'+username, JSON.stringify(u), true);
+    await sincronizarAutorizado(u);
     await loadUsers(); render();
   }
 
@@ -11614,6 +11794,20 @@
     if(!username){ return { ok:false, error:'Informe um nome de usuário válido.' }; }
     const existing = await Store.get('users:'+username, true).catch(()=>null);
     if(existing){ return { ok:false, error:'Já existe uma conta com este nome de usuário.' }; }
+    if(USING_FIREBASE){
+      if(String(password||'').length < SENHA_MIN) return { ok:false, error:'A senha deve ter ao menos ' + SENHA_MIN + ' caracteres.' };
+      let uid;
+      try{ uid = await criarLoginFirebase(username, password); }
+      catch(e){
+        if(e && e.code==='auth/email-already-in-use') return { ok:false, error:'Este usuário já possui login no Firebase. Use "Definir senha" na tabela abaixo (ou exclua o login em Authentication).' };
+        return { ok:false, error:'Não foi possível criar o login: ' + authMsgErro(e) };
+      }
+      const user = { username, name, authUid: uid, role, departments: role==='admin' ? DEPARTMENTS.slice() : departments, createdAt: new Date().toISOString() };
+      await autorizadosDoc(uid).set({ username, role: role==='admin' ? 'admin' : 'user' });
+      await Store.set('users:'+username, JSON.stringify(user), true);
+      await loadUsers();
+      return { ok:true, username };
+    }
     const hash = await sha256(password);
     const user = { username, name, passwordHash: hash, role, departments: role==='admin' ? DEPARTMENTS.slice() : departments, createdAt: new Date().toISOString() };
     await Store.set('users:'+username, JSON.stringify(user), true);
@@ -11623,11 +11817,18 @@
 
   async function deleteUser(username){
     if(username === state.user.username){ alert('Você não pode excluir a própria conta enquanto estiver conectado.'); return; }
+    const alvo = state.users.find(x=>x.username===username);
     await Store.delete('users:'+username, true);
+    if(USING_FIREBASE && alvo && alvo.authUid){ try{ await autorizadosDoc(alvo.authUid).delete(); }catch(e){} }
     await loadUsers(); render();
   }
 
   async function handleLogout(){
+    if(USING_FIREBASE){
+      try{ await firebase.auth().signOut(); }catch(e){}
+      location.reload(); // limpa dados da memória
+      return;
+    }
     try{ await SessionStore.delete('session:username'); }catch(e){}
     state.user = null;
     state.view = 'dashboard';
@@ -11779,7 +11980,7 @@
                 <div class="field"><label>Senha</label><input type="password" id="loginPassword" autocomplete="current-password" required/></div>
                 <button type="submit" class="btn-primary btn-gold">Entrar</button>
               </form>
-              <div class="auth-switch">Ainda não tem conta? <a id="toRegister">Cadastre-se</a></div>
+              ${USING_FIREBASE ? `<div class="auth-note" style="margin-top:14px;">O acesso é criado pelo administrador do escritório.</div>` : `<div class="auth-switch">Ainda não tem conta? <a id="toRegister">Cadastre-se</a></div>`}
             ` : `
               <h2>Criar conta</h2>
               <p class="sub">Cadastre-se para acessar o sistema.</p>
@@ -11794,13 +11995,13 @@
               <div class="auth-switch">Já tem conta? <a id="toLogin">Entrar</a></div>
               <div class="auth-note" style="margin-top:10px;">O primeiro cadastro do sistema recebe acesso de administrador automaticamente.</div>
             `}
-            <div class="auth-note">Os dados deste sistema (usuários, clientes e lançamentos) ficam salvos neste artefato e são visíveis a quem tiver acesso a ele. As senhas são armazenadas como hash, mas isto é um protótipo — não recomendado para dados sigilosos reais.</div>
+            ${USING_FIREBASE ? `<div class="auth-note">Acesso restrito a usuários autorizados do escritório.</div>` : `<div class="auth-note">Os dados deste sistema (usuários, clientes e lançamentos) ficam salvos neste artefato e são visíveis a quem tiver acesso a ele. As senhas são armazenadas como hash, mas isto é um protótipo — não recomendado para dados sigilosos reais.</div>`}
           </div>
         </div>
       </div>
     `;
     if(isLogin){
-      document.getElementById('toRegister').onclick = ()=>{ state.authMode='register'; state.authError=''; render(); };
+      const toReg = document.getElementById('toRegister'); if(toReg) toReg.onclick = ()=>{ state.authMode='register'; state.authError=''; render(); };
       document.getElementById('loginForm').onsubmit = (e)=>{ e.preventDefault(); handleLogin(document.getElementById('loginEmail').value, document.getElementById('loginPassword').value); };
     } else {
       document.getElementById('toLogin').onclick = ()=>{ state.authMode='login'; state.authError=''; render(); };
@@ -11882,6 +12083,7 @@
             ${STORAGE_MODE==='firebase' ? 'Dados compartilhados (Firebase)' : (STORAGE_MODE==='claude' ? 'Dados compartilhados (Claude)' : 'Dados locais neste navegador')}
           </div>
           <div class="sb-user">${escapeHtml(state.user.name || state.user.username)}<br/><span class="tag ${state.user.role==='admin'?'role-admin':'role-user'}" style="margin-top:4px;display:inline-block;">${state.user.role==='admin'?'Administrador':'Usuário'}</span></div>
+          ${USING_FIREBASE ? `<button class="sb-logout" id="trocaSenhaBtn" style="margin-bottom:6px;">Alterar senha</button>` : ''}
           <button class="sb-logout" id="logoutBtn">Sair</button>
         </div>
       </div>
@@ -17159,6 +17361,7 @@
               <td>${u.createdAt ? new Date(u.createdAt).toLocaleDateString('pt-BR') : '—'}</td>
               <td style="display:flex;gap:8px;flex-wrap:wrap;">
                 <button class="btn-sm" data-edit-access="${u.username}">Editar acesso</button>
+                ${USING_FIREBASE ? `<button class="btn-sm" data-set-pass="${u.username}">${u.authUid?'Redefinir senha':'Definir senha'}</button>` : ''}
                 <button class="btn-sm danger" data-del-user="${u.username}">Excluir</button>
               </td>
             </tr>
@@ -17173,6 +17376,9 @@
         state.userAccessModalData = { username: el.getAttribute('data-edit-access') };
         state.modal='userAccess'; render();
       };
+    });
+    container.querySelectorAll('[data-set-pass]').forEach(el=>{
+      el.onclick = ()=> definirSenhaUsuario(el.getAttribute('data-set-pass'));
     });
     container.querySelectorAll('[data-del-user]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este usuário? Ele perderá o acesso ao sistema.')) deleteUser(el.getAttribute('data-del-user')); };
@@ -17203,7 +17409,7 @@
             <div class="field">
               <label>Senha provisória</label>
               <div style="display:flex; gap:8px;">
-                <input type="text" id="nuPassword" required minlength="4" style="flex:1;"/>
+                <input type="text" id="nuPassword" required minlength="${USING_FIREBASE?8:4}" style="flex:1;"/>
                 <button type="button" class="btn-sm" id="nuGerarSenha">Gerar senha</button>
               </div>
             </div>
@@ -17536,6 +17742,7 @@
               <button type="button" class="btn-sm" id="corSistemaResetBtn" title="Voltar para a cor padrão">Padrão</button>
             </div>
           </div>
+          ${state.view==='dashboard' ? lembreteBackupHtml() : ''}
           ${content}
         </div>
       </div>
@@ -17607,6 +17814,10 @@
     });
     const logoutBtn = document.getElementById('logoutBtn');
     if(logoutBtn) logoutBtn.onclick = handleLogout;
+    const trocaSenhaBtn = document.getElementById('trocaSenhaBtn');
+    if(trocaSenhaBtn) trocaSenhaBtn.onclick = abrirTrocaSenha;
+    const lembreteBtn = document.getElementById('lembreteBackupBtn');
+    if(lembreteBtn) lembreteBtn.onclick = async ()=>{ await exportAllData(); render(); };
 
     const quickAdd = document.getElementById('quickAdd');
     if(quickAdd) quickAdd.onclick = ()=>{ state.modal='tx'; render(); };
@@ -21813,8 +22024,8 @@
         const password = document.getElementById('nuPassword').value;
         const role = document.getElementById('nuRole').value;
         const departments = Array.from(document.querySelectorAll('.nu-dept-check:checked')).map(el=>el.value);
-        if(password.length < 4){
-          msgEl.textContent = 'A senha deve ter ao menos 4 caracteres.'; msgEl.className='lookup-msg error'; msgEl.style.display='block';
+        if(password.length < (USING_FIREBASE?SENHA_MIN:4)){
+          msgEl.textContent = 'A senha deve ter ao menos ' + (USING_FIREBASE?SENHA_MIN:4) + ' caracteres.'; msgEl.className='lookup-msg error'; msgEl.style.display='block';
           return;
         }
         const result = await adminCreateUser(name, username, password, role, departments);
