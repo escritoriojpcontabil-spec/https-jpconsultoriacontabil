@@ -431,27 +431,49 @@
 
   const FirebaseStore = {
     db: null,
+    reads: 0, // contador de leituras (diagnóstico)
+    // Cache em memória da coleção inteira. Antes, CADA chamada de list() relia a coleção toda
+    // e cada get() era mais uma leitura — um carregamento chegava a milhares de leituras e
+    // estourava a cota gratuita/travava. Agora a coleção é lida uma vez e reaproveitada por
+    // CACHE_TTL_MS; gravações e exclusões já atualizam o cache na hora.
+    _cache: null, _cacheT: 0, _cacheP: null, CACHE_TTL_MS: 60000,
     _docId(key){ return encodeURIComponent(key).slice(0,1500); },
+    _fresco(){ return this._cache && (Date.now() - this._cacheT) < this.CACHE_TTL_MS; },
+    async _carregar(){
+      if(this._fresco()) return;
+      if(this._cacheP) return this._cacheP;
+      this._cacheP = (async ()=>{
+        const snap = await this.db.collection(FIREBASE_COLLECTION).get();
+        const m = new Map();
+        snap.forEach(doc=>{ this.reads++; const d = doc.data(); if(d && d.key) m.set(d.key, d.value); });
+        this._cache = m; this._cacheT = Date.now();
+      })().finally(()=>{ this._cacheP = null; });
+      return this._cacheP;
+    },
     async get(key){
+      if(this._fresco()){
+        if(this._cache.has(key)) return { key, value: this._cache.get(key), shared: true };
+        throw new Error('Chave não encontrada: ' + key);
+      }
+      this.reads++;
       const snap = await this.db.collection(FIREBASE_COLLECTION).doc(this._docId(key)).get();
       if(!snap.exists){ throw new Error('Chave não encontrada: ' + key); }
       return { key, value: snap.data().value, shared: true };
     },
     async set(key, value){
       await this.db.collection(FIREBASE_COLLECTION).doc(this._docId(key)).set({ key, value });
+      if(this._cache) this._cache.set(key, value);
       return { key, value, shared: true };
     },
     async delete(key){
       await this.db.collection(FIREBASE_COLLECTION).doc(this._docId(key)).delete();
+      if(this._cache) this._cache.delete(key);
       return { key, deleted: true, shared: true };
     },
     async list(prefix){
-      const snap = await this.db.collection(FIREBASE_COLLECTION).get();
+      await this._carregar();
       const keys = [];
-      snap.forEach(doc=>{
-        const k = doc.data().key;
-        if(k && (!prefix || k.indexOf(prefix) === 0)) keys.push(k);
-      });
+      this._cache.forEach((v,k)=>{ if(!prefix || k.indexOf(prefix) === 0) keys.push(k); });
       return { keys, prefix, shared: true };
     }
   };
