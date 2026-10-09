@@ -633,6 +633,7 @@
     historicoModalData: null,
     lancContabilModalData: null,
     ofxPreview: null,
+    ofxContaBanco: '',
     relatorioViewClientId: null,
     parcModalData: null,
     parcEsferaFilter: 'all',
@@ -758,6 +759,9 @@
     alvaraEmpresaAtiva: '',
     alvaraModalData: null,
     processosFiscais: [],
+    alteracoesContratuais: [],
+    alteracaoModalData: null,
+    alteracaoFiltroStatus: 'Todos',
     processoFiscalEmpresaAtiva: '',
     processoFiscalModalData: null,
     exportNfTipoOperacao: 'Todos',
@@ -7275,7 +7279,9 @@
     return [
       { nome:'ATIVO', nat:D, subs:[
         { nome:'ATIVO CIRCULANTE', contas:[
-          { nome:'Disponibilidades', itens:[a('Caixa',D), a('Bancos Conta Movimento',D,'banco'), a('Aplicações Financeiras de Liquidez Imediata',D)] },
+          { nome:'Caixa', itens:[a('Caixa Geral',D)] },
+          { nome:'Bancos Conta Movimento', itens:[a('Banco Conta Movimento (Principal)',D,'banco')] },
+          { nome:'Aplicações Financeiras', itens:[a('Aplicações Financeiras de Liquidez Imediata',D)] },
           { nome:'Créditos', itens:[a('Clientes (Contas a Receber)',D), a('Adiantamentos a Fornecedores',D), a('Adiantamentos a Funcionários',D), a('(-) Provisão para Devedores Duvidosos',C)] },
           { nome:'Estoques', itens:L(e.estoques,D) },
           { nome:'Impostos a Recuperar', itens:L(e.impostosRec,D) },
@@ -7379,6 +7385,16 @@
     if(/(ind[uú]stria|fabrica[cç][aã]o|transforma[cç][aã]o|confec[cç][aã]o|beneficiamento)/i.test(txt)) return 'industria';
     if(clienteExigeIE(cli) || /(com[eé]rcio|varejist|atacadist|revenda|loja)/i.test(txt)) return 'comercio';
     return 'servicos';
+  }
+  // Contas analíticas de bancos da empresa: filhas de uma sintética "Bancos…" (ou, em planos
+  // antigos, a conta "Bancos Conta Movimento"). Usadas para escolher a conta no extrato OFX.
+  function contasBancoDaEmpresa(clientId){
+    const todas = state.planoContas.filter(c=>c.clientId===clientId);
+    const sinteticas = todas.filter(c=>c.tipo==='Sintética' && /^bancos?\b/i.test(c.nome||''));
+    let out = [];
+    sinteticas.forEach(sc=>{ out = out.concat(todas.filter(c=>c.tipo==='Analítica' && c.codigo.startsWith(sc.codigo+'.'))); });
+    todas.filter(c=>c.tipo==='Analítica' && (c.papel==='banco' || c.nome==='Bancos Conta Movimento')).forEach(c=>{ if(!out.includes(c)) out.push(c); });
+    return out.sort((a,b)=>a.codigo.localeCompare(b.codigo, undefined, {numeric:true}));
   }
   function pmContaDaEmpresaPorPapel(clientId, papel){
     return state.planoContas.find(c=>c.clientId===clientId && c.papel===papel && c.tipo==='Analítica') || null;
@@ -8294,6 +8310,40 @@
   async function deleteProcessoFiscalItem(id){
     await Store.delete('processosfiscais:'+id, true);
     await loadProcessosFiscais(); render();
+  }
+
+  // Alterações Contratuais — anotações livres das alterações que serão feitas em cada empresa
+  // (atividades/CNAE, endereço, capital, sócios, nome empresarial etc.).
+  const ALTERACAO_STATUS = ['A fazer','Em andamento','Protocolada','Concluída','Cancelada'];
+  const ALTERACAO_TIPOS_SUGESTAO = ['Atividades / CNAE','Endereço','Capital social','Entrada de sócio','Saída de sócio','Nome empresarial','Administrador','Objeto social','Enquadramento / Porte','Transformação / Mudança de natureza jurídica','Filial (abertura/baixa)','Consolidação do contrato','Baixa da empresa'];
+  async function loadAlteracoesContratuais(){
+    state.alteracoesContratuais = [];
+    try{
+      const keys = await Store.list('alteracoescontratuais:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.alteracoesContratuais.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+    state.alteracoesContratuais.sort((a,b)=> (b.criadoEm||'').localeCompare(a.criadoEm||''));
+  }
+  async function saveAlteracaoContratual(a){
+    if(!a.id) a.id = uid();
+    if(!a.criadoEm) a.criadoEm = new Date().toISOString();
+    a.atualizadoEm = new Date().toISOString();
+    try{
+      await Store.set('alteracoescontratuais:'+a.id, JSON.stringify(a), true);
+    }catch(e){
+      alert('Não foi possível salvar esta alteração contratual.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido'));
+      return false;
+    }
+    await loadAlteracoesContratuais(); render();
+    return true;
+  }
+  async function deleteAlteracaoContratual(id){
+    await Store.delete('alteracoescontratuais:'+id, true);
+    await loadAlteracoesContratuais(); render();
   }
 
   // Orientações Técnicas Contábeis — comunicações formais ao cliente, marcadas por
@@ -11291,6 +11341,7 @@
     await loadInscricoes();
     await loadAlvaras();
     await loadProcessosFiscais();
+    await loadAlteracoesContratuais();
   }
 
   async function exportAllData(){
@@ -11345,6 +11396,7 @@
       inscricoes: state.inscricoes,
       alvaras: state.alvaras,
       processosFiscais: state.processosFiscais,
+      alteracoesContratuais: state.alteracoesContratuais,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -11427,6 +11479,7 @@
       {key:'inscricoes', prefix:'inscricoes:', idField:'id'},
       {key:'alvaras', prefix:'alvaras:', idField:'id'},
       {key:'processosFiscais', prefix:'processosfiscais:', idField:'id'},
+      {key:'alteracoesContratuais', prefix:'alteracoescontratuais:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -13769,7 +13822,7 @@
               <td class="conta-nivel-${Math.min(contaLevel(c.codigo),3)}">${escapeHtml(c.nome)}</td>
               <td>${escapeHtml(c.tipo)}</td>
               <td><span class="tag ${c.natureza==='Devedora'?'natureza-devedora':'natureza-credora'}">${escapeHtml(c.natureza)}</span></td>
-              <td style="display:flex;gap:6px;"><button class="btn-detail" data-edit-conta="${c.id}">Editar</button><button class="btn-sm danger" data-del-conta="${c.id}">Excluir</button></td>
+              <td style="display:flex;gap:6px;">${c.tipo==='Sintética' && c.codigo.split('.').length<=3 ? `<button class="btn-detail" data-add-sub-conta="${c.id}" title="Criar uma conta dentro de ${escapeHtml(c.nome)}">+ Conta</button>` : ''}<button class="btn-detail" data-edit-conta="${c.id}">Editar</button><button class="btn-sm danger" data-del-conta="${c.id}">Excluir</button></td>
             </tr>
           `).join('')}
         </tbody>
@@ -13975,6 +14028,11 @@
       if(!isNaN(n) && n > maxN) maxN = n;
     });
     const next = maxN + 1;
+    // Máscara 1.01.01.0001: 2 dígitos nos níveis 2 e 3, 4 dígitos na conta analítica.
+    if(planoMascaraNova(state.contabilEmpresaAtiva)){
+      const nivelPai = contaSuperiorCodigo.split('.').length;
+      return contaSuperiorCodigo + '.' + String(next).padStart(nivelPai>=3 ? 4 : 2, '0');
+    }
     // Usa a mesma quantidade de dígitos já praticada pelas contas-irmãs existentes (sem forçar zero à esquerda quando elas não usam).
     const digits = filhas.length ? Math.max(...filhas.map(c=>c.codigo.slice(prefix.length).length)) : 0;
     return contaSuperiorCodigo + '.' + (digits > 1 ? String(next).padStart(digits, '0') : String(next));
@@ -14163,6 +14221,13 @@
           <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo OFX</label>
           <div class="field" style="margin-bottom:0;"><label>Arquivo .ofx</label><input type="file" id="ofxInput" accept=".ofx,.qfx"/></div>
         </div>
+        ${(()=>{
+          const bancos = contasBancoDaEmpresa(empresa);
+          if(!bancos.length) return `<div class="form-hint" style="margin-top:10px;">Esta empresa ainda não tem conta de banco no plano de contas. Em Plano de Contas, crie uma conta analítica dentro do grupo "Bancos Conta Movimento" (ex.: Banco do Brasil).</div>`;
+          const sel = bancos.some(b=>b.id===state.ofxContaBanco) ? state.ofxContaBanco : bancos[0].id;
+          return `<div class="field" style="margin-top:12px;"><label>Conta bancária (no plano de contas) que receberá os lançamentos</label>
+            <select id="ofxContaBanco">${bancos.map(b=>`<option value="${b.id}" ${b.id===sel?'selected':''}>${escapeHtml(b.codigo)} — ${escapeHtml(b.nome)}</option>`).join('')}</select></div>`;
+        })()}
       `}
       <div id="ofxMsg" class="lookup-msg" style="display:none; margin:14px 0;"></div>
       ${prev && prev.transacoes && prev.transacoes.length ? `
@@ -16425,6 +16490,7 @@
     {k:'inscricoes', label:'Inscrições'},
     {k:'alvaras', label:'Alvarás'},
     {k:'processos', label:'Processos Fiscais'},
+    {k:'alteracoes', label:'Alterações Contratuais'},
   ];
   function contratosServicosPanelHtml(){
     const empresa = state.clients.find(c=>c.id===state.contratoEmpresaAtiva);
@@ -16472,6 +16538,7 @@
     else if(state.legalTab==='inscricoes') tabContent = inscricoesPanelHtml();
     else if(state.legalTab==='alvaras') tabContent = alvarasPanelHtml();
     else if(state.legalTab==='processos') tabContent = processosFiscaisPanelHtml();
+    else if(state.legalTab==='alteracoes') tabContent = alteracoesContratuaisPanelHtml();
     return `
       <div class="panel">
         <div class="dp-tabs">
@@ -16931,6 +16998,89 @@
           </div>
         `}
       `}
+    `;
+  }
+
+  function alteracaoStatusClass(st){
+    if(st==='Concluída') return 'sit-ativa';
+    if(st==='Cancelada') return 'sit-outra';
+    if(st==='Protocolada' || st==='Em andamento') return 'dept-fiscal';
+    return 'sit-pendente';
+  }
+  function alteracoesContratuaisPanelHtml(){
+    const empresaId = deptOneSelectedClient();
+    const empresa = state.clients.find(c=>c.id===empresaId);
+    const filtro = state.alteracaoFiltroStatus || 'Todos';
+    const lista = state.alteracoesContratuais
+      .filter(a=> empresaId ? a.clientId===empresaId : isClientInScope(a.clientId))
+      .filter(a=> filtro==='Todos' || a.status===filtro)
+      .sort((a,b)=> (b.criadoEm||'').localeCompare(a.criadoEm||''));
+    return `
+      <div class="panel-head">
+        <h3>Alterações Contratuais</h3>
+        ${empresa ? `<button type="button" class="btn-add" id="novaAlteracaoBtn">+ Nova alteração</button>` : ''}
+      </div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Anote aqui, em texto livre, as alterações que serão feitas nas empresas — atividades/CNAE, endereço, capital social, sócios, nome empresarial etc. — e acompanhe o andamento de cada uma.</div>
+      ${!empresa ? `<div class="form-hint" style="margin:0 0 10px;">Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página, para cadastrar uma alteração. Abaixo aparecem as alterações das empresas selecionadas.</div>` : `<div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(empresa.name)}</div>`}
+      <div class="form-row" style="margin-bottom:6px;">
+        <div class="field" style="max-width:240px;"><label>Filtrar por status</label>
+          <select id="alteracaoFiltro">${['Todos'].concat(ALTERACAO_STATUS).map(t=>`<option value="${t}" ${filtro===t?'selected':''}>${t}</option>`).join('')}</select>
+        </div>
+      </div>
+      ${!lista.length ? `<div class="empty">Nenhuma alteração contratual ${filtro!=='Todos'?'com status "'+escapeHtml(filtro)+'" ':''}cadastrada ainda.</div>` : `
+        <div class="cc-list">
+          ${lista.map(a=>`
+            <div class="cc-row" style="align-items:flex-start;">
+              <div class="cr-main">
+                <div class="cr-title">${escapeHtml(a.titulo||'Alteração')} <span class="tag ${alteracaoStatusClass(a.status)}" style="margin-left:6px;">${escapeHtml(a.status||'A fazer')}</span></div>
+                <div class="cr-meta">${!empresaId ? '<b>'+escapeHtml(clientName(a.clientId))+'</b> · ' : ''}${escapeHtml(a.tipo||'Sem tipo')}${a.dataPrevista?' · Prevista para '+fmtDate(a.dataPrevista):''}${a.dataConclusao?' · Concluída em '+fmtDate(a.dataConclusao):''}${a.protocolo?' · Protocolo: '+escapeHtml(a.protocolo):''}</div>
+                ${a.descricao ? `<div class="cr-meta" style="white-space:pre-wrap; color:var(--ink); margin-top:4px;">${escapeHtml(a.descricao)}</div>` : ''}
+              </div>
+              <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">
+                ${a.status!=='Concluída' ? `<button type="button" class="btn-detail" data-concluir-alteracao="${a.id}">Marcar concluída</button>` : ''}
+                <button type="button" class="btn-detail" data-edit-alteracao="${a.id}">Editar</button>
+                <button type="button" class="btn-sm danger" data-del-alteracao="${a.id}">Excluir</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `}
+    `;
+  }
+  function alteracaoModalHtml(){
+    const d = state.alteracaoModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:640px;">
+          <h3>${d.id ? 'Editar alteração contratual' : 'Nova alteração contratual'}</h3>
+          <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">Empresa: ${escapeHtml(clientName(d.clientId))}</div>
+          <form id="alteracaoForm">
+            <div class="field"><label>Título / identificação</label><input type="text" id="alTitulo" value="${escapeHtml(d.titulo||'')}" placeholder="Ex: Incluir CNAE 4772-5/00 e alterar endereço" required/></div>
+            <div class="form-row">
+              <div class="field"><label>Tipo de alteração (livre)</label>
+                <input type="text" id="alTipo" list="alTiposLista" value="${escapeHtml(d.tipo||'')}" placeholder="Escolha da lista ou digite"/>
+                <datalist id="alTiposLista">${ALTERACAO_TIPOS_SUGESTAO.map(t=>`<option value="${escapeHtml(t)}"></option>`).join('')}</datalist>
+              </div>
+              <div class="field"><label>Status</label>
+                <select id="alStatus">${ALTERACAO_STATUS.map(t=>`<option value="${t}" ${(d.status||'A fazer')===t?'selected':''}>${t}</option>`).join('')}</select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Data prevista</label><input type="date" id="alDataPrevista" value="${escapeHtml(d.dataPrevista||'')}"/></div>
+              <div class="field"><label>Data de conclusão</label><input type="date" id="alDataConclusao" value="${escapeHtml(d.dataConclusao||'')}"/></div>
+              <div class="field"><label>Nº do protocolo / órgão</label><input type="text" id="alProtocolo" value="${escapeHtml(d.protocolo||'')}" placeholder="Ex: Junta Comercial — 2026/123456"/></div>
+            </div>
+            <div class="field"><label>Descrição das alterações (campo livre)</label>
+              <textarea id="alDescricao" rows="9" placeholder="Descreva livremente o que será alterado: atividades/CNAE a incluir ou excluir, novo endereço, capital, sócios, cláusulas etc.">${escapeHtml(d.descricao||'')}</textarea>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="altContrCancel">Cancelar</button>
+              <button type="submit" class="btn-add">${d.id ? 'Salvar alterações' : 'Salvar'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
     `;
   }
 
@@ -17423,6 +17573,7 @@
       ${state.modal==='inscricao' ? inscricaoModalHtml() : ''}
       ${state.modal==='alvara' ? alvaraModalHtml() : ''}
       ${state.modal==='processoFiscal' ? processoFiscalModalHtml() : ''}
+      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
       ${state.modal==='certidao' ? certidaoModalHtml() : ''}
@@ -20433,6 +20584,56 @@
       };
     }
 
+    // ===== Alterações Contratuais =====
+    const novaAlteracaoBtn = document.getElementById('novaAlteracaoBtn');
+    if(novaAlteracaoBtn) novaAlteracaoBtn.onclick = ()=>{
+      const cid = deptOneSelectedClient(); if(!cid) return;
+      state.alteracaoModalData = { clientId: cid, status: 'A fazer' };
+      state.modal = 'alteracao'; render();
+    };
+    const alteracaoFiltroEl = document.getElementById('alteracaoFiltro');
+    if(alteracaoFiltroEl) alteracaoFiltroEl.onchange = (e)=>{ state.alteracaoFiltroStatus = e.target.value; render(); };
+    root.querySelectorAll('[data-edit-alteracao]').forEach(el=>{
+      el.onclick = ()=>{
+        const a = state.alteracoesContratuais.find(x=>x.id===el.getAttribute('data-edit-alteracao')); if(!a) return;
+        state.alteracaoModalData = Object.assign({}, a); state.modal = 'alteracao'; render();
+      };
+    });
+    root.querySelectorAll('[data-concluir-alteracao]').forEach(el=>{
+      el.onclick = ()=>{
+        const a = state.alteracoesContratuais.find(x=>x.id===el.getAttribute('data-concluir-alteracao')); if(!a) return;
+        saveAlteracaoContratual(Object.assign({}, a, { status:'Concluída', dataConclusao: a.dataConclusao || todayStr() }));
+      };
+    });
+    root.querySelectorAll('[data-del-alteracao]').forEach(el=>{
+      el.onclick = ()=>{ if(confirm('Excluir esta alteração contratual?')) deleteAlteracaoContratual(el.getAttribute('data-del-alteracao')); };
+    });
+    const altContrCancel = document.getElementById('altContrCancel');
+    if(altContrCancel) altContrCancel.onclick = ()=>{ state.modal=null; state.alteracaoModalData=null; render(); };
+    const alteracaoForm = document.getElementById('alteracaoForm');
+    if(alteracaoForm){
+      alteracaoForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const base = state.alteracaoModalData || {};
+        if(!base.clientId){ alert('Selecione uma empresa antes de cadastrar a alteração.'); return; }
+        const status = document.getElementById('alStatus').value;
+        let dataConclusao = document.getElementById('alDataConclusao').value;
+        if(status==='Concluída' && !dataConclusao) dataConclusao = todayStr();
+        const a = Object.assign({}, base, {
+          titulo: document.getElementById('alTitulo').value.trim(),
+          tipo: document.getElementById('alTipo').value.trim(),
+          status,
+          dataPrevista: document.getElementById('alDataPrevista').value,
+          dataConclusao,
+          protocolo: document.getElementById('alProtocolo').value.trim(),
+          descricao: document.getElementById('alDescricao').value,
+        });
+        const ok = await saveAlteracaoContratual(a);
+        if(!ok) return;
+        state.modal=null; state.alteracaoModalData=null; render();
+      };
+    }
+
     // ===== Orientações Técnicas Contábeis =====
     const orientacaoEmpresaSelect = document.getElementById('orientacaoEmpresaSelect');
     if(orientacaoEmpresaSelect){
@@ -20721,8 +20922,9 @@
         const codigoInput = document.getElementById('ctCodigo');
         if(parentCodigo){
           codigoInput.value = suggestNextCodigo(parentCodigo);
-          const parentConta = state.planoContas.find(c=>c.codigo===parentCodigo);
+          const parentConta = state.planoContas.find(c=>c.codigo===parentCodigo && c.clientId===state.contabilEmpresaAtiva);
           if(parentConta) document.getElementById('ctNatureza').value = parentConta.natureza;
+          if(parentConta && planoMascaraNova(state.contabilEmpresaAtiva)) document.getElementById('ctTipo').value = parentCodigo.split('.').length>=3 ? 'Analítica' : 'Sintética';
         } else {
           codigoInput.value = '';
         }
@@ -20755,6 +20957,14 @@
         savePlanoContaItem(cFinal);
       };
     }
+    root.querySelectorAll('[data-add-sub-conta]').forEach(el=>{
+      el.onclick = ()=>{
+        const pai = state.planoContas.find(x=>x.id===el.getAttribute('data-add-sub-conta')); if(!pai) return;
+        const nivel = pai.codigo.split('.').length;
+        state.contaModalData = { clientId: state.contabilEmpresaAtiva, contaSuperior: pai.codigo, codigo: suggestNextCodigo(pai.codigo), natureza: pai.natureza, tipo: (planoMascaraNova(state.contabilEmpresaAtiva) && nivel>=3) ? 'Analítica' : 'Sintética' };
+        state.modal='conta'; render();
+      };
+    });
     root.querySelectorAll('[data-edit-conta]').forEach(el=>{
       el.onclick = ()=>{
         const c = state.planoContas.find(x=>x.id===el.getAttribute('data-edit-conta'));
@@ -20951,13 +21161,17 @@
         render();
       };
     }
+    const ofxContaBancoEl = document.getElementById('ofxContaBanco');
+    if(ofxContaBancoEl) ofxContaBancoEl.onchange = (e)=>{ state.ofxContaBanco = e.target.value; };
     const ofxConfirmImportBtn = document.getElementById('ofxConfirmImportBtn');
     if(ofxConfirmImportBtn){
       ofxConfirmImportBtn.onclick = async ()=>{
         const clientId = state.contabilEmpresaAtiva;
         if(!clientId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
-        const contaBanco = state.planoContas.find(c=>c.nome==='Bancos Conta Movimento' && c.clientId===clientId);
-        const contaClassificar = state.planoContas.find(c=>c.nome==='Conta a Classificar (Importação OFX)' && c.clientId===clientId);
+        const bancosOfx = contasBancoDaEmpresa(clientId);
+        const selBanco = document.getElementById('ofxContaBanco');
+        const contaBanco = (selBanco && bancosOfx.find(b=>b.id===selBanco.value)) || bancosOfx[0];
+        const contaClassificar = state.planoContas.find(c=>c.clientId===clientId && c.tipo==='Analítica' && (c.papel==='classificar' || c.nome==='Conta a Classificar (Importação OFX)'));
         if(!contaBanco || !contaClassificar){ alert('Esta empresa ainda não tem plano de contas cadastrado (ou não tem as contas "Bancos Conta Movimento" e "Conta a Classificar"). Vá em Plano de Contas, selecione a empresa e crie o plano de contas padrão antes de importar o OFX.'); return; }
         const prev = state.ofxPreview;
         for(const t of prev.transacoes){
@@ -21924,6 +22138,16 @@
     }
   }
 
+  // Campos de mês/data: ao digitar o ano dígito por dígito, o Chrome dispara "change" com anos
+  // parciais (0002, 0020, 0202...) e a tela era redesenhada a cada dígito, impossibilitando
+  // digitar o ano. Ignora esses valores intermediários (ano fora de 1900–2200) em todos os campos.
+  ['change','input'].forEach(ev=>document.addEventListener(ev, (e)=>{
+    const t = e.target;
+    if(t && t.tagName==='INPUT' && (t.type==='month' || t.type==='date') && t.value){
+      const y = parseInt(String(t.value).slice(0,4), 10);
+      if(y < 1900 || y > 2200){ e.stopImmediatePropagation(); e.stopPropagation(); }
+    }
+  }, true));
   var BOOT_FALHOU = false;
   function mostrarFalhaConexao(){
     BOOT_FALHOU = true;
