@@ -656,6 +656,7 @@
     tiposImpostoCustom: [],
     obrigacoesAcessorias: [],
     dtFiltro: null,
+    riFiltro: null,
     spedConfigs: [],
     spedGeracoes: [],
     spedCompetencia: '',
@@ -8775,9 +8776,9 @@
   }
 
   const OBRIGACAO_NOME_PADRAO = [
-    'DCTFWeb', 'DEFIS', 'DIRF', 'EFD-Reinf', 'SPED Fiscal (EFD ICMS/IPIS)', 'SPED Contribuições (EFD Contribuições)',
+    'DCTFWeb', 'DEFIS', 'DIRF', 'EFD-Reinf', 'SPED Fiscal (EFD ICMS/IPI)', 'SPED Contribuições (EFD Contribuições)',
     'ECD (Escrituração Contábil Digital)', 'ECF (Escrituração Contábil Fiscal)', 'GIA', 'DIME/DAM Estadual',
-    'DES/DMS Municipal', 'RAIS', 'CAGED/e-Social', 'PGDAS-D (Simples Nacional)', 'Outra',
+    'DES/DMS Municipal', 'RAIS', 'CAGED/e-Social', 'PGDAS-D (Simples Nacional)', 'DASN-SIMEI (MEI)', 'Outra',
   ];
   const OBRIGACAO_PERIODICIDADE = ['Mensal', 'Trimestral', 'Anual', 'Eventual'];
 
@@ -9505,6 +9506,380 @@
     doc.save(nomeArq);
   }
 
+  // ===== Integração fiscal: notas × declarações × impostos (por regime tributário) =====
+  // Ao importar/salvar notas (e no botão "Sincronizar"), o sistema vincula cada nota às declarações do
+  // regime da empresa, calcula os impostos da competência e grava vencimentos. Registros automáticos têm
+  // id fixo ("auto_...") — sincronizar de novo ATUALIZA, não duplica — e nunca sobrescrevem dados que
+  // o escritório já preencheu (status "Entregue", pagamento, observações).
+  function fsPad(n){ return String(n).padStart(2,'0'); }
+  function fsIso(d){ return d.getFullYear()+'-'+fsPad(d.getMonth()+1)+'-'+fsPad(d.getDate()); }
+  function fsEaster(y){
+    const a=y%19, b=Math.floor(y/100), c=y%100, d=Math.floor(b/4), e=b%4, f=Math.floor((b+8)/25), g=Math.floor((b-f+1)/3);
+    const h=(19*a+b-d-g+15)%30, i=Math.floor(c/4), k=c%4, l=(32+2*e+2*i-h-k)%7, m=Math.floor((a+11*h+22*l)/451);
+    const mes=Math.floor((h+l-7*m+114)/31), dia=((h+l-7*m+114)%31)+1;
+    return new Date(y, mes-1, dia);
+  }
+  const _fsFeriadosCache = {};
+  function fsFeriados(y){
+    if(_fsFeriadosCache[y]) return _fsFeriadosCache[y];
+    const s = new Set();
+    ['01-01','04-21','05-01','09-07','10-12','11-02','11-15','11-20','12-25'].forEach(x=>s.add(y+'-'+x));
+    const p = fsEaster(y);
+    [-48,-47,-2,0,60].forEach(off=>{ const d = new Date(p.getFullYear(), p.getMonth(), p.getDate()+off); s.add(fsIso(d)); }); // carnaval, sexta santa, páscoa, corpus christi
+    _fsFeriadosCache[y] = s; return s;
+  }
+  function fsEhUtil(d){ const w = d.getDay(); return w!==0 && w!==6 && !fsFeriados(d.getFullYear()).has(fsIso(d)); }
+  // modo 'antecipar' (DARF/DCTFWeb: dia útil anterior) ou 'prorrogar' (DAS: próximo dia útil)
+  function fsAjustar(iso, modo){
+    if(!iso) return '';
+    const [y,m,dd] = iso.split('-').map(Number);
+    let d = new Date(y, m-1, dd);
+    const passo = modo==='antecipar' ? -1 : 1;
+    let guard = 0;
+    while(!fsEhUtil(d) && guard++ < 10) d = new Date(d.getFullYear(), d.getMonth(), d.getDate()+passo);
+    return fsIso(d);
+  }
+  function fsMesSeguinte(ym, n){ const [y,m]=ym.split('-').map(Number); const d=new Date(y, m-1+(n===undefined?1:n), 1); return d.getFullYear()+'-'+fsPad(d.getMonth()+1); }
+  function fsDiaDoMes(ym, dia){ const [y,m]=ym.split('-').map(Number); const ult=new Date(y,m,0).getDate(); return ym+'-'+fsPad(Math.min(Number(dia),ult)); }
+  function fsNesimoDiaUtil(ym, n){ const [y,m]=ym.split('-').map(Number); let c=0; for(let dia=1; dia<=31; dia++){ const d=new Date(y,m-1,dia); if(d.getMonth()!==m-1) break; if(fsEhUtil(d)){ c++; if(c===n) return fsIso(d); } } return ''; }
+  function fsUltimoDiaUtil(ym){ const [y,m]=ym.split('-').map(Number); let d=new Date(y,m,0); while(!fsEhUtil(d)) d=new Date(d.getFullYear(), d.getMonth(), d.getDate()-1); return fsIso(d); }
+  function fsSlug(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
+  function fsCompLabel(ym){ return ym.slice(5,7)+'/'+ym.slice(0,4); }
+
+  const FS_ESFERA = { 'DAS (Simples Nacional)':'Federal', 'IRPJ':'Federal', 'CSLL':'Federal', 'PIS/COFINS':'Federal', 'INSS/Contribuição Previdenciária':'Federal', 'FGTS':'Federal', 'ICMS':'Estadual', 'IPVA':'Estadual', 'ITCMD':'Estadual', 'ISS':'Municipal', 'IPTU':'Municipal', 'ITBI':'Municipal' };
+  function fsEsferaDoImposto(tipo){ return FS_ESFERA[tipo] || 'Outro'; }
+
+  // Notas da empresa na competência (não canceladas).
+  function fsNotasDoMes(clientId, ym){
+    return state.notasFiscais.filter(n=>n.clientId===clientId && n.status!=='Cancelada' && (n.dataEmissao||'').slice(0,7)===ym);
+  }
+  function fsResumoNotas(clientId, ym){
+    const r = { saidas:0, entradas:0, servicos:0, vSaidas:0, vEntradas:0, vServicos:0, comXml:0 };
+    fsNotasDoMes(clientId, ym).forEach(n=>{
+      const v = Number(n.valor)||0;
+      if(n.tipoOperacao==='Serviços'){ r.servicos++; r.vServicos += v; }
+      else if(n.tipoOperacao==='Entrada'){ r.entradas++; r.vEntradas += v; }
+      else { r.saidas++; r.vSaidas += v; }
+      if(n.xmlOriginal && n.tipo!=='NFS-e (Serviço)') r.comXml++;
+    });
+    const man = faturamentoManualMes(clientId, ym);
+    r.manualVendas = man.vendas; r.manualServicos = man.servicos;
+    return r;
+  }
+  function fsNomesDeclaracao(regime, nota, ctx){
+    const serv = nota.tipoOperacao==='Serviços', ent = nota.tipoOperacao==='Entrada';
+    const out = [];
+    if(regime==='Simples Nacional'){
+      if(!ent) out.push(FS_DECL.PGDAS);
+      if(!ent) out.push(FS_DECL.DEFIS);
+    } else if(regime==='MEI'){
+      if(!ent) out.push(FS_DECL.DASN);
+    } else if(regime==='Lucro Presumido'){
+      if(!ent) out.push(FS_DECL.EFDCONTRIB, FS_DECL.ECF);
+      if(serv) out.push(FS_DECL.DMS);
+      if(!serv && ctx.exigeIE && nota.xmlOriginal) out.push(FS_DECL.SPEDFISCAL);
+    }
+    return out;
+  }
+  const FS_DECL = {
+    PGDAS:'PGDAS-D (Simples Nacional)', DEFIS:'DEFIS', DASN:'DASN-SIMEI (MEI)', EFDCONTRIB:'SPED Contribuições (EFD Contribuições)',
+    ECF:'ECF (Escrituração Contábil Fiscal)', DMS:'DES/DMS Municipal', SPEDFISCAL:'SPED Fiscal (EFD ICMS/IPI)', DCTFWEB:'DCTFWeb',
+  };
+  const FS_REGIMES_AUTO = ['MEI','Simples Nacional','Lucro Presumido'];
+
+  // Plano da competência: declarações e impostos (sem gravar nada).
+  function fsPlanejar(cl, ym){
+    const regime = cl.regimeTributario;
+    const plano = { regime, declaracoes:[], impostos:[], calculos:[], avisos:[] };
+    const resumo = fsResumoNotas(cl.id, ym);
+    const fat = faturamentoNotasMes(cl.id, ym);
+    const ie = (state.inscricoes||[]).find(i=>i.clientId===cl.id && i.tipo==='Inscrição Estadual');
+    const ctx = { exigeIE: clienteExigeIE(cl) && !!ie && ie.numero!=='ISENTO' };
+    plano.resumo = resumo; plano.ctx = ctx;
+    const prox = fsMesSeguinte(ym, 1);
+    const ano = ym.slice(0,4);
+    const dec = (nome, per, comp, venc, extra)=>plano.declaracoes.push(Object.assign({ nome, periodicidade:per, competencia:comp, vencimento:venc||'' }, extra||{}));
+    if(regime==='Simples Nacional'){
+      dec(FS_DECL.PGDAS, 'Mensal', fsCompLabel(ym), fsAjustar(fsDiaDoMes(prox,20),'prorrogar'));
+      dec(FS_DECL.DEFIS, 'Anual', ano, fsAjustar((Number(ano)+1)+'-03-31','prorrogar'));
+      // DAS
+      let anexo = cl.anexoSimples;
+      if(!anexo){ plano.avisos.push('Anexo do Simples Nacional não definido no cadastro — DAS não calculado.'); }
+      else if(fat.total > 0){
+        const usaFatorR = !!cl.fatorRAtivo && (anexo==='Anexo III — Serviços (locação, agências, etc.)' || anexo==='Anexo V — Serviços intelectuais/técnicos');
+        const anexoUsado = usaFatorR ? calcFatorR(cl.id, ym).anexoSugerido : anexo;
+        const rbt12 = faturamentoNotas12Meses(cl.id, ym);
+        const r = calcSimples(anexoUsado, rbt12, fat.total);
+        plano.calculos.push({ tipo:'simples', competencia:ym, anexo:anexoUsado, fatorRAtivo:!!cl.fatorRAtivo, rbt12, receitaMes:fat.total, faixaNum:r.faixaNum, aliqNominal:r.aliqNominal, deduz:r.deduz, aliqEfetiva:r.aliqEfetiva, imposto:r.imposto });
+        plano.impostos.push({ tipoImposto:'DAS (Simples Nacional)', competencia:ym, valor:round2(r.imposto), vencimento:fsAjustar(fsDiaDoMes(prox,20),'prorrogar'),
+          obs:'Receita '+fsCompLabel(ym)+' '+fmtBRL(fat.total)+' · RBT12 '+fmtBRL(rbt12)+' · '+r.faixaNum+'ª faixa · alíq. efetiva '+(r.aliqEfetiva*100).toFixed(2).replace('.',',')+'%' });
+      }
+    } else if(regime==='MEI'){
+      dec(FS_DECL.DASN, 'Anual', ano, fsAjustar((Number(ano)+1)+'-05-31','prorrogar'));
+      plano.avisos.push('MEI: o DAS-MEI tem valor fixo mensal (não depende das notas) — o sistema vincula as notas à DASN-SIMEI, mas não calcula o DAS.');
+    } else if(regime==='Lucro Presumido'){
+      dec(FS_DECL.EFDCONTRIB, 'Mensal', fsCompLabel(ym), fsNesimoDiaUtil(fsMesSeguinte(ym,2), 10));
+      dec(FS_DECL.ECF, 'Anual', ano, fsUltimoDiaUtil((Number(ano)+1)+'-07'));
+      const temFolha = (state.folhas||[]).some(f=>f.clientId===cl.id && f.competencia===ym) || (state.prolabores||[]).some(p=>p.clientId===cl.id && p.competencia===ym);
+      if(temFolha) dec(FS_DECL.DCTFWEB, 'Mensal', fsCompLabel(ym), fsAjustar(fsDiaDoMes(prox,15),'antecipar'));
+      const issDia = cl.issDiaVcto ? Number(cl.issDiaVcto) : 0;
+      if(resumo.servicos>0 || resumo.manualServicos>0) dec(FS_DECL.DMS, 'Mensal', fsCompLabel(ym), issDia ? fsAjustar(fsDiaDoMes(prox,issDia),'antecipar') : '', { vencEstimado: !issDia });
+      const cfg = spedCfgDe(cl.id) || {};
+      const icmsDia = cfg.diaVcto ? Number(cfg.diaVcto) : 0;
+      if(ctx.exigeIE && (resumo.saidas>0 || resumo.entradas>0)) dec(FS_DECL.SPEDFISCAL, 'Mensal', fsCompLabel(ym), icmsDia ? fsAjustar(fsDiaDoMes(prox,icmsDia),'antecipar') : '', { vencEstimado: !icmsDia });
+      // PIS/COFINS (cumulativo, 0,65% + 3%)
+      if(fat.total > 0){
+        const pis = round2(fat.total*0.0065), cof = round2(fat.total*0.03);
+        plano.impostos.push({ tipoImposto:'PIS/COFINS', competencia:ym, valor:round2(pis+cof), vencimento:fsAjustar(fsDiaDoMes(prox,25),'antecipar'),
+          obs:'Receita '+fmtBRL(fat.total)+' · PIS 0,65% '+fmtBRL(pis)+' + COFINS 3% '+fmtBRL(cof) });
+      }
+      // ISS sobre serviços
+      const recServ = round2((resumo.vServicos||0) + (resumo.manualServicos||0));
+      const issPerc = parseFloat(cl.issAliquotaPresumido);
+      if(recServ>0){
+        if(!(issPerc>=0)) plano.avisos.push('Alíquota de ISS do município não informada no cadastro — ISS não calculado.');
+        else plano.impostos.push({ tipoImposto:'ISS', competencia:ym, valor:round2(recServ*issPerc/100), vencimento: issDia ? fsAjustar(fsDiaDoMes(prox,issDia),'antecipar') : '', vencEstimado: !issDia,
+          obs:'Serviços '+fmtBRL(recServ)+' × '+String(issPerc).replace('.',',')+'%'+(issDia?'':' · vencimento a definir (informe o dia do ISS no cadastro do cliente)') });
+      }
+      // ICMS (apuração pelos XMLs)
+      if(ctx.exigeIE && (resumo.saidas>0 || resumo.entradas>0)){
+        try{
+          const m = spedMontar(cl.id, ym);
+          const ap = m.r.apuracao;
+          if(ap.recolher>0) plano.impostos.push({ tipoImposto:'ICMS', competencia:ym, valor:ap.recolher, vencimento: icmsDia ? fsAjustar(fsDiaDoMes(prox,icmsDia),'antecipar') : '', vencEstimado: !icmsDia,
+            obs:'Débitos '+fmtBRL(ap.debitos)+' − créditos '+fmtBRL(ap.creditos)+' (apuração pelos XMLs, mesma do SPED Fiscal)'+(icmsDia?'':' · vencimento a definir (informe o dia do ICMS na configuração do SPED Fiscal)') });
+        }catch(e){}
+      }
+    } else {
+      plano.avisos.push('Regime "'+(regime||'não definido')+'": o sistema só automatiza MEI, Simples Nacional e Lucro Presumido.');
+    }
+    return plano;
+  }
+  // IRPJ/CSLL do trimestre (Lucro Presumido)
+  function fsPlanejarTrimestre(cl, trim){
+    const out = { calculos:[], impostos:[], avisos:[] };
+    if(cl.regimeTributario!=='Lucro Presumido') return out;
+    const ativ = cl.atividadePresumido;
+    if(!ativ || !PRESUMIDO_ATIVIDADES[ativ]){ out.avisos.push('Atividade (percentual de presunção) não definida no cadastro — IRPJ/CSLL não calculados.'); return out; }
+    const receitaTri = faturamentoTrimestre(cl.id, trim);
+    if(receitaTri<=0) return out;
+    const issPerc = parseFloat(cl.issAliquotaPresumido)||0;
+    const r = calcPresumido(ativ, receitaTri, issPerc);
+    out.calculos.push({ tipo:'presumido', competencia:trim, atividade:ativ, receitaTri, issPerc, baseIrpj:r.baseIrpj, baseCsll:r.baseCsll, irpjNormal:r.irpjNormal, irpjAdicional:r.irpjAdicional, irpjTotal:r.irpjTotal, csllTotal:r.csllTotal, pis:r.pis, cofins:r.cofins, iss:r.iss, total:r.total });
+    const meses = mesesDoTrimestre(trim); const ultimo = meses[meses.length-1];
+    const venc = fsUltimoDiaUtil(fsMesSeguinte(ultimo,1));
+    const parcial = ultimo >= todayStr().slice(0,7);
+    const base = 'Receita do trimestre '+fmtBRL(receitaTri)+' ('+ativ+')'+(parcial?' · trimestre em andamento (valor parcial)':'');
+    if(r.irpjTotal>0) out.impostos.push({ tipoImposto:'IRPJ', competencia:trim, valor:round2(r.irpjTotal), vencimento:venc, parcial, obs:base+' · base '+fmtBRL(r.baseIrpj)+(r.irpjAdicional>0?' · inclui adicional '+fmtBRL(r.irpjAdicional):'') });
+    if(r.csllTotal>0) out.impostos.push({ tipoImposto:'CSLL', competencia:trim, valor:round2(r.csllTotal), vencimento:venc, parcial, obs:base+' · base '+fmtBRL(r.baseCsll) });
+    return out;
+  }
+
+  // Grava o plano (declarações, impostos, cálculos) e vincula as notas. Devolve resumo.
+  async function fsAplicar(cl, ym, plano, res){
+    for(const d of plano.declaracoes){
+      const compKey = d.periodicidade==='Anual' ? d.competencia : ym;
+      const existente = (state.obrigacoesAcessorias||[]).find(o=>o.clientId===cl.id && dtNomeNorm(o.nome)===dtNomeNorm(d.nome) && (dtCompNorm(o.competencia)===(d.periodicidade==='Anual'?d.competencia:ym)));
+      const id = existente ? existente.id : 'auto_'+cl.id+'_'+fsSlug(d.nome)+'_'+compKey;
+      const rec = existente ? Object.assign({}, existente) : { id, clientId:cl.id, nome:d.nome, periodicidade:d.periodicidade, competencia:d.competencia, status:'Pendente', auto:true, vencAuto:true };
+      rec.resumoNotas = { competencia: ym, saidas:plano.resumo.saidas, entradas:plano.resumo.entradas, servicos:plano.resumo.servicos };
+      if(rec.status!=='Entregue' && (rec.vencAuto || !rec.vencimento) && d.vencimento && rec.vencimento!==d.vencimento){ rec.vencimento = d.vencimento; rec.vencAuto = true; }
+      rec.vencEstimado = !!d.vencEstimado && !rec.vencimento;
+      try{ await Store.set('obrigacoesacessorias:'+rec.id, JSON.stringify(rec), true); res[existente?'declAtualizadas':'declCriadas']++; }catch(e){ res.avisos.push('Falha ao gravar '+d.nome+': '+(e&&e.message||'erro')); }
+    }
+    for(const c of plano.calculos){
+      const id = impostoCalculadoId(cl.id, c.tipo, c.competencia);
+      const ex = (state.impostosCalculados||[]).find(x=>x.id===id);
+      if(ex && ex.origem!=='auto'){ res.calcManuais++; continue; }
+      await salvarImpostoCalculado(Object.assign({ clientId:cl.id, origem:'auto' }, c));
+      res.calculos++;
+    }
+    for(const im of plano.impostos){
+      const id = 'auto_'+cl.id+'_'+fsSlug(im.tipoImposto)+'_'+im.competencia;
+      const ex = (state.impostosPagar||[]).find(x=>x.id===id);
+      const rec = Object.assign({}, ex||{}, {
+        id, clientId:cl.id, tipoImposto:im.tipoImposto, competencia:im.competencia, valorAPagar:im.valor, vencimento:im.vencimento||'',
+        esfera:fsEsferaDoImposto(im.tipoImposto), regime:cl.regimeTributario, auto:true, parcial:!!im.parcial, vencEstimado:!!im.vencEstimado, obs:im.obs,
+      });
+      if(!ex){ rec.valorPago=''; rec.dataPagamento=''; }
+      try{ await Store.set('impostospagar:'+id, JSON.stringify(rec), true); res.impostos++; }catch(e){ res.avisos.push('Falha ao gravar '+im.tipoImposto); }
+    }
+    // limpeza: impostos automáticos que deixaram de existir (nota cancelada/excluída), se não pagos
+    const gerados = new Set(plano.impostos.map(i=>'auto_'+cl.id+'_'+fsSlug(i.tipoImposto)+'_'+i.competencia));
+    for(const ex of (state.impostosPagar||[]).filter(x=>x.auto && x.clientId===cl.id && x.competencia===ym && !gerados.has(x.id) && !x.dataPagamento && ['DAS (Simples Nacional)','PIS/COFINS','ISS','ICMS'].indexOf(x.tipoImposto)>=0)){
+      try{ await Store.delete('impostospagar:'+ex.id, true); res.removidos++; }catch(e){}
+    }
+    // vínculo nota -> declarações
+    for(const n of fsNotasDoMes(cl.id, ym)){
+      const nomes = fsNomesDeclaracao(cl.regimeTributario, n, plano.ctx).filter(nome=>plano.declaracoes.some(d=>d.nome===nome));
+      const novo = nomes.map(nome=>({ nome, competencia: (plano.declaracoes.find(d=>d.nome===nome)||{}).periodicidade==='Anual' ? ym.slice(0,4) : fsCompLabel(ym) }));
+      if(JSON.stringify(n.declaracoes||[])!==JSON.stringify(novo)){
+        n.declaracoes = novo;
+        try{ await saveNotaFiscalSilent(n); }catch(e){}
+        res.notasLigadas++;
+      }
+    }
+  }
+  // pares: [{clientId, comp:'AAAA-MM'}]
+  async function fiscalSincronizar(pares){
+    const res = { declCriadas:0, declAtualizadas:0, impostos:0, calculos:0, calcManuais:0, removidos:0, notasLigadas:0, avisos:[], semRegime:[] };
+    const vistos = new Set(), trims = new Set();
+    for(const p of pares){
+      const k = p.clientId+'|'+p.comp; if(vistos.has(k) || !/^\d{4}-\d{2}$/.test(p.comp||'')) continue; vistos.add(k);
+      const cl = state.clients.find(c=>c.id===p.clientId); if(!cl) continue;
+      if(FS_REGIMES_AUTO.indexOf(cl.regimeTributario)<0){ if(res.semRegime.indexOf(cl.name)<0) res.semRegime.push(cl.name); continue; }
+      const plano = fsPlanejar(cl, p.comp);
+      plano.avisos.forEach(a=>{ const m = cl.name+': '+a; if(res.avisos.indexOf(m)<0) res.avisos.push(m); });
+      await fsAplicar(cl, p.comp, plano, res);
+      if(cl.regimeTributario==='Lucro Presumido') trims.add(p.clientId+'|'+trimestreDeCompetencia(p.comp));
+    }
+    for(const t of trims){
+      const [cid, trim] = t.split('|'); const cl = state.clients.find(c=>c.id===cid); if(!cl) continue;
+      const pl = fsPlanejarTrimestre(cl, trim);
+      pl.avisos.forEach(a=>{ const m = cl.name+': '+a; if(res.avisos.indexOf(m)<0) res.avisos.push(m); });
+      await fsAplicar(cl, trim.slice(0,4)+'-'+fsPad((Number(trim.slice(-1))-1)*3+1), { declaracoes:[], impostos:pl.impostos, calculos:pl.calculos, resumo:{}, ctx:{} }, res);
+    }
+    await loadObrigacoesAcessorias(); await loadImpostosPagar(); await loadImpostosCalculados(); await loadNotasFiscais();
+    return res;
+  }
+  function fsResumoTexto(r){
+    const p = [];
+    if(r.declCriadas || r.declAtualizadas) p.push((r.declCriadas+r.declAtualizadas)+' declaração(ões) vinculada(s) ('+r.declCriadas+' nova(s))');
+    if(r.notasLigadas) p.push(r.notasLigadas+' nota(s) ligada(s) às declarações');
+    if(r.impostos) p.push(r.impostos+' imposto(s) calculado(s) com vencimento');
+    if(r.calcManuais) p.push(r.calcManuais+' cálculo(s) feito(s) manualmente foram preservados');
+    if(r.semRegime.length) p.push('regime sem automação: '+r.semRegime.join(', '));
+    return p.length ? p.join(' · ') : 'nada novo para vincular';
+  }
+
+  // ===== Relatório de Impostos das Empresas =====
+  function riFiltro(){
+    if(!state.riFiltro) state.riFiltro = { empresa:'', imposto:'', esfera:'', ano:String(new Date().getFullYear()), meses:[] };
+    return state.riFiltro;
+  }
+  function riCompLabel(i){
+    const c = i.competencia||'';
+    if(/^\d{4}-\d{2}$/.test(c)) return fsCompLabel(c);
+    const m = c.match(/^(\d{4})-T([1-4])$/); if(m) return m[2]+'º tri/'+m[1];
+    return '—';
+  }
+  function riMesesDe(i){
+    const c = i.competencia||'';
+    if(/^\d{4}-\d{2}$/.test(c)) return [c.slice(5,7)];
+    const m = c.match(/^(\d{4})-T([1-4])$/); if(m) return TRIMESTRE_MESES['T'+m[2]];
+    return [];
+  }
+  function riLinhas(){
+    const f = riFiltro();
+    return (state.impostosPagar||[]).filter(i=>{
+      if(f.empresa && i.clientId!==f.empresa) return false;
+      if(f.imposto && i.tipoImposto!==f.imposto) return false;
+      const esf = i.esfera || fsEsferaDoImposto(i.tipoImposto);
+      if(f.esfera && esf!==f.esfera) return false;
+      const ref = (i.competencia||'').slice(0,4) || (i.vencimento||'').slice(0,4);
+      if(f.ano && ref!==String(f.ano)) return false;
+      if(f.meses.length){ const ms = riMesesDe(i); if(!ms.length) return false; if(!ms.some(m=>f.meses.indexOf(m)>=0)) return false; }
+      return true;
+    }).sort((a,b)=> clientName(a.clientId).localeCompare(clientName(b.clientId)) || (a.vencimento||'9999').localeCompare(b.vencimento||'9999') || (a.tipoImposto||'').localeCompare(b.tipoImposto||''));
+  }
+  function riVencTxt(i){
+    if(!i.vencimento) return 'a definir';
+    return fmtDate(i.vencimento);
+  }
+  function relatorioImpostosPanelHtml(){
+    const f = riFiltro();
+    const cli = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const tipos = Array.from(new Set(tiposImpostoTodos().filter(t=>t!=='Outro').concat((state.impostosPagar||[]).map(i=>i.tipoImposto).filter(Boolean)))).sort();
+    const anos = Array.from(new Set((state.impostosPagar||[]).map(i=>(i.competencia||i.vencimento||'').slice(0,4)).filter(a=>/^\d{4}$/.test(a)).concat([String(new Date().getFullYear())]))).sort().reverse();
+    const MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const linhas = riLinhas();
+    const total = linhas.reduce((s,i)=>s+(Number(i.valorAPagar)||0),0);
+    return `
+      <div class="panel-head"><h3>Relatório de Impostos das Empresas</h3>
+        <button type="button" class="btn-sm" id="riSincronizar">Sincronizar notas × declarações × impostos</button></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Lista os impostos de cada empresa com o nome, o tipo (Federal / Estadual / Municipal), o vencimento e a situação. Os valores são calculados a partir das notas importadas, conforme o regime tributário cadastrado (Simples Nacional: DAS · Lucro Presumido: PIS/COFINS, ISS, ICMS, IRPJ e CSLL). O botão "Sincronizar" refaz o cálculo de todas as competências do ano escolhido (para uma empresa ou todas).</div>
+      <div class="form-row" style="grid-template-columns:repeat(4,1fr);">
+        <div class="field"><label>Empresa</label><select id="riEmpresa"><option value="">Todas as empresas</option>${cli.map(c=>`<option value="${c.id}" ${f.empresa===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Imposto</label><select id="riImposto"><option value="">Todos</option>${tipos.map(t=>`<option value="${escapeHtml(t)}" ${f.imposto===t?'selected':''}>${escapeHtml(t)}</option>`).join('')}</select></div>
+        <div class="field"><label>Tipo</label><select id="riEsfera"><option value="">Todos</option>${['Federal','Estadual','Municipal'].map(e=>`<option ${f.esfera===e?'selected':''}>${e}</option>`).join('')}</select></div>
+        <div class="field"><label>Ano</label><select id="riAno"><option value="">Todos</option>${anos.map(a=>`<option ${f.ano===a?'selected':''}>${a}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label>Meses <span style="font-weight:400;">(nenhum marcado = todos)</span></label>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;">
+          ${MESES.map((m,i)=>{ const v=fsPad(i+1); return `<label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" class="ri-mes" value="${v}" ${f.meses.indexOf(v)>=0?'checked':''}/> ${m}</label>`; }).join('')}
+          <button type="button" class="btn-sm" id="riLimparMeses">Limpar meses</button>
+        </div>
+      </div>
+      ${linhas.length ? `
+        <table>
+          <thead><tr><th>Empresa</th><th>Regime</th><th>Imposto</th><th>Tipo</th><th>Competência</th><th>Vencimento</th><th style="text-align:right">Valor</th><th>Situação</th></tr></thead>
+          <tbody>${linhas.map(i=>`<tr>
+            <td>${escapeHtml(clientName(i.clientId))}</td>
+            <td>${escapeHtml(i.regime || ((state.clients.find(c=>c.id===i.clientId)||{}).regimeTributario) || '—')}</td>
+            <td>${escapeHtml(i.tipoImposto||'—')}${i.parcial?' <span class="tag sit-outra">parcial</span>':''}${i.auto?'':' <span class="tag sit-outra">manual</span>'}</td>
+            <td>${escapeHtml(i.esfera||fsEsferaDoImposto(i.tipoImposto))}</td>
+            <td>${escapeHtml(riCompLabel(i))}</td>
+            <td>${riVencTxt(i)}</td>
+            <td style="text-align:right" class="mono">${fmtBRL(i.valorAPagar)}</td>
+            <td><span class="tag ${impostoStatusClass(i)}">${impostoStatusLabel(i)}</span></td></tr>`).join('')}
+          <tr><td colspan="6" style="text-align:right; font-weight:700;">Total</td><td style="text-align:right; font-weight:700;" class="mono">${fmtBRL(total)}</td><td></td></tr></tbody>
+        </table>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;"><button type="button" class="btn-add" id="riGerarPdf">Gerar PDF (${linhas.length})</button></div>
+      ` : `<div class="empty">Nenhum imposto encontrado com esses filtros. Importe as notas fiscais (o sistema calcula ao importar) ou use "Sincronizar".</div>`}
+    `;
+  }
+  function riGerarPdf(){
+    const linhas = riLinhas(); const f = riFiltro();
+    if(!linhas.length){ alert('Não há impostos para os filtros escolhidos.'); return; }
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const doc = new window.jspdf.jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12, CW = W-2*M;
+    const cab = ()=>{
+      doc.setFillColor(27,58,92); doc.rect(0,0,W,30,'F');
+      try{ doc.setFillColor(255,255,255); doc.roundedRect(M, 4, 22, 22, 2, 2, 'F'); doc.addImage(LOGO, 'JPEG', M+1, 5, 20, 20); }catch(e){}
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.text('JP CONSULTORIA CONTÁBIL', M+28, 13);
+      doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.text('Relatório de Impostos das Empresas', M+28, 20);
+      doc.setFontSize(8.5); doc.text('Emitido em ' + new Date().toLocaleString('pt-BR'), M+28, 25.5);
+      doc.setTextColor(20,25,30);
+    };
+    cab(); let y = 38;
+    const MESES_L = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90,105,120);
+    doc.text('Imposto: '+(f.imposto||'todos')+'   ·   Tipo: '+(f.esfera||'todos')+'   ·   Ano: '+(f.ano||'todos')+'   ·   Meses: '+(f.meses.length?f.meses.map(m=>MESES_L[parseInt(m,10)-1]).join(', '):'todos'), M, y);
+    doc.setTextColor(20,25,30); y += 7;
+    const cols = [ {t:'Imposto', x:M+2}, {t:'Tipo', x:M+58}, {t:'Competência', x:M+82}, {t:'Vencimento', x:M+108}, {t:'Valor', x:M+150, right:true, xr:M+176}, {t:'Situação', x:M+182}, {t:'Observação', x:M+206} ];
+    const cabTab = ()=>{ doc.setFillColor(232,238,245); doc.rect(M, y, CW, 7, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(27,58,92);
+      cols.forEach(c=>doc.text(c.t, c.right?c.xr:c.x, y+4.8, c.right?{align:'right'}:undefined)); doc.setTextColor(20,25,30); y += 9; };
+    const rodape = ()=>{ doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(140,150,160);
+      doc.text('JP Consultoria Contábil — valores estimados a partir das notas importadas e do regime cadastrado; confira com as guias oficiais. Vencimentos "a definir" dependem do município/UF.', M, H-8); doc.setTextColor(20,25,30); };
+    const grupos = {}; linhas.forEach(i=>{ (grupos[i.clientId] = grupos[i.clientId]||[]).push(i); });
+    Object.keys(grupos).sort((a,b)=>clientName(a).localeCompare(clientName(b))).forEach(cid=>{
+      if(y > H-40){ rodape(); doc.addPage(); cab(); y = 38; }
+      const c = state.clients.find(x=>x.id===cid) || {};
+      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.text(c.name||clientName(cid), M, y);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120); doc.text('CNPJ/CPF '+(c.doc||'—')+'   ·   '+(c.regimeTributario||'regime não definido'), M, y+4.6); doc.setTextColor(20,25,30); y += 9;
+      cabTab(); let sub = 0;
+      grupos[cid].forEach(i=>{
+        const obs = doc.splitTextToSize(i.obs||'', CW-206-2);
+        const alt = Math.max(1, obs.length)*4 + 2.4;
+        if(y+alt > H-18){ rodape(); doc.addPage(); cab(); y = 38; cabTab(); }
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+        doc.text(((i.tipoImposto||'—')+(i.parcial?' (parcial)':'')).slice(0,34), cols[0].x, y+3.2);
+        doc.text(i.esfera||fsEsferaDoImposto(i.tipoImposto), cols[1].x, y+3.2);
+        doc.text(riCompLabel(i), cols[2].x, y+3.2);
+        doc.text(riVencTxt(i), cols[3].x, y+3.2);
+        doc.text(fmtBRL(i.valorAPagar), cols[4].xr, y+3.2, {align:'right'});
+        doc.text(impostoStatusLabel(i), cols[5].x, y+3.2);
+        doc.setFontSize(7); doc.text(obs, cols[6].x, y+3.2); doc.setFontSize(8.5);
+        doc.setDrawColor(225,230,236); doc.line(M, y+alt-0.6, M+CW, y+alt-0.6);
+        sub += Number(i.valorAPagar)||0; y += alt;
+      });
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Total da empresa: '+fmtBRL(sub), M+176, y+4, {align:'right'}); y += 11;
+    });
+    rodape();
+    doc.save('relatorio-impostos'+(f.empresa?'-'+fsSlug(clientName(f.empresa)):'')+(f.ano?'-'+f.ano:'')+'.pdf');
+  }
+
   function spedCompLabel(c){ return c ? c.slice(5,7)+'/'+c.slice(0,4) : '—'; }
   function spedMontarComprovantePdf(g, cl, comp){
     const doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
@@ -9666,7 +10041,7 @@
           <h3>${d.id ? 'Editar obrigação' : 'Nova obrigação'} — ${escapeHtml(clientName(deptOneSelectedClient()))}</h3>
           <form id="obrigacaoForm">
             <div class="field"><label>Obrigação</label>
-              <select id="obrNome">${OBRIGACAO_NOME_PADRAO.map(n=>`<option value="${n}" ${n===d.nome?'selected':''}>${n}</option>`).join('')}</select>
+              <select id="obrNome">${(d.nome && OBRIGACAO_NOME_PADRAO.indexOf(d.nome)<0 ? [d.nome] : []).concat(OBRIGACAO_NOME_PADRAO).map(n=>`<option value="${escapeHtml(n)}" ${n===d.nome?'selected':''}>${escapeHtml(n)}</option>`).join('')}</select>
             </div>
             <div class="form-row">
               <div class="field"><label>Periodicidade</label>
@@ -10625,8 +11000,10 @@
     await Store.set('notasfiscais:'+nf.id, JSON.stringify(nf), true);
   }
   async function deleteNotaFiscal(id){
+    const nf = state.notasFiscais.find(n=>n.id===id);
     await Store.delete('notasfiscais:'+id, true);
     await loadNotasFiscais(); render();
+    if(nf && nf.clientId && nf.dataEmissao){ try{ await fiscalSincronizar([{clientId:nf.clientId, comp:String(nf.dataEmissao).slice(0,7)}]); render(); }catch(e){} }
   }
 
   async function loadCentroControleData(){
@@ -11773,7 +12150,7 @@
       personType: c.personType||'', porte: c.porte||'', regimeTributario: c.regimeTributario||'',
       dataAbertura: c.dataAbertura||'', secondaryActivities: c.secondaryActivities||'',
       anexoSimples: c.anexoSimples||'', fatorRAtivo: !!c.fatorRAtivo,
-      atividadePresumido: c.atividadePresumido||'', issAliquotaPresumido: c.issAliquotaPresumido!==undefined?c.issAliquotaPresumido:'5',
+      atividadePresumido: c.atividadePresumido||'', issAliquotaPresumido: c.issAliquotaPresumido!==undefined?c.issAliquotaPresumido:'5', issDiaVcto: c.issDiaVcto||'',
       capitalSocial: c.capitalSocial!==undefined?c.capitalSocial:'', capitalIntegralizado: c.capitalIntegralizado!==undefined?c.capitalIntegralizado:'',
       capitalAIntegralizar: c.capitalAIntegralizar!==undefined?c.capitalAIntegralizar:'',
       socios: Array.isArray(c.socios) ? c.socios.map(s=>Object.assign({},s)) : [],
@@ -15233,6 +15610,7 @@
     {k:'impostos-guias', label:'Impostos & Guias'},
     {k:'obrigacoes', label:'Obrigações Acessórias'},
     {k:'declaracoes-transmitidas', label:'Declarações Transmitidas (relatório)'},
+    {k:'relatorio-impostos', label:'Relatório de Impostos das Empresas'},
     {k:'parcelamentos', label:'Parcelamentos (Fed/Est/Mun)'},
     {k:'planejamento', label:'Planejamento & Regimes'},
     {k:'calculo-impostos', label:'Cálculo de Impostos'},
@@ -15256,6 +15634,7 @@
     else if(state.fiscalTab==='impostos-guias') tabContent = impostosPagarPanelHtml();
     else if(state.fiscalTab==='obrigacoes') tabContent = obrigacoesAcessoriasPanelHtml();
     else if(state.fiscalTab==='declaracoes-transmitidas') tabContent = declaracoesTransmitidasPanelHtml();
+    else if(state.fiscalTab==='relatorio-impostos') tabContent = relatorioImpostosPanelHtml();
     else if(state.fiscalTab==='parcelamentos') tabContent = parcelamentosPanelHtml();
     else if(state.fiscalTab==='planejamento') tabContent = planejamentoRegimesPanelHtml();
     else if(state.fiscalTab==='calculo-impostos') tabContent = calculadoraImpostosHtml();
@@ -16310,6 +16689,7 @@
                 </div>
                 <div class="field"><label>Alíquota de ISS do município (%, se serviço)</label><input type="number" step="0.01" min="0" max="5" id="clIssPresumido" value="${escapeHtml(d.issAliquotaPresumido)}"/></div>
               </div>
+              <div class="field"><label>Dia de vencimento do ISS no município (opcional)</label><input type="number" min="1" max="31" id="clIssDia" value="${escapeHtml(d.issDiaVcto||'')}" placeholder="Ex: 10 — usado no relatório de impostos"/></div>
             ` : ''}
             <div class="field"><label>Atividade principal</label><input type="text" id="clMainActivity" value="${escapeHtml(d.mainActivity||'')}"/></div>
             <div class="field"><label>Atividade(s) secundária(s)</label><input type="text" id="clSecondaryActivities" placeholder="Separe por ; se houver mais de uma" value="${escapeHtml(d.secondaryActivities||'')}"/></div>
@@ -17361,6 +17741,7 @@
         let ok = 0, skipped = 0, failed = 0, naoXml = 0, duplicadas = 0;
         const skippedNames = [];
         const chavesNesteLote = new Set();
+        const paresSync = [];
         const hashesNesteLote = new Set();
         for(const file of files){
           if(!isXml(file)){ naoXml++; continue; }
@@ -17394,14 +17775,21 @@
             xmlHash,
             observacoes: 'Importado em lote via XML (' + file.name + ')',
           });
+          paresSync.push({clientId:m.client.id, comp:String(result.dataEmissao||'').slice(0,7)});
           ok++;
         }
         await loadNotasFiscais();
+        let sincTxt = '';
+        if(paresSync.length){
+          showMsg('Notas importadas. Vinculando às declarações e calculando impostos...', 'info');
+          try{ const rs = await fiscalSincronizar(paresSync); sincTxt = fsResumoTexto(rs) + (rs.avisos.length ? ' — Atenção: ' + rs.avisos.slice(0,4).join(' | ') : ''); }catch(err){ console.error(err); sincTxt = 'não foi possível calcular os impostos automaticamente (use "Sincronizar" no Relatório de Impostos)'; }
+        }
         const parts = [ok + ' nota(s) importada(s) e salva(s)'];
         if(duplicadas) parts.push(duplicadas + ' já existiam no sistema (número/série repetidos para o mesmo cliente) e foram ignoradas');
         if(skipped) parts.push(skipped + ' sem cliente identificado no Cadastro (' + skippedNames.join(', ') + ')');
         if(naoXml) parts.push(naoXml + ' arquivo(s) em outro formato (cadastre-os individualmente, um de cada vez)');
         if(failed) parts.push(failed + ' com erro de leitura/formato');
+        if(sincTxt) parts.push('Declarações e impostos: ' + sincTxt);
         showMsg('Importação em lote concluída: ' + parts.join(' · ') + '.', ok > 0 ? 'success' : 'error');
         updateNfResults();
       };
@@ -17433,9 +17821,15 @@
         if(!editandoId && notaFiscalJaExiste(nf.clientId, nf.numero, nf.serie)){
           if(!confirm('Já existe uma nota com esse número/série para este cliente. Salvar mesmo assim (vai duplicar)?')) return;
         }
+        const compAntiga = (state.nfModalData && state.nfModalData.dataEmissao) ? String(state.nfModalData.dataEmissao).slice(0,7) : '';
+        const idAntigo = editandoId ? state.nfModalData.clientId : '';
         state.modal=null; state.nfModalData=null;
         render();
-        saveNotaFiscal(nf);
+        saveNotaFiscal(nf).then(()=>{
+          const pares = [{clientId:nf.clientId, comp:String(nf.dataEmissao||'').slice(0,7)}];
+          if(compAntiga) pares.push({clientId: idAntigo || nf.clientId, comp:compAntiga});
+          return fiscalSincronizar(pares);
+        }).then(()=>render()).catch(err=>console.error(err));
       };
     }
     wireNfDeleteButtons();
@@ -17657,7 +18051,7 @@
     if(impostoForm){
       impostoForm.onsubmit = async (e)=>{
         e.preventDefault();
-        const i = {
+        const i = Object.assign({}, (state.impostoModalData && state.impostoModalData.id) ? (state.impostosPagar.find(x=>x.id===state.impostoModalData.id)||{}) : {}, {
           id: (state.impostoModalData && state.impostoModalData.id) || undefined,
           clientId: deptOneSelectedClient(),
           tipoImposto: document.getElementById('impTipoImposto').value,
@@ -17665,7 +18059,8 @@
           vencimento: document.getElementById('impVencimento').value,
           valorPago: document.getElementById('impValorPago').value,
           dataPagamento: document.getElementById('impDataPagamento').value,
-        };
+        });
+        if(i.auto) i.vencEstimado = false;
         const submitBtn = impostoForm.querySelector('button[type="submit"]');
         if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
         const ok = await saveImpostoPagar(i);
@@ -18161,7 +18556,7 @@
     if(obrigacaoForm){
       obrigacaoForm.onsubmit = async (e)=>{
         e.preventDefault();
-        const o = {
+        const o = Object.assign({}, state.obrigacaoAcessoriaModalData || {}, {
           id: (state.obrigacaoAcessoriaModalData && state.obrigacaoAcessoriaModalData.id) || undefined,
           clientId: deptOneSelectedClient(),
           nome: document.getElementById('obrNome').value,
@@ -18172,7 +18567,8 @@
           observacoes: document.getElementById('obrObservacoes').value,
           transmitidoEm: document.getElementById('obrTransmitidoEm').value,
           recibo: document.getElementById('obrRecibo').value.trim(),
-        };
+        });
+        if(o.vencAuto && o.vencimento !== (state.obrigacaoAcessoriaModalData||{}).vencimento) o.vencAuto = false;
         if(o.status==='Entregue' && !o.transmitidoEm){ const n = new Date(); const p2=(x)=>String(x).padStart(2,'0'); o.transmitidoEm = n.getFullYear()+'-'+p2(n.getMonth()+1)+'-'+p2(n.getDate())+'T'+p2(n.getHours())+':'+p2(n.getMinutes()); }
         const submitBtn = obrigacaoForm.querySelector('button[type="submit"]');
         if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Salvando...'; }
@@ -18196,6 +18592,33 @@
     root.querySelectorAll('[data-del-obrigacao]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir esta obrigação?')) deleteObrigacaoAcessoria(el.getAttribute('data-del-obrigacao')); };
     });
+
+    // ===== Relatório de Impostos das Empresas =====
+    const riBind = (id, fn)=>{ const el = document.getElementById(id); if(el) el.onchange = ()=>{ fn(el); render(); }; };
+    riBind('riEmpresa', el=>{ riFiltro().empresa = el.value; });
+    riBind('riImposto', el=>{ riFiltro().imposto = el.value; });
+    riBind('riEsfera', el=>{ riFiltro().esfera = el.value; });
+    riBind('riAno', el=>{ riFiltro().ano = el.value; });
+    document.querySelectorAll('.ri-mes').forEach(cb=>{ cb.onchange = ()=>{ riFiltro().meses = Array.from(document.querySelectorAll('.ri-mes:checked')).map(x=>x.value); render(); }; });
+    const riLimpar = document.getElementById('riLimparMeses');
+    if(riLimpar) riLimpar.onclick = ()=>{ riFiltro().meses = []; render(); };
+    const riPdf = document.getElementById('riGerarPdf');
+    if(riPdf) riPdf.onclick = ()=> riGerarPdf();
+    const riSinc = document.getElementById('riSincronizar');
+    if(riSinc) riSinc.onclick = async ()=>{
+      const f = riFiltro();
+      const ano = f.ano || String(new Date().getFullYear());
+      const pares = [];
+      state.notasFiscais.forEach(n=>{ if(n.dataEmissao && n.dataEmissao.slice(0,4)===ano && (!f.empresa || n.clientId===f.empresa)) pares.push({clientId:n.clientId, comp:n.dataEmissao.slice(0,7)}); });
+      (state.faturamentosManuais||[]).forEach(m=>{ if((m.competencia||'').slice(0,4)===ano && (!f.empresa || m.clientId===f.empresa)) pares.push({clientId:m.clientId, comp:m.competencia}); });
+      if(!pares.length){ alert('Não há notas nem faturamento lançado em '+ano+(f.empresa?' para esta empresa':'')+'.'); return; }
+      riSinc.disabled = true; riSinc.textContent = 'Sincronizando...';
+      try{
+        const rs = await fiscalSincronizar(pares);
+        alert('Sincronização concluída: '+fsResumoTexto(rs)+(rs.avisos.length?'\n\nAtenção:\n- '+rs.avisos.slice(0,8).join('\n- '):''));
+      }catch(err){ console.error(err); alert('Não foi possível concluir a sincronização.\n\nDetalhe técnico: '+(err&&err.message?err.message:'erro desconhecido')); }
+      render();
+    };
 
     // ===== Relatório de Declarações Transmitidas =====
     const dtBind = (id, fn)=>{ const el = document.getElementById(id); if(el) el.onchange = ()=>{ fn(el); render(); }; };
@@ -20670,6 +21093,8 @@
     };
     ['clMainActivity','clSecondaryActivities'].forEach(id=>{ const el=document.getElementById(id); if(el){ const prev=el.oninput; el.oninput=(e)=>{ if(prev) prev(e); atualizarAvisoIE(); }; } });
     if(clAtividadePresumidoEl){ const prevA = clAtividadePresumidoEl.onchange; clAtividadePresumidoEl.onchange = (e)=>{ prevA(e); atualizarAvisoIE(); }; }
+    const clIssDiaEl = document.getElementById('clIssDia');
+    if(clIssDiaEl) clIssDiaEl.oninput = (e)=>{ if(state.clientModalData) state.clientModalData.issDiaVcto = e.target.value; };
     const clIssPresumidoEl = document.getElementById('clIssPresumido');
     if(clIssPresumidoEl) clIssPresumidoEl.oninput = (e)=>{ if(state.clientModalData) state.clientModalData.issAliquotaPresumido = e.target.value; };
 
@@ -20824,6 +21249,7 @@
           fatorRAtivo: !!(state.clientModalData && state.clientModalData.fatorRAtivo),
           atividadePresumido: (state.clientModalData && state.clientModalData.atividadePresumido) || '',
           issAliquotaPresumido: (state.clientModalData && state.clientModalData.issAliquotaPresumido) || '',
+          issDiaVcto: (state.clientModalData && state.clientModalData.issDiaVcto) || '',
           dataAbertura: document.getElementById('clDataAbertura').value,
           mainActivity: document.getElementById('clMainActivity').value,
           secondaryActivities: document.getElementById('clSecondaryActivities').value,
