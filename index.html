@@ -11422,6 +11422,7 @@
     await loadAll();
     await loadCentroControleData();
     if(state.user && state.user.role==='admin') await loadUsers();
+    BOOT_OK = true;
     render();
   }
 
@@ -21878,6 +21879,16 @@
     }
   }
 
+  function mostrarFalhaConexao(){
+    const root = document.getElementById('jp-root'); if(!root) return;
+    root.innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;padding:24px;">
+        <div style="max-width:520px;text-align:center;color:#1B3A5C;">
+          <div style="font-size:18px;font-weight:700;margin-bottom:10px;">O sistema não conseguiu conectar ao banco de dados</div>
+          <div style="font-size:14px;line-height:1.6;color:#5B6B7A;">A conexão com o Firebase está demorando mais que o normal e não respondeu. As causas mais comuns são: <b>limite diário gratuito do Firebase esgotado</b> (leituras/gravações — volta a zerar sozinho no dia seguinte), instabilidade da internet ou bloqueio de rede.<br/><br/>Confira em console.firebase.google.com → Firestore Database → aba "Uso". Depois clique em "Tentar novamente".</div>
+          <button type="button" onclick="location.reload()" style="margin-top:18px;padding:10px 22px;border:0;border-radius:8px;background:#1B3A5C;color:#fff;font-weight:600;cursor:pointer;">Tentar novamente</button>
+        </div></div>`;
+  }
+  let BOOT_OK = false;
   function render(){
     if(state.loading){
       document.getElementById('jp-root').innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#5B6B7A;font-family:Inter,sans-serif;">Carregando...</div>`;
@@ -21889,6 +21900,9 @@
   (async function boot(){
     try{ aplicarCorSistema(corSistemaSalva()); }catch(e){}
     render(); // show the loading screen immediately while we connect to storage
+    // Se a conexão com o banco de dados demorar demais (sem erro), mostra um aviso explicando
+    // as causas prováveis, em vez de deixar "Carregando..." para sempre.
+    setTimeout(()=>{ if(!BOOT_OK) mostrarFalhaConexao(); }, 20000);
     await initStore();
     trySession();
   })();
