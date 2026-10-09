@@ -583,6 +583,8 @@
     pcrPreview: null,
     pcrSearch: '',
     pcrViewId: null,
+    pmView: null,
+    pmData: null,
     contaModalData: null,
     historicoModalData: null,
     lancContabilModalData: null,
@@ -716,7 +718,9 @@
     processoFiscalModalData: null,
     exportNfTipoOperacao: 'Todos',
     exportNfOrdenacao: 'numero',
-    nfRelTipoOperacao: 'Saída',
+    nfRelTipoOperacao: 'Todos',
+    nfRelClassif: 'NCM',
+    nfRelAuto: true,
     nfRelMesInicio: (()=>{ const d=new Date(); d.setMonth(d.getMonth()-5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })(),
     nfRelMesFim: todayStr().slice(0,7),
     faturamentoRelTipo: 'ambos',
@@ -7176,6 +7180,191 @@
   // carregando duas vezes em paralelo) rodem as migrações automáticas ao mesmo tempo e
   // dupliquem contas — o que já aconteceu antes desta trava existir.
   let _loadPlanoContasPromise = null;
+  // ============================================================================
+  // MODELOS DE PLANO DE CONTAS (Comércio, Indústria, Serviços) — máscara 1.01.01.0001
+  //   1º nível: grupo (1 dígito) · 2º: subgrupo (2) · 3º: conta sintética (2) · 4º: analítica (4)
+  // Cada conta analítica pode ter um "papel", usado pelas integrações automáticas
+  // (folha, férias, rescisão, impostos, importação OFX) para achar a conta certa.
+  // ============================================================================
+  const PM_MODELOS = {
+    comercio: { id:'comercio', nome:'Comércio', descricao:'Lojas, atacado, varejo, distribuidoras — controla estoque de mercadorias para revenda (ICMS, PIS, COFINS).' },
+    industria: { id:'industria', nome:'Indústria', descricao:'Fabricação e transformação — matéria-prima, produção em andamento, produtos acabados, IPI e custos de fabricação.' },
+    servicos: { id:'servicos', nome:'Serviços', descricao:'Prestadores de serviço — receita de serviços, ISS, retenções (IRRF, CSRF, INSS) e custo dos serviços prestados.' },
+  };
+  // Papéis → código legado (usado pelas integrações automáticas e pelos relatórios).
+  const PM_PAPEL_POR_CODIGO_LEGADO = {
+    '6.5.01.001.0001':'folha_salarios', '6.5.02.001.0001':'folha_ferias', '6.5.03.001.0001':'folha_rescisao',
+    '6.5.04.001.0001':'folha_encargos', '6.5.05.001.0001':'folha_prolabore',
+    '2.1.02.001.0001':'obrig_trabalhistas', '2.1.03.001.0001':'obrig_tributarias', '6.4.01.001.0001':'desp_tributaria',
+  };
+  function pmEspecifico(modelo){
+    const com = modelo==='comercio', ind = modelo==='industria', ser = modelo==='servicos';
+    const impostosRec = ['ICMS a Recuperar','PIS a Recuperar','COFINS a Recuperar'];
+    if(ind) impostosRec.splice(0, 0, 'IPI a Recuperar');
+    if(ser){ impostosRec.length = 0; impostosRec.push('PIS a Recuperar','COFINS a Recuperar'); }
+    impostosRec.push('IRRF a Compensar','CSLL, PIS e COFINS Retidos a Compensar');
+    const estoques = com ? ['Mercadorias para Revenda','Mercadorias em Trânsito','Materiais de Embalagem e Consumo']
+      : ind ? ['Matérias-Primas','Materiais de Embalagem','Produtos em Elaboração','Produtos Acabados','Almoxarifado / Material de Consumo']
+      : ['Materiais de Consumo','Materiais Aplicados em Serviços'];
+    const imobil = ['Terrenos','Edificações e Benfeitorias','Instalações','Móveis e Utensílios','Computadores e Periféricos','Veículos'];
+    if(ind) imobil.splice(3, 0, 'Máquinas e Equipamentos Industriais');
+    else if(com) imobil.splice(3, 0, 'Máquinas e Equipamentos');
+    const tribRec = com ? ['ICMS a Recolher','PIS a Recolher','COFINS a Recolher','Simples Nacional a Recolher','IRPJ a Recolher','CSLL a Recolher']
+      : ind ? ['ICMS a Recolher','IPI a Recolher','PIS a Recolher','COFINS a Recolher','Simples Nacional a Recolher','IRPJ a Recolher','CSLL a Recolher']
+      : ['ISS a Recolher','PIS a Recolher','COFINS a Recolher','Simples Nacional a Recolher','IRPJ a Recolher','CSLL a Recolher','ISS Retido de Terceiros a Recolher'];
+    const receitas = com ? ['Receita de Vendas de Mercadorias','Receita de Vendas a Consumidor Final','Receita de Fretes Cobrados']
+      : ind ? ['Receita de Vendas de Produtos Industrializados','Receita de Vendas de Mercadorias','Receita de Industrialização por Encomenda']
+      : ['Receita de Prestação de Serviços','Receita de Serviços com Retenção na Fonte','Receita de Locações'];
+    const deducoes = com ? ['ICMS sobre Vendas','PIS sobre Faturamento','COFINS sobre Faturamento','Simples Nacional (DAS) sobre Vendas','Devoluções e Abatimentos de Vendas']
+      : ind ? ['ICMS sobre Vendas','IPI sobre Vendas','PIS sobre Faturamento','COFINS sobre Faturamento','Simples Nacional (DAS) sobre Vendas','Devoluções e Abatimentos de Vendas']
+      : ['ISS sobre Serviços','PIS sobre Faturamento','COFINS sobre Faturamento','Simples Nacional (DAS) sobre Serviços','Cancelamentos e Abatimentos de Serviços'];
+    const custos = com ? { sub:'Custo das Mercadorias Vendidas', itens:['Custo das Mercadorias Vendidas (CMV)','Fretes sobre Compras','Perdas e Quebras de Estoque'] }
+      : ind ? { sub:'Custo dos Produtos Vendidos', itens:['Matéria-Prima Consumida','Mão de Obra Direta','Custos Indiretos de Fabricação','Energia Elétrica da Produção','Depreciação de Máquinas da Produção','Fretes sobre Compras'] }
+      : { sub:'Custo dos Serviços Prestados', itens:['Mão de Obra Direta','Materiais Aplicados nos Serviços','Serviços de Terceiros (Subcontratados)','Deslocamentos e Viagens a Serviço'] };
+    return { estoques, imobil, impostosRec, tribRec, receitas, deducoes, custos, com, ind, ser };
+  }
+  function pmEstrutura(modelo){
+    const e = pmEspecifico(modelo);
+    const D='Devedora', C='Credora';
+    const a = (nome, nat, papel)=>({nome, nat, papel});
+    const L = (arr, nat)=>arr.map(n=>a(n, nat));
+    return [
+      { nome:'ATIVO', nat:D, subs:[
+        { nome:'ATIVO CIRCULANTE', contas:[
+          { nome:'Disponibilidades', itens:[a('Caixa',D), a('Bancos Conta Movimento',D,'banco'), a('Aplicações Financeiras de Liquidez Imediata',D)] },
+          { nome:'Créditos', itens:[a('Clientes (Contas a Receber)',D), a('Adiantamentos a Fornecedores',D), a('Adiantamentos a Funcionários',D), a('(-) Provisão para Devedores Duvidosos',C)] },
+          { nome:'Estoques', itens:L(e.estoques,D) },
+          { nome:'Impostos a Recuperar', itens:L(e.impostosRec,D) },
+          { nome:'Despesas do Exercício Seguinte', itens:L(['Seguros a Apropriar','Outras Despesas Antecipadas'],D) },
+        ]},
+        { nome:'ATIVO NÃO CIRCULANTE', contas:[
+          { nome:'Realizável a Longo Prazo', itens:L(['Créditos de Longo Prazo','Depósitos Judiciais'],D) },
+          { nome:'Investimentos', itens:L(['Participações Societárias','Outros Investimentos'],D) },
+          { nome:'Imobilizado', itens:[].concat(L(e.imobil,D), [a('(-) Depreciação Acumulada',C)]) },
+          { nome:'Intangível', itens:[a('Marcas e Patentes',D), a('Softwares e Licenças',D), a('(-) Amortização Acumulada',C)] },
+        ]},
+      ]},
+      { nome:'PASSIVO', nat:C, subs:[
+        { nome:'PASSIVO CIRCULANTE', contas:[
+          { nome:'Fornecedores', itens:L(['Fornecedores Nacionais','Fornecedores Estrangeiros'],C) },
+          { nome:'Obrigações Trabalhistas', itens:[a('Salários e Encargos a Pagar',C,'obrig_trabalhistas'), a('Pró-labore a Pagar',C), a('FGTS a Recolher',C), a('INSS a Recolher',C), a('Provisão de Férias e 13º Salário',C)] },
+          { nome:'Obrigações Tributárias', itens:[a('Impostos e Contribuições a Recolher (Geral)',C,'obrig_tributarias')].concat(L(e.tribRec,C)).concat([a('IRRF a Recolher',C)]) },
+          { nome:'Empréstimos e Financiamentos', itens:L(['Empréstimos Bancários de Curto Prazo','Financiamentos de Curto Prazo'],C) },
+          { nome:'Outras Obrigações', itens:L(['Contas a Pagar','Adiantamentos de Clientes','Parcelamentos de Tributos de Curto Prazo'],C) },
+          { nome:'Conta a Classificar', itens:[a('Conta a Classificar (Importação OFX)',C,'classificar')] },
+        ]},
+        { nome:'PASSIVO NÃO CIRCULANTE', contas:[
+          { nome:'Empréstimos e Financiamentos de Longo Prazo', itens:L(['Empréstimos Bancários de Longo Prazo','Financiamentos de Longo Prazo'],C) },
+          { nome:'Parcelamentos de Longo Prazo', itens:L(['Parcelamentos de Tributos de Longo Prazo'],C) },
+        ]},
+      ]},
+      { nome:'PATRIMÔNIO LÍQUIDO', nat:C, subs:[
+        { nome:'Capital Social', contas:[ { nome:'Capital Subscrito', itens:[a('Capital Social Subscrito',C), a('(-) Capital Social a Integralizar',D)] } ] },
+        { nome:'Reservas', contas:[ { nome:'Reservas de Lucros', itens:L(['Reserva Legal','Reserva de Lucros'],C) } ] },
+        { nome:'Lucros/Prejuízos Acumulados', contas:[ { nome:'Lucros ou Prejuízos', itens:[a('Lucros Acumulados',C), a('(-) Prejuízos Acumulados',D), a('(-) Distribuição de Lucros',D)] } ] },
+      ]},
+      { nome:'RECEITAS', nat:C, subs:[
+        { nome:'Receita Bruta de Vendas/Serviços', contas:[
+          { nome:'Receita Operacional Bruta', itens:L(e.receitas,C) },
+          { nome:'Outras Receitas Operacionais', itens:L(['Receitas Financeiras (Juros Ativos)','Rendimentos de Aplicações Financeiras','Outras Receitas'],C) },
+        ]},
+        { nome:'(-) Deduções da Receita', nat:D, contas:[ { nome:'Impostos e Deduções sobre a Receita', itens:L(e.deducoes,D) } ] },
+      ]},
+      { nome:'CUSTOS', nat:D, subs:[
+        { nome:e.custos.sub, contas:[ { nome:e.custos.sub, itens:L(e.custos.itens,D) } ] },
+      ]},
+      { nome:'DESPESAS', nat:D, subs:[
+        { nome:'Despesas Administrativas', contas:[ { nome:'Despesas Administrativas', itens:L(['Aluguel','Água e Esgoto','Energia Elétrica','Telefone e Internet','Material de Escritório','Material de Limpeza','Manutenção e Reparos','Seguros','Serviços de Terceiros','Honorários Contábeis','Depreciação'],D) } ] },
+        { nome:'Despesas Comerciais', contas:[ { nome:'Despesas Comerciais', itens:L(['Propaganda e Publicidade','Comissões sobre Vendas','Fretes e Carretos sobre Vendas','Combustíveis e Viagens'],D) } ] },
+        { nome:'Despesas Financeiras', contas:[ { nome:'Despesas Financeiras', itens:L(['Juros Passivos','Tarifas Bancárias','IOF','Descontos Concedidos','Multas e Juros sobre Tributos'],D) } ] },
+        { nome:'Despesas Tributárias', contas:[ { nome:'Despesas Tributárias', itens:[a('Despesas Tributárias',D,'desp_tributaria'), a('IPTU',D), a('Taxas e Alvarás',D)] } ] },
+        { nome:'DESPESAS COM PESSOAL', contas:[
+          { nome:'Remunerações', itens:[a('Salários e Ordenados',D,'folha_salarios'), a('Férias',D,'folha_ferias'), a('13º Salário',D), a('Rescisões Contratuais',D,'folha_rescisao'), a('Pró-labore',D,'folha_prolabore')] },
+          { nome:'Encargos Sociais', itens:[a('Encargos Sociais (INSS/FGTS Patronal)',D,'folha_encargos')] },
+          { nome:'Benefícios', itens:L(['Vale-Transporte','Vale-Alimentação / Refeição','Assistência Médica','Treinamentos'],D) },
+        ]},
+      ]},
+    ];
+  }
+  const _pmCache = {};
+  // Gera a lista plana de contas do modelo (sintéticas e analíticas) já codificadas.
+  function pmContas(modelo){
+    if(_pmCache[modelo]) return _pmCache[modelo];
+    const out = [];
+    const p2 = n=>String(n).padStart(2,'0'), p4 = n=>String(n).padStart(4,'0');
+    pmEstrutura(modelo).forEach((g, gi)=>{
+      const gc = String(gi+1);
+      out.push({codigo:gc, nome:g.nome, tipo:'Sintética', natureza:g.nat, contaSuperior:null});
+      g.subs.forEach((s, si)=>{
+        const sc = gc + '.' + p2(si+1);
+        const nat = s.nat || g.nat;
+        out.push({codigo:sc, nome:s.nome, tipo:'Sintética', natureza:nat, contaSuperior:gc});
+        s.contas.forEach((c, ci)=>{
+          const cc = sc + '.' + p2(ci+1);
+          out.push({codigo:cc, nome:c.nome, tipo:'Sintética', natureza:nat, contaSuperior:sc});
+          c.itens.forEach((it, ii)=>{
+            const conta = {codigo:cc + '.' + p4(ii+1), nome:it.nome, tipo:'Analítica', natureza:it.nat, contaSuperior:cc};
+            if(it.papel) conta.papel = it.papel;
+            out.push(conta);
+          });
+        });
+      });
+    });
+    _pmCache[modelo] = out;
+    return out;
+  }
+  // A empresa usa a máscara nova (1.01.01.0001)? Detecta pelos códigos do plano dela.
+  function planoMascaraNova(clientId){
+    return state.planoContas.some(c=>c.clientId===clientId && (c.codigo==='1.01' || c.modelo));
+  }
+  // Converte um prefixo legado dos relatórios (ex.: '6.5', '1.1') para a máscara da empresa.
+  function planoPrefixo(clientId, legado){
+    if(!planoMascaraNova(clientId)) return legado;
+    const seg = String(legado).split('.');
+    if(seg.length>=2) seg[1] = seg[1].padStart(2,'0');
+    return seg.join('.');
+  }
+  function pmModeloDaEmpresa(clientId){
+    const cli = state.clients.find(c=>c.id===clientId);
+    if(cli && cli.planoModelo && PM_MODELOS[cli.planoModelo]) return cli.planoModelo;
+    const comModelo = state.planoContas.find(c=>c.clientId===clientId && c.modelo);
+    return comModelo ? comModelo.modelo : null;
+  }
+  function pmSugerirModelo(cli){
+    const txt = [cli.mainActivity, cli.secondaryActivities, cli.atividadePresumido].join(' ');
+    if(/(ind[uú]stria|fabrica[cç][aã]o|transforma[cç][aã]o|confec[cç][aã]o|beneficiamento)/i.test(txt)) return 'industria';
+    if(clienteExigeIE(cli) || /(com[eé]rcio|varejist|atacadist|revenda|loja)/i.test(txt)) return 'comercio';
+    return 'servicos';
+  }
+  function pmContaDaEmpresaPorPapel(clientId, papel){
+    return state.planoContas.find(c=>c.clientId===clientId && c.papel===papel && c.tipo==='Analítica') || null;
+  }
+  // Aplica o modelo às empresas escolhidas. Retorna resumo por empresa.
+  async function pmAplicar(modeloId, clientIds){
+    const modelo = pmContas(modeloId);
+    const res = [];
+    for(const clientId of clientIds){
+      const nome = clientName(clientId);
+      const existentes = state.planoContas.filter(c=>c.clientId===clientId);
+      const lanc = state.lancamentosContabeis.filter(l=>l.clientId===clientId).length;
+      if(existentes.length && lanc){
+        res.push({clientId, nome, ok:false, motivo:'Já tem '+lanc+' lançamento(s) contábil(is) usando o plano atual — trocar o plano quebraria esses lançamentos.'});
+        continue;
+      }
+      for(const c of existentes){ await Store.delete('planocontas:'+c.id, true); }
+      for(const conta of modelo){
+        const c = Object.assign({id: uid(), clientId, modelo: modeloId}, conta);
+        await Store.set('planocontas:'+c.id, JSON.stringify(c), true);
+      }
+      const cli = state.clients.find(x=>x.id===clientId);
+      if(cli) await Store.set('clients:'+clientId, JSON.stringify(Object.assign({}, cli, {planoModelo: modeloId})), true);
+      res.push({clientId, nome, ok:true, substituiu: existentes.length, criadas: modelo.length});
+    }
+    await loadPlanoContas();
+    await loadAll();
+    return res;
+  }
+
   async function loadPlanoContas(){
     if(_loadPlanoContasPromise) return _loadPlanoContasPromise;
     _loadPlanoContasPromise = _loadPlanoContasInner().finally(()=>{ _loadPlanoContasPromise = null; });
@@ -7271,16 +7460,16 @@
         return soma + saldo;
       }, 0);
     }
-    const receitaBruta = somaGrupo('4.1');
-    const deducoes = somaGrupo('4.2');
+    const receitaBruta = somaGrupo(planoPrefixo(clientId,'4.1'));
+    const deducoes = somaGrupo(planoPrefixo(clientId,'4.2'));
     const receitaLiquida = receitaBruta - deducoes;
     const custos = somaGrupo('5');
     const lucroBruto = receitaLiquida - custos;
-    const despesasAdm = somaGrupo('6.1');
-    const despesasCom = somaGrupo('6.2');
-    const despesasFin = somaGrupo('6.3');
-    const despesasTrib = somaGrupo('6.4');
-    const despesasPessoal = somaGrupo('6.5');
+    const despesasAdm = somaGrupo(planoPrefixo(clientId,'6.1'));
+    const despesasCom = somaGrupo(planoPrefixo(clientId,'6.2'));
+    const despesasFin = somaGrupo(planoPrefixo(clientId,'6.3'));
+    const despesasTrib = somaGrupo(planoPrefixo(clientId,'6.4'));
+    const despesasPessoal = somaGrupo(planoPrefixo(clientId,'6.5'));
     const totalDespesas = despesasAdm + despesasCom + despesasFin + despesasTrib + despesasPessoal;
     const resultado = lucroBruto - totalDespesas;
     return { receitaBruta, deducoes, receitaLiquida, custos, lucroBruto, despesasAdm, despesasCom, despesasFin, despesasTrib, despesasPessoal, totalDespesas, resultado };
@@ -7312,7 +7501,8 @@
     const grupos = ['1.1','1.2','2.1','2.2','3.1','3.2','3.3'];
     const linhas = {};
     grupos.forEach(codigo=>{
-      const conta = state.planoContas.find(c=>c.clientId===clientId && c.codigo===codigo);
+      const codReal = planoPrefixo(clientId, codigo);
+      const conta = state.planoContas.find(c=>c.clientId===clientId && c.codigo===codReal);
       if(!conta) return;
       linhas[codigo] = { nome: conta.nome, saldo: saldoConta(conta, clientId, null, dataRef) };
     });
@@ -8440,7 +8630,8 @@
   // a conta de despesa correspondente e creditando a obrigação (a pagar) — a baixa efetiva do
   // pagamento (contra Bancos/Caixa) continua sendo um lançamento manual ou vindo da importação OFX.
   function contaIdByCodigo(codigo, clientId){
-    const c = state.planoContas.find(x=>x.codigo===codigo && x.clientId===clientId);
+    let c = state.planoContas.find(x=>x.codigo===codigo && x.clientId===clientId);
+    if(!c && PM_PAPEL_POR_CODIGO_LEGADO[codigo]) c = pmContaDaEmpresaPorPapel(clientId, PM_PAPEL_POR_CODIGO_LEGADO[codigo]);
     return c ? c.id : null;
   }
   function historicoCatalogoTexto(historicoCodigo, complemento, clientId){
@@ -13545,6 +13736,92 @@
     return deptSelecioneUmaEmpresaHtml('trabalhar nesta seção');
   }
 
+  function pmStatusEmpresa(cli){
+    const contas = state.planoContas.filter(c=>c.clientId===cli.id);
+    const lanc = state.lancamentosContabeis.filter(l=>l.clientId===cli.id).length;
+    const modelo = pmModeloDaEmpresa(cli.id);
+    return { qtd: contas.length, lanc, modelo, bloqueada: contas.length>0 && lanc>0 };
+  }
+  function pmArvoreHtml(modeloId){
+    const contas = pmContas(modeloId);
+    return `<div style="max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:8px; background:#fff;">
+      <table><thead><tr><th>Código</th><th>Conta</th><th>Tipo</th><th>Natureza</th></tr></thead><tbody>
+      ${contas.map(c=>`<tr class="${c.tipo==='Sintética'?'conta-sintetica':''}"><td class="mono">${escapeHtml(c.codigo)}</td><td class="conta-nivel-${Math.min(contaLevel(c.codigo),3)}">${escapeHtml(c.nome)}</td><td>${escapeHtml(c.tipo)}</td><td>${escapeHtml(c.natureza)}</td></tr>`).join('')}
+      </tbody></table></div>`;
+  }
+  function pmSecaoHtml(){
+    const ver = state.pmView;
+    const usando = state.clients.map(c=>({c, m:pmModeloDaEmpresa(c.id)})).filter(x=>x.m);
+    return `
+      <div class="form-section-title">Modelos padrão de plano de contas — máscara 1.01.01.0001</div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Escolha um modelo e marque quais empresas vão usá-lo. Cada empresa recebe a sua própria cópia, que depois pode ser editada normalmente. Estrutura: <b>1</b> grupo · <b>1.01</b> subgrupo · <b>1.01.01</b> conta sintética · <b>1.01.01.0001</b> conta analítica.</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; margin-bottom:12px;">
+        ${Object.values(PM_MODELOS).map(m=>{
+          const n = pmContas(m.id).filter(c=>c.tipo==='Analítica').length;
+          const qtdEmp = usando.filter(x=>x.m===m.id).length;
+          return `<div style="border:1px solid var(--line); border-radius:10px; padding:14px; background:#F8F9FB;">
+            <div style="font-weight:700; font-size:14px;">${escapeHtml(m.nome)}</div>
+            <div class="si-meta" style="margin:4px 0 8px;">${escapeHtml(m.descricao)}</div>
+            <div class="si-meta">${n} contas analíticas · ${qtdEmp} empresa(s) usando</div>
+            <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">
+              <button type="button" class="btn-sm" data-pm-ver="${m.id}">${ver===m.id?'Ocultar estrutura':'Ver estrutura'}</button>
+              <button type="button" class="btn-add" data-pm-aplicar="${m.id}">Aplicar a empresas</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      ${ver ? `<div style="margin-bottom:14px;"><div class="form-hint" style="margin:0 0 6px;">Estrutura do modelo ${escapeHtml(PM_MODELOS[ver].nome)}</div>${pmArvoreHtml(ver)}</div>` : ''}
+      ${usando.length ? `<div class="form-hint" style="margin:0 0 6px;">Empresas com modelo aplicado</div>
+        <table><thead><tr><th>Empresa</th><th>Modelo</th><th>Contas</th></tr></thead><tbody>
+        ${usando.map(x=>`<tr><td>${escapeHtml(x.c.name)}</td><td>${escapeHtml(PM_MODELOS[x.m].nome)}</td><td>${state.planoContas.filter(p=>p.clientId===x.c.id).length}</td></tr>`).join('')}
+        </tbody></table>` : ''}
+    `;
+  }
+  function pmModalHtml(){
+    const d = state.pmData;
+    if(!d) return '';
+    const m = PM_MODELOS[d.modelo];
+    const clientes = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'', 'pt-BR'));
+    const feito = d.resultado;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:640px;">
+          <h3>Aplicar modelo ${escapeHtml(m.nome)} (1.01.01.0001)</h3>
+          ${feito ? `
+            <div style="margin:10px 0;">
+              ${feito.map(r=>`<div style="padding:8px 10px; border-radius:8px; margin-bottom:6px; background:${r.ok?'#E8F5E9':'#FDECEA'}; font-size:13px;"><b>${escapeHtml(r.nome)}</b> — ${r.ok ? ('modelo aplicado ('+r.criadas+' contas'+(r.substituiu?', substituindo '+r.substituiu+' contas antigas':'')+').') : escapeHtml(r.motivo)}</div>`).join('')}
+            </div>
+            <div class="modal-actions"><button type="button" class="btn-add" id="pmFechar">Fechar</button></div>
+          ` : `
+            <div class="form-hint" style="margin:0 0 10px;">Marque as empresas que vão usar este plano. Empresas que já têm outro plano de contas terão o plano substituído — isso só é permitido enquanto não houver lançamentos contábeis nelas.</div>
+            <div style="display:flex; gap:6px; margin-bottom:8px; flex-wrap:wrap;">
+              <button type="button" class="btn-sm" id="pmMarcarSug">Marcar as sugeridas para ${escapeHtml(m.nome)}</button>
+              <button type="button" class="btn-sm" id="pmMarcarSem">Marcar as sem plano</button>
+              <button type="button" class="btn-sm" id="pmLimpar">Limpar</button>
+            </div>
+            <div style="max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:8px;">
+              ${clientes.length ? clientes.map(cli=>{
+                const st = pmStatusEmpresa(cli);
+                const sug = pmSugerirModelo(cli);
+                let info = st.qtd ? ('Plano atual: '+(st.modelo?PM_MODELOS[st.modelo].nome:'personalizado')+' ('+st.qtd+' contas)') : 'Sem plano de contas';
+                if(st.bloqueada) info += ' — '+st.lanc+' lançamento(s): não pode ser substituído';
+                return `<label style="display:flex; gap:10px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line); ${st.bloqueada?'opacity:.55;':''}">
+                  <input type="checkbox" class="pm-chk" data-id="${cli.id}" data-sug="${sug===d.modelo?1:0}" data-sem="${st.qtd?0:1}" ${(d.sel||[]).includes(cli.id)?'checked':''} ${st.bloqueada?'disabled':''}/>
+                  <span style="flex:1;"><b>${escapeHtml(cli.name)}</b><br/><span class="si-meta">${escapeHtml(info)}</span></span>
+                  ${sug===d.modelo?`<span class="tag" style="font-size:11px;">sugerido</span>`:''}
+                </label>`;
+              }).join('') : '<div class="empty">Nenhuma empresa cadastrada.</div>'}
+            </div>
+            <div class="modal-actions" style="margin-top:12px;">
+              <button type="button" class="btn-sm" id="pmCancel">Cancelar</button>
+              <button type="button" class="btn-add" id="pmConfirmar">Aplicar modelo às marcadas</button>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
   function planoContasPanelHtml(){
     const empresa = state.clients.find(c=>c.id===state.contabilEmpresaAtiva);
     const temContas = state.planoContas.some(c=>c.clientId===state.contabilEmpresaAtiva);
@@ -13557,9 +13834,14 @@
       ${empresaContabilSelectorHtml()}
       ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar o plano de contas dela.</div>` : !temContas ? `
         <div class="form-hint" style="margin-bottom:10px;">${escapeHtml(empresa.name)} ainda não tem nenhuma conta cadastrada.</div>
-        <button type="button" class="btn-calc" id="criarPlanoContasPadraoBtn">Criar plano de contas padrão para esta empresa</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+          ${Object.values(PM_MODELOS).map(m=>`<button type="button" class="btn-add" data-pm-direto="${m.id}">Usar modelo ${m.nome}${pmSugerirModelo(empresa)===m.id?' (sugerido)':''}</button>`).join('')}
+        </div>
+        <button type="button" class="btn-calc" id="criarPlanoContasPadraoBtn">Criar plano de contas padrão (máscara antiga X.X.XX.XXX.XXXX)</button>
         <div class="form-hint" style="margin-top:8px;">Isso cria a estrutura básica (Ativo, Passivo, Patrimônio Líquido, Receitas, Custos, Despesas) já na máscara X.X.XX.XXX / X.X.XX.XXX.XXXX — depois é só editar/adicionar conforme a necessidade.</div>
       ` : `<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
+
+      ${pmSecaoHtml()}
 
       <div class="form-section-title">Plano de Contas Referencial (ECF / Receita Federal)</div>
       <div class="form-hint" style="margin:-4px 0 14px;">Importe o arquivo oficial de Tabelas Dinâmicas da ECF (Receita Federal) para consultar os códigos de referência usados no mapeamento da escrituração contábil-fiscal (SPED ECF). Aceita o layout com as colunas CÓDIGO, DESCRIÇÃO, TIPO, CONTA SUPERIOR, NÍVEL e NATUREZA.</div>
@@ -14303,6 +14585,221 @@
     `;
   }
 
+  // ============================================================================
+  // RELATÓRIO DE NOTAS FISCAIS NA TELA — por competência, com totais e classificação
+  // por NCM ou CFOP (Entrada, Saída) e código de serviço (Serviços).
+  // ============================================================================
+  const NR_CFOP_DESC = {
+    '1101':'Compra p/ industrialização','1102':'Compra p/ comercialização','1113':'Compra p/ comercialização (ST antecipada)','1117':'Compra p/ comercialização (venda à ordem)',
+    '1403':'Compra p/ comercialização com ST','1406':'Compra de bem p/ ativo imobilizado com ST','1551':'Compra de bem p/ ativo imobilizado','1556':'Compra de material p/ uso ou consumo',
+    '1653':'Compra de combustível p/ consumo','1910':'Entrada de bonificação/doação/brinde','1949':'Outra entrada não especificada','1202':'Devolução de venda de mercadoria',
+    '2101':'Compra p/ industrialização (interestadual)','2102':'Compra p/ comercialização (interestadual)','2403':'Compra p/ comercialização com ST (interestadual)','2551':'Compra de bem p/ ativo imobilizado (interestadual)',
+    '2556':'Compra de material p/ uso ou consumo (interestadual)','2949':'Outra entrada não especificada (interestadual)','2202':'Devolução de venda (interestadual)',
+    '5101':'Venda de produção do estabelecimento','5102':'Venda de mercadoria adquirida de terceiros','5103':'Venda de produção do estabelecimento (fora do estab.)','5105':'Venda de produção com ST (contribuinte substituído)',
+    '5109':'Venda de produção p/ Zona Franca','5116':'Venda de produção p/ entrega futura','5117':'Venda de mercadoria p/ entrega futura','5118':'Venda de produção (com remessa por conta e ordem)','5119':'Venda de mercadoria (conta e ordem de terceiros)',
+    '5124':'Industrialização efetuada p/ outra empresa','5125':'Industrialização efetuada p/ outra empresa (insumos de terceiros)','5151':'Transferência de produção','5152':'Transferência de mercadoria adquirida de terceiros',
+    '5201':'Devolução de compra p/ industrialização','5202':'Devolução de compra p/ comercialização','5401':'Venda de produção com ST','5403':'Venda de mercadoria com ST (contribuinte substituto)','5405':'Venda de mercadoria com ST (contribuinte substituído)',
+    '5551':'Venda de bem do ativo imobilizado','5656':'Venda de combustível/lubrificante','5667':'Venda de combustível a consumidor final','5901':'Remessa p/ industrialização por encomenda','5902':'Retorno de mercadoria utilizada em industrialização',
+    '5910':'Remessa em bonificação/doação/brinde','5915':'Remessa p/ conserto ou reparo','5916':'Retorno de mercadoria recebida p/ conserto','5927':'Lançamento de perda/roubo/deterioração de estoque','5929':'Lançamento efetuado em decorrência de emissão de cupom fiscal','5949':'Outra saída não especificada',
+    '6101':'Venda de produção (interestadual)','6102':'Venda de mercadoria adquirida de terceiros (interestadual)','6108':'Venda a não contribuinte (interestadual)','6401':'Venda de produção com ST (interestadual)','6403':'Venda com ST (interestadual, substituto)','6404':'Venda de mercadoria com ST já retido (interestadual)',
+    '6910':'Remessa em bonificação/doação (interestadual)','6949':'Outra saída não especificada (interestadual)','6202':'Devolução de compra p/ comercialização (interestadual)',
+  };
+  function nrCfopDesc(c){
+    if(NR_CFOP_DESC[c]) return NR_CFOP_DESC[c];
+    const g = {'1':'Entrada estadual','2':'Entrada interestadual','3':'Entrada do exterior','5':'Saída estadual','6':'Saída interestadual','7':'Saída p/ o exterior'}[String(c||'')[0]];
+    return g ? g : '—';
+  }
+  function nrMeses(mi, mf){
+    const out = []; let [y,m] = mi.split('-').map(Number); const [yf,mfn] = mf.split('-').map(Number);
+    let guard = 0;
+    while((y<yf || (y===yf && m<=mfn)) && guard++ < 120){ out.push(y+'-'+String(m).padStart(2,'0')); m++; if(m>12){ m=1; y++; } }
+    return out;
+  }
+  function nrCompLabel(mk){ return monthLabel(mk)+'/'+mk.slice(0,4); }
+  // Código de serviço de uma NFS-e (padrão nacional: cTribNac; ABRASF: ItemListaServico).
+  function nrCodigoServico(xml){
+    if(!xml) return '';
+    try{
+      const d = new DOMParser().parseFromString(xml, 'application/xml');
+      const t = (n)=>{ const e = d.getElementsByTagName(n)[0]; return e ? (e.textContent||'').trim() : ''; };
+      return t('cTribNac') || t('ItemListaServico') || t('CodigoTributacaoMunicipio') || t('cServ') || '';
+    }catch(e){ return ''; }
+  }
+  function nrPeriodoDasNotas(clientId){
+    const ds = state.notasFiscais.filter(n=>n.clientId===clientId && n.dataEmissao).map(n=>n.dataEmissao.slice(0,7)).sort();
+    return ds.length ? { ini: ds[0], fim: ds[ds.length-1] } : null;
+  }
+  // Calcula o relatório. tipo: 'Todos' | 'Entrada' | 'Saída' | 'Serviços'; classif: 'NCM' | 'CFOP'
+  function nrCalcular(clientId, tipo, mi, mf, classif){
+    const meses = nrMeses(mi, mf);
+    const tipos = tipo==='Todos' ? ['Entrada','Saída','Serviços'] : [tipo];
+    const notasAll = state.notasFiscais.filter(n=>n.clientId===clientId && tipos.includes(n.tipoOperacao) && n.dataEmissao && n.dataEmissao.slice(0,7)>=mi && n.dataEmissao.slice(0,7)<=mf);
+    const resumo = {}; // comp -> tipo -> {qtd, valor, canc}
+    meses.forEach(m=>{ resumo[m] = {}; tipos.forEach(t=>resumo[m][t]={qtd:0, valor:0, canc:0}); });
+    const classes = {}; // tipo -> Map(codigo -> {codigo, desc, itens, porMes:{}, total, notas:Set})
+    tipos.forEach(t=>classes[t] = new Map());
+    let semXml = 0, totalNotas = 0;
+    const add = (t, cod, desc, comp, val, notaId)=>{
+      const mp = classes[t];
+      if(!mp.has(cod)) mp.set(cod, {codigo:cod, desc, itens:0, porMes:{}, total:0, notas:new Set()});
+      const r = mp.get(cod);
+      if(!r.desc && desc) r.desc = desc;
+      r.itens++; r.porMes[comp] = (r.porMes[comp]||0) + val; r.total += val; r.notas.add(notaId);
+    };
+    notasAll.forEach(n=>{
+      const comp = n.dataEmissao.slice(0,7), t = n.tipoOperacao;
+      const rs = resumo[comp][t];
+      if(n.status==='Cancelada'){ rs.canc++; return; }
+      const valor = Number(n.valor)||0;
+      rs.qtd++; rs.valor += valor; totalNotas++;
+      if(t==='Serviços' || n.tipo==='NFS-e (Serviço)'){
+        const cod = nrCodigoServico(n.xmlOriginal);
+        add(t, cod || 'SEM-COD', cod ? 'Código de serviço' : 'NFS-e sem código de serviço no XML / lançamento manual', comp, valor, n.id);
+        return;
+      }
+      const p = n.xmlOriginal ? spedParseCache(n) : null;
+      if(!p || !p.ok || !p.itens || !p.itens.length){
+        semXml++;
+        add(t, 'SEM-XML', 'Nota sem XML (lançamento manual) — sem NCM/CFOP', comp, valor, n.id);
+        return;
+      }
+      p.itens.forEach(it=>{
+        const v = (Number(it.vProd)||0) - (Number(it.vDesc)||0);
+        if(classif==='CFOP') add(t, it.cfop || 'SEM-CFOP', nrCfopDesc(it.cfop) + (t==='Entrada' && /^[567]/.test(it.cfop||'') ? ' — CFOP do fornecedor' : ''), comp, v, n.id);
+        else add(t, ncmDigits(it.ncm) || 'SEM-NCM', it.xProd || '', comp, v, n.id);
+      });
+    });
+    const out = {};
+    tipos.forEach(t=>{ out[t] = Array.from(classes[t].values()).sort((a,b)=>b.total-a.total); });
+    return { meses, tipos, resumo, classes: out, semXml, totalNotas, qtdNotasPeriodo: notasAll.length };
+  }
+  function nrRotuloCodigo(cod, classif, tipoOp){
+    if(cod==='SEM-XML'||cod==='SEM-COD'||cod==='SEM-NCM'||cod==='SEM-CFOP') return 'Sem classificação';
+    if(tipoOp==='Serviços') return cod;
+    return classif==='NCM' ? fmtNcm(cod) : cod;
+  }
+  function nrSomaTipo(res, t, campo){ return res.meses.reduce((s,m)=>s+res.resumo[m][t][campo],0); }
+  function nrResumoHtml(res){
+    const todos = res.tipos.length>1;
+    const head = todos
+      ? `<tr><th>Competência</th><th style="text-align:right">Entradas (compras)</th><th style="text-align:right">Saídas (vendas)</th><th style="text-align:right">Serviços</th><th style="text-align:right">Faturamento (Saídas + Serviços)</th></tr>`
+      : `<tr><th>Competência</th><th style="text-align:right">Notas</th><th style="text-align:right">Valor</th><th style="text-align:right">Canceladas</th></tr>`;
+    const cell = (r)=>`<td style="text-align:right">${fmtBRL(r.valor)}<div class="si-meta">${r.qtd} nota(s)${r.canc?' · '+r.canc+' cancel.':''}</div></td>`;
+    const linhas = res.meses.map(m=>{
+      const R = res.resumo[m];
+      if(todos){
+        const fat = R['Saída'].valor + R['Serviços'].valor;
+        return `<tr><td>${nrCompLabel(m)}</td>${cell(R['Entrada'])}${cell(R['Saída'])}${cell(R['Serviços'])}<td style="text-align:right"><b>${fmtBRL(fat)}</b></td></tr>`;
+      }
+      const r = R[res.tipos[0]];
+      return `<tr><td>${nrCompLabel(m)}</td><td style="text-align:right">${r.qtd}</td><td style="text-align:right">${fmtBRL(r.valor)}</td><td style="text-align:right">${r.canc}</td></tr>`;
+    }).join('');
+    let foot;
+    if(todos){
+      const tt = t=>({valor:nrSomaTipo(res,t,'valor'), qtd:nrSomaTipo(res,t,'qtd'), canc:nrSomaTipo(res,t,'canc')});
+      const fat = tt('Saída').valor + tt('Serviços').valor;
+      foot = `<tr style="font-weight:700; background:#EEF1F5;"><td>TOTAL</td>${cell(tt('Entrada'))}${cell(tt('Saída'))}${cell(tt('Serviços'))}<td style="text-align:right">${fmtBRL(fat)}</td></tr>`;
+    } else {
+      const t = res.tipos[0];
+      foot = `<tr style="font-weight:700; background:#EEF1F5;"><td>TOTAL</td><td style="text-align:right">${nrSomaTipo(res,t,'qtd')}</td><td style="text-align:right">${fmtBRL(nrSomaTipo(res,t,'valor'))}</td><td style="text-align:right">${nrSomaTipo(res,t,'canc')}</td></tr>`;
+    }
+    return `<table><thead>${head}</thead><tbody>${linhas}</tbody><tfoot>${foot}</tfoot></table>`;
+  }
+  function nrClassHtml(res, classif){
+    const nomes = {'Entrada':'Entradas (compras)','Saída':'Saídas (vendas)','Serviços':'Serviços'};
+    return res.tipos.map(t=>{
+      const rows = res.classes[t];
+      const titulo = t==='Serviços' ? 'Serviços — por código de serviço' : nomes[t]+' — por '+classif;
+      if(!rows.length) return `<div class="form-hint" style="margin:16px 0 4px; font-weight:700;">${titulo}</div><div class="empty">Nenhuma nota no período.</div>`;
+      const totMes = {}; let totGeral = 0, totItens = 0;
+      rows.forEach(r=>{ res.meses.forEach(m=>{ totMes[m]=(totMes[m]||0)+(r.porMes[m]||0); }); totGeral += r.total; totItens += r.itens; });
+      const col1 = t==='Serviços' ? 'Código' : classif;
+      return `
+        <div class="form-hint" style="margin:18px 0 4px; font-weight:700;">${titulo}</div>
+        <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>${col1}</th><th>Descrição</th><th style="text-align:right">Itens</th>${res.meses.map(m=>`<th style="text-align:right">${nrCompLabel(m)}</th>`).join('')}<th style="text-align:right">Total</th></tr></thead>
+          <tbody>${rows.map(r=>`<tr><td class="mono">${escapeHtml(nrRotuloCodigo(r.codigo, classif, t))}</td><td style="max-width:260px;">${escapeHtml(r.desc||'—')}</td><td style="text-align:right">${r.itens}</td>${res.meses.map(m=>`<td style="text-align:right">${r.porMes[m]?fmtBRL(r.porMes[m]):'—'}</td>`).join('')}<td style="text-align:right"><b>${fmtBRL(r.total)}</b></td></tr>`).join('')}</tbody>
+          <tfoot><tr style="font-weight:700; background:#EEF1F5;"><td colspan="2">TOTAL</td><td style="text-align:right">${totItens}</td>${res.meses.map(m=>`<td style="text-align:right">${fmtBRL(totMes[m]||0)}</td>`).join('')}<td style="text-align:right">${fmtBRL(totGeral)}</td></tr></tfoot>
+        </table></div>
+        ${t==='Entrada' && classif==='CFOP' ? `<div class="form-hint" style="margin-top:4px;">CFOP exibido como consta no XML do fornecedor (5/6/7 = saída para ele; na escrituração da sua empresa corresponde a 1/2/3).</div>` : ''}
+      `;
+    }).join('');
+  }
+  function nrResultadoHtml(clientId){
+    const tipo = state.nfRelTipoOperacao, mi = state.nfRelMesInicio, mf = state.nfRelMesFim, classif = state.nfRelClassif;
+    if(!mi || !mf || mi>mf) return `<div class="empty">Informe um período válido (competência inicial não pode ser depois da final).</div>`;
+    const res = nrCalcular(clientId, tipo, mi, mf, classif);
+    if(!res.qtdNotasPeriodo){
+      const per = nrPeriodoDasNotas(clientId);
+      return `<div class="empty">Nenhuma nota ${tipo==='Todos'?'':'de '+tipo+' '}encontrada entre ${nrCompLabel(mi)} e ${nrCompLabel(mf)}.${per ? ` Esta empresa tem notas de ${nrCompLabel(per.ini)} a ${nrCompLabel(per.fim)}. <button type="button" class="btn-sm" id="nfRelAjustar">Ajustar período às notas</button>` : ' Esta empresa ainda não tem notas registradas.'}</div>`;
+    }
+    return `
+      <div class="form-hint" style="margin:14px 0 6px; font-weight:700;">Resumo por competência</div>
+      ${nrResumoHtml(res)}
+      ${nrClassHtml(res, classif)}
+      <div class="form-hint" style="margin-top:12px;">Valores das notas excluem as canceladas. Na classificação, o valor é o dos itens (produto − desconto) — pode diferir do total da nota por frete, seguro, IPI e ST. ${res.semXml?`<b>${res.semXml} nota(s) sem XML</b> aparecem como "Sem classificação" (entram pelo valor total da nota). `:''}NFS-e não possuem NCM/CFOP — são classificadas pelo código de serviço quando o XML traz.</div>
+    `;
+  }
+  function nrGerarPdf(clientId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const tipo = state.nfRelTipoOperacao, mi = state.nfRelMesInicio, mf = state.nfRelMesFim, classif = state.nfRelClassif;
+    const res = nrCalcular(clientId, tipo, mi, mf, classif);
+    if(!res.qtdNotasPeriodo){ alert('Não há notas no período selecionado. Use "Ajustar período às notas" na tela.'); return; }
+    const cliente = state.clients.find(c=>c.id===clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth(), mx = 14, cw = pageW-mx*2, rowH = 6;
+    let y = pdfHeader(doc, 'Notas Fiscais por Competência e Classificação', cliente?cliente.name:'—', cliente?cliente.logo:'');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('Período: '+nrCompLabel(mi)+' a '+nrCompLabel(mf)+'  ·  Tipo: '+tipo+'  ·  Classificação: '+classif+(cliente&&cliente.doc?'  ·  CNPJ/CPF: '+cliente.doc:''), mx, y); y += 8;
+    const tabela = (titulo, cols, linhas, rodape)=>{
+      if(y+rowH*3 > 275){ doc.addPage(); y=15; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(titulo, mx, y); y += 4;
+      let acc = mx; const cx = cols.map(c=>{ const x0=acc; acc+=c.w*cw; return Object.assign({},c,{x0,ww:c.w*cw}); });
+      const linha = (vals, bold, fill)=>{
+        if(y+rowH > 280){ doc.addPage(); y=15; }
+        doc.setFont('helvetica', bold?'bold':'normal'); doc.setFontSize(7.5);
+        cx.forEach((c,i)=>{
+          if(fill){ doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.ww,rowH,'F'); }
+          doc.setDrawColor(150,150,150); doc.setLineWidth(0.15); doc.rect(c.x0,y,c.ww,rowH,'S');
+          const txt = doc.splitTextToSize(String(vals[i]), c.ww-3)[0] || '';
+          doc.setTextColor(20,25,30);
+          doc.text(txt, c.right?c.x0+c.ww-1.5:c.x0+1.5, y+rowH-1.8, c.right?{align:'right'}:undefined);
+        });
+        y += rowH;
+      };
+      linha(cx.map(c=>c.label), true, true);
+      linhas.forEach(l=>linha(l,false,false));
+      if(rodape) linha(rodape, true, true);
+      y += 6;
+    };
+    const todos = res.tipos.length>1;
+    if(todos){
+      const tt = t=>nrSomaTipo(res,t,'valor');
+      tabela('Resumo por competência',
+        [{label:'Competência',w:.16},{label:'Entradas',w:.21,right:1},{label:'Saídas',w:.21,right:1},{label:'Serviços',w:.21,right:1},{label:'Faturamento (Saídas+Serv.)',w:.21,right:1}],
+        res.meses.map(m=>{ const R=res.resumo[m]; return [nrCompLabel(m), fmtBRL(R['Entrada'].valor), fmtBRL(R['Saída'].valor), fmtBRL(R['Serviços'].valor), fmtBRL(R['Saída'].valor+R['Serviços'].valor)]; }),
+        ['TOTAL', fmtBRL(tt('Entrada')), fmtBRL(tt('Saída')), fmtBRL(tt('Serviços')), fmtBRL(tt('Saída')+tt('Serviços'))]);
+    } else {
+      const t = res.tipos[0];
+      tabela('Resumo por competência — '+t,
+        [{label:'Competência',w:.34},{label:'Notas',w:.2,right:1},{label:'Valor',w:.26,right:1},{label:'Canceladas',w:.2,right:1}],
+        res.meses.map(m=>{ const r=res.resumo[m][t]; return [nrCompLabel(m), r.qtd, fmtBRL(r.valor), r.canc]; }),
+        ['TOTAL', nrSomaTipo(res,t,'qtd'), fmtBRL(nrSomaTipo(res,t,'valor')), nrSomaTipo(res,t,'canc')]);
+    }
+    res.tipos.forEach(t=>{
+      const rows = res.classes[t]; if(!rows.length) return;
+      const tot = rows.reduce((s,r)=>s+r.total,0), itens = rows.reduce((s,r)=>s+r.itens,0);
+      tabela((t==='Serviços'?'Serviços — por código de serviço':t+' — por '+classif),
+        [{label:t==='Serviços'?'Código':classif,w:.15},{label:'Descrição',w:.45},{label:'Itens',w:.1,right:1},{label:'Total',w:.3,right:1}],
+        rows.map(r=>[nrRotuloCodigo(r.codigo,classif,t), r.desc||'—', r.itens, fmtBRL(r.total)]),
+        ['TOTAL','',itens,fmtBRL(tot)]);
+    });
+    pdfFooterDisclaimer(doc, 'Relatório gerado a partir das notas fiscais registradas no sistema (controle interno), excluídas as canceladas. Valores de classificação são os dos itens (produto − desconto). Não substitui a apuração fiscal oficial.');
+    doc.save('notas-por-competencia-'+(cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase()+'-'+mi.replace('-','')+'-a-'+mf.replace('-','')+'.pdf');
+  }
+
   function notasControlePanelHtml(){
     const empresaAlvo = deptOneSelectedClient();
     return `
@@ -14313,23 +14810,31 @@
       <div class="form-hint" style="margin:-4px 0 14px;">Este é um controle interno das notas já emitidas pelos sistemas oficiais (emissor de NF-e/NFS-e da prefeitura ou da Sefaz) — o sistema não emite notas fiscais, apenas organiza o que já foi emitido para consulta rápida. Use o painel "Selecionar cliente" no topo da página para filtrar por empresa.</div>
       <div id="nfTableContainer">${notasFiscaisTableHtml()}</div>
 
-      <div class="form-section-title">Relatório de Notas Fiscais</div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Gera um PDF com a lista de notas de um único tipo (Entrada, Saída ou Serviços) e o total do período — use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
-      ${!empresaAlvo ? deptSelecioneUmaEmpresaHtml('gerar o relatório de notas fiscais') : `
+      <div class="form-section-title">Relatório de Notas Fiscais — por competência e classificação</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Mostra na tela as notas da empresa por competência (mês), com o total, e a classificação por NCM ou CFOP das notas de Entrada, Saída e o código de serviço das notas de Serviços. Use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
+      ${!empresaAlvo ? deptSelecioneUmaEmpresaHtml('ver o relatório de notas fiscais') : (()=>{
+        if(state.nfRelAuto){ const per = nrPeriodoDasNotas(empresaAlvo); if(per){ state.nfRelMesInicio = per.ini; state.nfRelMesFim = per.fim; } }
+        return `
         <div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(clientName(empresaAlvo))}</div>
         <div class="form-row">
           <div class="field"><label>Tipo de operação</label>
             <select id="nfRelTipoOperacao">
-              <option value="Entrada" ${state.nfRelTipoOperacao==='Entrada'?'selected':''}>Entrada</option>
-              <option value="Saída" ${state.nfRelTipoOperacao==='Saída'?'selected':''}>Saída</option>
-              <option value="Serviços" ${state.nfRelTipoOperacao==='Serviços'?'selected':''}>Serviços</option>
+              ${['Todos','Entrada','Saída','Serviços'].map(t=>`<option value="${t}" ${state.nfRelTipoOperacao===t?'selected':''}>${t==='Todos'?'Todos (Entrada, Saída e Serviços)':t}</option>`).join('')}
             </select>
+          </div>
+          <div class="field"><label>Classificar por</label>
+            <select id="nfRelClassif"><option value="NCM" ${state.nfRelClassif==='NCM'?'selected':''}>NCM</option><option value="CFOP" ${state.nfRelClassif==='CFOP'?'selected':''}>CFOP</option></select>
           </div>
           <div class="field"><label>Competência inicial</label><input type="month" id="nfRelMesInicio" value="${state.nfRelMesInicio}"/></div>
           <div class="field"><label>Competência final</label><input type="month" id="nfRelMesFim" value="${state.nfRelMesFim}"/></div>
         </div>
-        <button type="button" class="btn-detail" id="nfRelPdfBtn">Gerar Relatório (PDF)</button>
-      `}
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+          <button type="button" class="btn-sm" id="nfRelAjustarBtn">Ajustar período às notas da empresa</button>
+          <button type="button" class="btn-detail" id="nfRelPdfResumoBtn">Baixar PDF (resumo e classificação)</button>
+          <button type="button" class="btn-sm" id="nfRelPdfBtn">Baixar lista de notas (PDF)</button>
+        </div>
+        <div id="nfRelResult">${nrResultadoHtml(empresaAlvo)}</div>`;
+      })()}
     `;
   }
 
@@ -16861,6 +17366,7 @@
       ${state.modal==='monoRegra' ? monoRegraModalHtml() : ''}
       ${state.modal==='tabelaFolha' ? tabelaFolhaModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
+      ${state.modal==='planoModelo' ? pmModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
@@ -17646,20 +18152,41 @@
     // Notas Fiscais wiring
     const novaNfBtn = document.getElementById('novaNfBtn');
     if(novaNfBtn) novaNfBtn.onclick = ()=>{ state.nfModalData = {}; state.modal='nf'; render(); };
+    const nfRelAtualizar = ()=>{
+      const clientId = deptOneSelectedClient(); const box = document.getElementById('nfRelResult');
+      if(!clientId || !box) return;
+      box.innerHTML = nrResultadoHtml(clientId);
+      const aj = document.getElementById('nfRelAjustar'); if(aj) aj.onclick = nfRelAjustar;
+    };
+    const nfRelAjustar = ()=>{
+      const clientId = deptOneSelectedClient(); if(!clientId) return;
+      const per = nrPeriodoDasNotas(clientId);
+      if(!per){ alert('Esta empresa ainda não tem notas registradas.'); return; }
+      state.nfRelAuto = true; state.nfRelMesInicio = per.ini; state.nfRelMesFim = per.fim;
+      const i1 = document.getElementById('nfRelMesInicio'), i2 = document.getElementById('nfRelMesFim');
+      if(i1) i1.value = per.ini; if(i2) i2.value = per.fim;
+      nfRelAtualizar();
+    };
     const nfRelTipoOperacaoEl = document.getElementById('nfRelTipoOperacao');
-    if(nfRelTipoOperacaoEl) nfRelTipoOperacaoEl.onchange = (e)=>{ state.nfRelTipoOperacao = e.target.value; };
+    if(nfRelTipoOperacaoEl) nfRelTipoOperacaoEl.onchange = (e)=>{ state.nfRelTipoOperacao = e.target.value; nfRelAtualizar(); };
+    const nfRelClassifEl = document.getElementById('nfRelClassif');
+    if(nfRelClassifEl) nfRelClassifEl.onchange = (e)=>{ state.nfRelClassif = e.target.value; nfRelAtualizar(); };
     const nfRelMesInicioEl = document.getElementById('nfRelMesInicio');
-    if(nfRelMesInicioEl) nfRelMesInicioEl.onchange = (e)=>{ if(e.target.value) state.nfRelMesInicio = e.target.value; };
+    if(nfRelMesInicioEl) nfRelMesInicioEl.onchange = (e)=>{ if(e.target.value){ state.nfRelMesInicio = e.target.value; state.nfRelAuto = false; nfRelAtualizar(); } };
     const nfRelMesFimEl = document.getElementById('nfRelMesFim');
-    if(nfRelMesFimEl) nfRelMesFimEl.onchange = (e)=>{ if(e.target.value) state.nfRelMesFim = e.target.value; };
+    if(nfRelMesFimEl) nfRelMesFimEl.onchange = (e)=>{ if(e.target.value){ state.nfRelMesFim = e.target.value; state.nfRelAuto = false; nfRelAtualizar(); } };
+    const nfRelAjustarBtn = document.getElementById('nfRelAjustarBtn'); if(nfRelAjustarBtn) nfRelAjustarBtn.onclick = nfRelAjustar;
+    const nfRelAjustarIn = document.getElementById('nfRelAjustar'); if(nfRelAjustarIn) nfRelAjustarIn.onclick = nfRelAjustar;
+    const nfRelPdfResumoBtn = document.getElementById('nfRelPdfResumoBtn');
+    if(nfRelPdfResumoBtn) nfRelPdfResumoBtn.onclick = ()=>{ const c = deptOneSelectedClient(); if(!c){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; } nrGerarPdf(c); };
     const nfRelPdfBtn = document.getElementById('nfRelPdfBtn');
     if(nfRelPdfBtn){
       nfRelPdfBtn.onclick = ()=>{
         const clientId = deptOneSelectedClient();
         if(!clientId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
-        const tipo = document.getElementById('nfRelTipoOperacao').value;
-        const mesInicio = document.getElementById('nfRelMesInicio').value;
-        const mesFim = document.getElementById('nfRelMesFim').value;
+        const tipo = state.nfRelTipoOperacao;
+        if(tipo==='Todos'){ alert('A lista de notas é de um tipo por vez. Escolha Entrada, Saída ou Serviços — ou use "Baixar PDF (resumo e classificação)" para todos os tipos.'); return; }
+        const mesInicio = state.nfRelMesInicio, mesFim = state.nfRelMesFim;
         if(!mesInicio || !mesFim){ alert('Informe o período (competência inicial e final).'); return; }
         if(mesInicio > mesFim){ alert('A competência inicial não pode ser depois da final.'); return; }
         gerarRelatorioNotasFiscaisPDF(clientId, tipo, mesInicio, mesFim);
@@ -20070,6 +20597,45 @@
       };
     }
 
+    // Modelos de plano de contas (1.01.01.0001)
+    root.querySelectorAll('[data-pm-ver]').forEach(el=>{
+      el.onclick = ()=>{ const m = el.getAttribute('data-pm-ver'); state.pmView = state.pmView===m ? null : m; render(); };
+    });
+    root.querySelectorAll('[data-pm-aplicar]').forEach(el=>{
+      el.onclick = ()=>{
+        const sel = state.contabilEmpresaAtiva && !pmStatusEmpresa({id:state.contabilEmpresaAtiva}).bloqueada ? [state.contabilEmpresaAtiva] : [];
+        state.pmData = { modelo: el.getAttribute('data-pm-aplicar'), sel, resultado:null };
+        state.modal = 'planoModelo'; render();
+      };
+    });
+    root.querySelectorAll('[data-pm-direto]').forEach(el=>{
+      el.onclick = async ()=>{
+        const clientId = state.contabilEmpresaAtiva; if(!clientId) return;
+        const modeloId = el.getAttribute('data-pm-direto');
+        await pmAplicar(modeloId, [clientId]);
+        render();
+      };
+    });
+    const pmChecks = ()=>Array.from(document.querySelectorAll('.pm-chk'));
+    const pmSetSel = (fn)=>{ pmChecks().forEach(c=>{ if(!c.disabled) c.checked = fn(c); }); };
+    const pmMarcarSug = document.getElementById('pmMarcarSug'); if(pmMarcarSug) pmMarcarSug.onclick = ()=>pmSetSel(c=>c.getAttribute('data-sug')==='1');
+    const pmMarcarSem = document.getElementById('pmMarcarSem'); if(pmMarcarSem) pmMarcarSem.onclick = ()=>pmSetSel(c=>c.getAttribute('data-sem')==='1');
+    const pmLimpar = document.getElementById('pmLimpar'); if(pmLimpar) pmLimpar.onclick = ()=>pmSetSel(()=>false);
+    const pmCancel = document.getElementById('pmCancel'); if(pmCancel) pmCancel.onclick = ()=>{ state.modal=null; state.pmData=null; render(); };
+    const pmFechar = document.getElementById('pmFechar'); if(pmFechar) pmFechar.onclick = ()=>{ state.modal=null; state.pmData=null; render(); };
+    const pmConfirmar = document.getElementById('pmConfirmar');
+    if(pmConfirmar){
+      pmConfirmar.onclick = async ()=>{
+        const ids = pmChecks().filter(c=>c.checked && !c.disabled).map(c=>c.getAttribute('data-id'));
+        if(!ids.length){ alert('Marque pelo menos uma empresa.'); return; }
+        const comPlano = ids.filter(id=>state.planoContas.some(c=>c.clientId===id));
+        if(comPlano.length && !confirm(comPlano.length+' empresa(s) já têm plano de contas e ele será SUBSTITUÍDO pelo modelo. Continuar?')) return;
+        pmConfirmar.disabled = true; pmConfirmar.textContent = 'Aplicando...';
+        state.pmData.resultado = await pmAplicar(state.pmData.modelo, ids);
+        render();
+      };
+    }
+
     const criarPlanoContasPadraoBtn = document.getElementById('criarPlanoContasPadraoBtn');
     if(criarPlanoContasPadraoBtn){
       criarPlanoContasPadraoBtn.onclick = async ()=>{
@@ -20136,9 +20702,11 @@
           natureza: document.getElementById('ctNatureza').value,
           contaSuperior: document.getElementById('ctContaSuperior').value || null,
         };
+        const anterior = editingId ? state.planoContas.find(x=>x.id===editingId) : null;
+        const cFinal = anterior ? Object.assign({}, anterior, c) : c;
         state.modal=null; state.contaModalData=null;
         render();
-        savePlanoContaItem(c);
+        savePlanoContaItem(cFinal);
       };
     }
     root.querySelectorAll('[data-edit-conta]').forEach(el=>{
