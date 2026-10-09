@@ -443,11 +443,23 @@
       if(this._fresco()) return;
       if(this._cacheP) return this._cacheP;
       this._cacheP = (async ()=>{
-        const snap = await this.db.collection(FIREBASE_COLLECTION).get();
+        // Lê em páginas (em vez de uma única requisição gigante): mostra o progresso na tela e
+        // deixa claro se travar ou der erro no meio.
         const m = new Map();
-        snap.forEach(doc=>{ this.reads++; const d = doc.data(); if(d && d.key) m.set(d.key, d.value); });
+        let ultimo = null, total = 0;
+        const PAG = 300;
+        for(;;){
+          let q = this.db.collection(FIREBASE_COLLECTION).orderBy(firebase.firestore.FieldPath.documentId()).limit(PAG);
+          if(ultimo) q = q.startAfter(ultimo);
+          const snap = await q.get();
+          let n = 0;
+          snap.forEach(doc=>{ n++; ultimo = doc; this.reads++; const d = doc.data(); if(d && d.key) m.set(d.key, d.value); });
+          total += n;
+          bootProgresso(total);
+          if(n < PAG) break;
+        }
         this._cache = m; this._cacheT = Date.now();
-      })().finally(()=>{ this._cacheP = null; });
+      })().catch(e=>{ BOOT_ERR = String((e && (e.code||e.message)) || e).slice(0,160); if(!BOOT_OK) mostrarFalhaConexao(); throw e; }).finally(()=>{ this._cacheP = null; });
       return this._cacheP;
     },
     async get(key){
@@ -538,6 +550,12 @@
   }
 
   var BOOT_STAGE = 'carregando scripts / iniciando';
+  var BOOT_LAST = Date.now(), BOOT_COUNT = 0, BOOT_ERR = '';
+  function bootProgresso(n){
+    BOOT_COUNT = n; BOOT_LAST = Date.now();
+    const el = document.getElementById('jp-load-msg');
+    if(el) el.textContent = 'Carregando… ' + n + ' registros lidos';
+  }
   async function initStore(){
     if(typeof window.storage !== 'undefined' && window.storage !== null){
       Store = window.storage;
@@ -11448,6 +11466,7 @@
     await loadAll();
     await loadCentroControleData();
     if(state.user && state.user.role==='admin') await loadUsers();
+    if(BOOT_FALHOU) return; // conexão falhou: mantém o aviso em vez de abrir o sistema vazio
     BOOT_OK = true;
     render();
   }
@@ -21905,19 +21924,21 @@
     }
   }
 
+  var BOOT_FALHOU = false;
   function mostrarFalhaConexao(){
+    BOOT_FALHOU = true;
     const root = document.getElementById('jp-root'); if(!root) return;
     root.innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;padding:24px;">
         <div style="max-width:520px;text-align:center;color:#1B3A5C;">
           <div style="font-size:18px;font-weight:700;margin-bottom:10px;">O sistema não conseguiu conectar ao banco de dados</div>
-          <div style="font-size:14px;line-height:1.6;color:#5B6B7A;">A conexão com o Firebase está demorando mais que o normal e não respondeu. As causas mais comuns são: <b>limite diário gratuito do Firebase esgotado</b> (leituras/gravações — volta a zerar sozinho no dia seguinte), instabilidade da internet ou bloqueio de rede.<br/><br/>Confira em console.firebase.google.com → Firestore Database → aba "Uso". Depois clique em "Tentar novamente".<br/><br/><span style="font-size:12px;">Etapa em que parou: ${BOOT_STAGE}</span></div>
+          <div style="font-size:14px;line-height:1.6;color:#5B6B7A;">A conexão com o Firebase está demorando mais que o normal e não respondeu. As causas mais comuns são: <b>limite diário gratuito do Firebase esgotado</b> (leituras/gravações — volta a zerar sozinho no dia seguinte), instabilidade da internet ou bloqueio de rede.<br/><br/>Confira em console.firebase.google.com → Firestore Database → aba "Uso". Depois clique em "Tentar novamente".<br/><br/><span style="font-size:12px;">Etapa em que parou: ${BOOT_STAGE} · registros lidos: ${BOOT_COUNT}${BOOT_ERR ? ' · erro: ' + BOOT_ERR : ''}</span></div>
           <button type="button" onclick="location.reload()" style="margin-top:18px;padding:10px 22px;border:0;border-radius:8px;background:#1B3A5C;color:#fff;font-weight:600;cursor:pointer;">Tentar novamente</button>
         </div></div>`;
   }
   let BOOT_OK = false;
   function render(){
     if(state.loading){
-      document.getElementById('jp-root').innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#5B6B7A;font-family:Inter,sans-serif;">Carregando...</div>`;
+      document.getElementById('jp-root').innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#5B6B7A;font-family:Inter,sans-serif;"><span id="jp-load-msg">Carregando...</span></div>`;
       return;
     }
     if(!state.user){ renderAuth(); } else { renderApp(); }
@@ -21928,7 +21949,12 @@
     render(); // show the loading screen immediately while we connect to storage
     // Se a conexão com o banco de dados demorar demais (sem erro), mostra um aviso explicando
     // as causas prováveis, em vez de deixar "Carregando..." para sempre.
-    setTimeout(()=>{ if(!BOOT_OK) mostrarFalhaConexao(); }, 20000);
+    const vigia = setInterval(()=>{
+      if(BOOT_OK){ clearInterval(vigia); return; }
+      // só considera falha se ficar 25s sem NENHUM progresso de leitura
+      if(Date.now() - BOOT_LAST > 25000){ clearInterval(vigia); mostrarFalhaConexao(); }
+    }, 3000);
+    window.addEventListener('unhandledrejection', (e)=>{ if(!BOOT_OK) BOOT_ERR = String((e.reason && e.reason.message) || e.reason || '').slice(0,160); });
     await initStore();
     BOOT_STAGE = 'carregando os dados do sistema';
     trySession();
