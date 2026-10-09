@@ -11541,23 +11541,24 @@
   async function migrarContaLegada(username, password){
     const auth = firebase.auth();
     let anon = null;
-    try{ anon = (await auth.signInAnonymously()).user; }catch(e){ return false; }
+    try{ anon = (await auth.signInAnonymously()).user; }catch(e){ return 'anon'; }
     let u = null;
     try{
       const rec = await Store.get('users:'+username, true);
       u = rec ? JSON.parse(rec.value) : null;
     }catch(e){ u = null; }
     try{ await anon.delete(); }catch(e){ try{ await auth.signOut(); }catch(_){} }
-    if(!u || !u.passwordHash) return false;
-    if((await sha256(password)) !== u.passwordHash) return false;
+    if(!u) return 'nouser';
+    if(!u.passwordHash) return 'nohash';
+    if((await sha256(password)) !== u.passwordHash) return 'hash';
     let cred;
     try{ cred = await auth.createUserWithEmailAndPassword(authEmail(username), fbPass(password)); }
-    catch(e){ return false; }
+    catch(e){ return 'create:' + ((e && e.code) || (e && e.message) || '?'); }
     const uid = cred.user.uid;
     await autorizadosDoc(uid).set({ username, role: u.role==='admin' ? 'admin' : 'user' });
     u.authUid = uid; delete u.passwordHash;
     await Store.set('users:'+username, JSON.stringify(u), true);
-    return true;
+    return 'ok';
   }
   async function entrarFirebase(fu){
     const username = String(fu.email||'').split('@')[0];
@@ -11667,7 +11668,17 @@
           const c = (e && e.code) || '';
           if(c==='auth/user-not-found' || c==='auth/invalid-credential' || c==='auth/invalid-login-credentials' || c==='auth/wrong-password'){
             const migrou = await migrarContaLegada(username, password);
-            if(!migrou){ state.authError = 'Usuário ou senha incorretos.'; render(); return; }
+            if(migrou !== 'ok'){
+              const motivos = {
+                nouser: 'Usuário "' + username + '" não encontrado no cadastro do sistema. Confira como o nome aparece em Administração > Usuários.',
+                hash: 'Senha incorreta para o usuário "' + username + '".',
+                nohash: 'Este usuário já foi migrado, mas a senha digitada não confere com o login seguro.',
+              };
+              state.authError = motivos[migrou] || (String(migrou).indexOf('create:')===0
+                ? 'Não foi possível criar o login seguro (' + String(migrou).slice(7) + ').'
+                : 'Usuário ou senha incorretos.');
+              render(); return;
+            }
           } else { throw e; }
         }
         const fu = firebase.auth().currentUser;
