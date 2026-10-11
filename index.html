@@ -15165,10 +15165,16 @@
       const t = prompt('Para confirmar, digite APAGAR:');
       if(!t || t.trim().toUpperCase()!=='APAGAR') return;
     }
-    for(const l of r.lista){ await Store.delete('lancamentoscontabeis:'+l.id, true); }
+    const btn = document.getElementById('lancApagarLoteBtn'); if(btn) btn.disabled = true;
+    let feitos = 0, falhas = 0;
+    for(let i=0; i<r.lista.length; i+=25){
+      if(btn) btn.textContent = 'Apagando… ' + feitos + ' de ' + r.lista.length + ' (não feche a página)';
+      const res = await Promise.all(r.lista.slice(i, i+25).map(l=>Store.delete('lancamentoscontabeis:'+l.id, true).then(()=>true, ()=>false)));
+      res.forEach(ok=>{ if(ok) feitos++; else falhas++; });
+    }
     state.lancMes = '';
     await loadLancamentosContabeis(); render();
-    alert(r.lista.length+' lançamento(s) apagado(s).');
+    alert(feitos+' lançamento(s) apagado(s).' + (falhas ? ' '+falhas+' não puderam ser apagados — clique no botão de novo para tentar outra vez.' : ''));
   }
   function lancMesesSeletorHtml(){
     const list = lancListaEscopo();
@@ -23279,15 +23285,14 @@
         const prev = state.ofxPreview;
         let classificados = 0, ignorados = 0;
         const analise = ofxAnalisar(clientId, prev.transacoes);
-        let idxT = -1;
-        for(const t of prev.transacoes){
-          idxT++;
-          if(analise.jaExiste[idxT]){ ignorados++; continue; }
+        const lote = [];
+        prev.transacoes.forEach((t, idxT)=>{
+          if(analise.jaExiste[idxT]){ ignorados++; return; }
           const isEntrada = t.valor >= 0;
           const regra = ofxAcharRegra(clientId, t.memo, isEntrada);
           const contra = regra ? regra.conta : contaClassificar.id;
           if(regra) classificados++;
-          await saveLancamentoContabilSilent({
+          lote.push({
             clientId,
             data: t.data,
             valor: Math.abs(t.valor),
@@ -23295,6 +23300,21 @@
             contaCredito: isEntrada ? contra : contaBanco.id,
             historico: t.memo + (regra ? ' (importado via OFX — classificado automaticamente)' : ' (importado via OFX — reclassificar contrapartida)'),
           });
+        });
+        if(!lote.length){ alert('Todas as '+ignorados+' transações deste extrato já estavam lançadas. Nada a importar.'); return; }
+        const btn = ofxConfirmImportBtn; btn.disabled = true;
+        let feitos = 0;
+        try{
+          for(let i=0; i<lote.length; i+=10){
+            btn.textContent = 'Importando… ' + feitos + ' de ' + lote.length + ' (não feche a página)';
+            await Promise.all(lote.slice(i, i+10).map(l=>saveLancamentoContabilSilent(l)));
+            feitos = Math.min(lote.length, i+10);
+          }
+        }catch(err){
+          btn.disabled = false; btn.textContent = 'Tentar importar de novo';
+          await loadLancamentosContabeis();
+          alert('A importação parou em '+feitos+' de '+lote.length+' lançamentos. Motivo: ' + (err && err.message ? err.message : err) + '\n\nClique em Importar de novo: o que já foi gravado será reconhecido como "já lançado" e não duplica.');
+          return;
         }
         const total = prev.transacoes.length - ignorados;
         state.ofxPreview = null;
