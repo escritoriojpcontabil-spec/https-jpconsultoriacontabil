@@ -1777,6 +1777,40 @@
     URL.revokeObjectURL(url);
   }
 
+
+  // Salvar × Imprimir: todos os PDFs passam por pdfSalvar. No "modo impressão" o PDF abre numa aba
+  // própria e a caixa de impressão do navegador é chamada; fora dele, o arquivo é baixado normalmente.
+  let modoImpressao = false;
+  function pdfSalvar(doc, nome){
+    if(!modoImpressao){ doc.save(nome); return; }
+    let url;
+    try{ url = URL.createObjectURL(doc.output('blob')); }
+    catch(e){ doc.save(nome); return; }
+    const w = window.open(url, '_blank');
+    if(!w){ alert('O navegador bloqueou a janela de impressão (pop-up). Permita pop-ups para este site e tente de novo.'); return; }
+    const tentar = ()=>{ try{ w.focus(); w.print(); }catch(e){} };
+    try{ w.addEventListener('load', ()=>setTimeout(tentar, 400)); }catch(e){}
+    setTimeout(tentar, 1500);
+    setTimeout(()=>URL.revokeObjectURL(url), 120000);
+  }
+  function imprimirRelatorio(acao){
+    modoImpressao = true;
+    try{ acao(); } finally { modoImpressao = false; }
+  }
+  function adicionarBotoesImprimir(root){
+    (root||document).querySelectorAll('button[id^="pdf"]').forEach(btn=>{
+      if(!/^pdf\w*Btn\d*$/.test(btn.id)) return;
+      if(btn.dataset.temImprimir) return;
+      btn.dataset.temImprimir = '1';
+      const imp = document.createElement('button');
+      imp.type = 'button'; imp.className = btn.className; imp.textContent = '🖨 Imprimir';
+      imp.title = 'Abre o relatório e a caixa de impressão do navegador';
+      imp.style.cssText = btn.style.cssText + ';margin-left:8px;';
+      imp.onclick = ()=> imprimirRelatorio(()=> btn.click());
+      btn.insertAdjacentElement('afterend', imp);
+    });
+  }
+
   // Abre o arquivo numa aba nova para visualização (em vez de forçar o download) — útil para
   // conferir rapidamente um PDF anexado sem precisar salvar no computador antes.
   function visualizarArquivoBase64(base64, filename, mimeType){
@@ -1856,7 +1890,7 @@
     tabelaCategoria('Situação não identificada', pc['Indefinido'], (pc['Indefinido']||[]).reduce((s,c)=>s+c.total,0), [91,107,122]);
 
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir da leitura automática do PDF oficial baixado da Receita Federal/Sefaz/Prefeitura. A classificação Vencido/A Vencer segue a situação informada no relatório original (DEVEDOR = vencido) ou, quando não identificada, a comparação da data de vencimento com a data de hoje. Confira sempre os valores no portal oficial antes de qualquer pagamento.');
-    doc.save('relatorio-situacao-fiscal-importado-' + (c?c.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'relatorio-situacao-fiscal-importado-' + (c?c.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function generateSitFiscalPDF(clientId){
@@ -1936,7 +1970,7 @@
     doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil', 14, 287);
 
     const safeName = (c.name||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
-    doc.save('situacao-fiscal-' + safeName + '.pdf');
+    pdfSalvar(doc, 'situacao-fiscal-' + safeName + '.pdf');
   }
 
   function montarPropostaSnapshot(){
@@ -2149,7 +2183,7 @@
     const nf = state.notasFiscais.find(x=>x.id===notaFiscalId);
     if(!nf) return;
     const doc = gerarDocNotaFiscalIndividual(nf, clientName(nf.clientId));
-    doc.save('nota-fiscal-' + sanitizarNomeArquivo(nf.numero||'sem-numero') + '-' + sanitizarNomeArquivo(nf.serie||'0') + '.pdf');
+    pdfSalvar(doc, 'nota-fiscal-' + sanitizarNomeArquivo(nf.numero||'sem-numero') + '-' + sanitizarNomeArquivo(nf.serie||'0') + '.pdf');
   }
 
   // Gera um .zip com um PDF por nota fiscal, organizado em pastas conforme o critério
@@ -2240,7 +2274,7 @@
     doc.text('Telefone: (81) 3372-5686 | WhatsApp: (81) 99918-0023 | Celular: (81) 98828-0298', pageW/2, 280, {align:'center'});
     doc.text('E-mail: contato@jpconsultoriacontabil.com.br  ·  www.jpconsultoriacontabil.com.br', pageW/2, 285, {align:'center'});
 
-    doc.save('recibo-servico-' + (s.nomeCliente||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'recibo-servico-' + (s.nomeCliente||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function gerarPdfOrientacaoTecnica(orientacaoId){
@@ -2301,7 +2335,7 @@
     doc.text('Telefone: (81) 3372-5686 | WhatsApp: (81) 99918-0023 | Celular: (81) 98828-0298', pageW/2, 280, {align:'center'});
     doc.text('E-mail: contato@jpconsultoriacontabil.com.br  ·  www.jpconsultoriacontabil.com.br', pageW/2, 285, {align:'center'});
 
-    doc.save('orientacao-tecnica-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (o.data||todayStr()) + '.pdf');
+    pdfSalvar(doc, 'orientacao-tecnica-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (o.data||todayStr()) + '.pdf');
   }
 
   function gerarPdfReciboPagamento(clientId, alocacao, valorRecebido, dataPagamento, formaPagamento, observacoes){
@@ -2360,7 +2394,7 @@
     doc.text('Telefone: (81) 3372-5686 | WhatsApp: (81) 99918-0023 | Celular: (81) 98828-0298', pageW/2, 280, {align:'center'});
     doc.text('E-mail: contato@jpconsultoriacontabil.com.br  ·  www.jpconsultoriacontabil.com.br', pageW/2, 285, {align:'center'});
 
-    doc.save('recibo-honorarios-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + dataPagamento + '.pdf');
+    pdfSalvar(doc, 'recibo-honorarios-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + dataPagamento + '.pdf');
   }
 
   // Relatório de Certificados Digitais — formato compacto para caber numa única folha de
@@ -2397,7 +2431,7 @@
     });
 
     pdfFooterDisclaimer(doc, 'Consulta consolidada gerada a partir dos cadastros do escritório — não substitui a consulta oficial nos órgãos emissores (Receita Federal, Sefaz, Prefeitura).');
-    doc.save('consulta-inscricoes-' + sanitizarNomeArquivo(cliente?cliente.name:'cliente').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'consulta-inscricoes-' + sanitizarNomeArquivo(cliente?cliente.name:'cliente').toLowerCase() + '.pdf');
   }
 
   function gerarPdfCertificadosDigitais(){
@@ -2429,7 +2463,7 @@
     });
 
     pdfFooterDisclaimer(doc, 'Relatório de uso interno do escritório — contém senhas de certificados digitais dos clientes. Mantenha este documento em local seguro.');
-    doc.save('certificados-digitais-' + todayStr() + '.pdf');
+    pdfSalvar(doc, 'certificados-digitais-' + todayStr() + '.pdf');
   }
 
   function gerarPdfRelatorioGeralHonorarios(filtroStatus){
@@ -2475,7 +2509,7 @@
     });
 
     pdfFooterDisclaimer(doc, 'Relatório consolidado gerado em ' + fmtDate(todayStr()) + ', cruzando todas as empresas cadastradas com lançamentos de honorários.');
-    doc.save('relatorio-geral-honorarios-' + filtroStatus + '-' + todayStr() + '.pdf');
+    pdfSalvar(doc, 'relatorio-geral-honorarios-' + filtroStatus + '-' + todayStr() + '.pdf');
   }
 
   function gerarPdfPendenciasHonorarios(clientId, ano){
@@ -2538,7 +2572,7 @@
     doc.text('Total a receber: ' + fmtBRL(ex.totalAReceber) + '   \u00b7   Total recebido: ' + fmtBRL(ex.totalRecebido), 16, y);
 
     pdfFooterDisclaimer(doc, 'Extrato anual de cobrancas referente ao ano de ' + ano + ', incluindo o saldo anterior e o saldo acumulado mes a mes.');
-    doc.save('extrato-honorarios-' + ano + '-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'extrato-honorarios-' + ano + '-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function gerarPdfTermoQuitacao(clientId, mesInicio, mesFim){
@@ -2593,7 +2627,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Este termo se refere exclusivamente aos períodos e valores relacionados acima, não quitando débitos de outras competências ou serviços não listados neste documento.');
-    doc.save('termo-quitacao-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'termo-quitacao-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function gerarPropostaPDF(p){
@@ -2805,7 +2839,7 @@
 
     doc.setFontSize(7.5); doc.setTextColor(140,150,160);
     doc.text('JP Consultoria Contábil — Proposta gerada em ' + new Date().toLocaleString('pt-BR'), 14, 292);
-    doc.save('proposta-' + (p.clienteNome||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'proposta-' + (p.clienteNome||'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function pdfHeader(doc, titulo, subtitulo, logoBase64){
@@ -2963,7 +2997,7 @@
 
     pdfFooterDisclaimer(doc, 'Relatório elaborado pelo escritório com base nas informações registradas no sistema. Os valores de Selic e Juros de cada parcela devem ser conferidos e atualizados conforme a guia oficial emitida pelo órgão responsável — confirme o valor exato antes de qualquer pagamento.');
     const safeName = (c ? c.name : 'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
-    doc.save('parcelamento-' + p.esfera.toLowerCase() + '-' + safeName + '.pdf');
+    pdfSalvar(doc, 'parcelamento-' + p.esfera.toLowerCase() + '-' + safeName + '.pdf');
   }
 
   function gerarPdfFaturamentoMensal(){
@@ -3068,7 +3102,7 @@
     }
 
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir das Notas Fiscais de Saída (vendas) e Serviços cadastradas no sistema — notas de Entrada (compras) não entram nesta soma. Depende de todas as notas do período estarem corretamente registradas.');
-    doc.save('faturamento-mensal-' + (cliente?cliente.name:'todos-clientes').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'faturamento-mensal-' + (cliente?cliente.name:'todos-clientes').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function gerarPdfBalancete(){
@@ -3147,7 +3181,7 @@
         doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
       }
     }catch(e){}
-    doc.save('balancete-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'balancete-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   // ===== Balanço Patrimonial e DRE: dados em linhas (usados na tela e no PDF) =====
@@ -3303,7 +3337,7 @@
         doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
       }
     }catch(e){}
-    doc.save(opts.arquivo);
+    pdfSalvar(doc, opts.arquivo);
   }
   function nomeArquivo(prefixo, c){ return prefixo + '-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf'; }
 
@@ -3495,7 +3529,7 @@
         doc.text('Folha ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
       }
     }catch(e){}
-    doc.save(nomeArquivo('livro-diario', c));
+    pdfSalvar(doc, nomeArquivo('livro-diario', c));
   }
 
 
@@ -3613,7 +3647,7 @@
         doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
       }
     }catch(e){}
-    doc.save(nomeArquivo('razao-grupo-' + g.codigo.replace(/\./g,'-'), c));
+    pdfSalvar(doc, nomeArquivo('razao-grupo-' + g.codigo.replace(/\./g,'-'), c));
   }
 
   function gerarPdfRazao(contaId){
@@ -3711,7 +3745,7 @@
         doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
       }
     }catch(e){}
-    doc.save('razao-' + conta.codigo.replace(/\./g,'-') + '-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'razao-' + conta.codigo.replace(/\./g,'-') + '-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function pendenciasClienteParaProposta(clientId){
@@ -4417,7 +4451,7 @@
       if(y > 250){ doc.addPage(); y = 20; }
     });
     pdfFooterDisclaimer(doc, 'Este resumo é um controle interno gerado a partir das folhas calculadas no sistema. Não é a guia oficial com código de barras — emita a guia definitiva no FGTS Digital (Caixa/eSocial) ou no sistema de arrecadação do INSS/DARF.');
-    doc.save('guia-' + tipo.toLowerCase() + '-' + state.competenciaAtiva + '.pdf');
+    pdfSalvar(doc, 'guia-' + tipo.toLowerCase() + '-' + state.competenciaAtiva + '.pdf');
   }
 
   // ---- Ficha de Registro de Funcionário (modelo do escritório, 2 páginas) ----
@@ -4570,7 +4604,7 @@
       doc.text('JP Consultoria Contábil — Departamento Pessoal', x0, 289);
       doc.text('Página ' + i + ' de ' + total, xr, 289, {align:'right'});
     }
-    doc.save(dpNomeArquivo('ficha-registro-funcionario', func.nome));
+    pdfSalvar(doc, dpNomeArquivo('ficha-registro-funcionario', func.nome));
   }
 
   function gerarFichaRegistroClassicaPDF(func){
@@ -4806,7 +4840,7 @@
     tabelaVazia('ALTERAÇÕES DE CARGO E SALÁRIO', ['MOTIVO DA ALTERAÇÃO SALARIAL', 'SAL./HORA', 'CARGO'], 4);
 
     pdfFooterDisclaimer(doc, 'Campos desta página ficam em branco para anotação manual ao longo do vínculo empregatício, conforme o modelo tradicional de ficha/livro de registro de empregados.');
-    doc.save('ficha-registro-' + (func.nome||'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'ficha-registro-' + (func.nome||'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function gerarContratoCltPDF(func){
@@ -4882,7 +4916,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Modelo de contrato individual de trabalho gerado automaticamente a partir dos dados cadastrados. Recomenda-se revisão por profissional habilitado antes da assinatura, especialmente quanto a cláusulas específicas de convenção coletiva da categoria.');
-    doc.save('contrato-clt-' + (func.nome||'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'contrato-clt-' + (func.nome||'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function gerarContratoPfPDF(d){
@@ -4947,7 +4981,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Modelo de contrato de prestação de serviços (pessoa física/autônomo) gerado automaticamente. Recomenda-se revisão por profissional habilitado antes da assinatura — a existência de subordinação, habitualidade e exclusividade pode gerar risco de reconhecimento de vínculo empregatício.');
-    doc.save('contrato-pf-' + (d.nome||'contratado').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'contrato-pf-' + (d.nome||'contratado').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function generateRelatorioFolhaPDF(){
@@ -4978,7 +5012,7 @@
       doc.setFont('helvetica','normal'); doc.setFontSize(9);
       doc.text('Nenhuma folha ou pró-labore calculado nesta competência.', mx, y);
       pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente.');
-      doc.save('folha-pagamento-mensal-' + state.competenciaAtiva + '.pdf');
+      pdfSalvar(doc, 'folha-pagamento-mensal-' + state.competenciaAtiva + '.pdf');
       return;
     }
 
@@ -5215,7 +5249,7 @@
       pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos do sistema, com base nas tabelas de INSS e IRRF vigentes em 2026. Não substitui a folha de pagamento homologada oficialmente nem as guias oficiais de recolhimento (DARF, GRF/FGTS Digital).');
     });
 
-    doc.save('folha-pagamento-mensal-' + state.competenciaAtiva + '.pdf');
+    pdfSalvar(doc, 'folha-pagamento-mensal-' + state.competenciaAtiva + '.pdf');
   }
 
   function generateRelatorioRescisaoPDF(){
@@ -5236,7 +5270,7 @@
       });
     }
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos estimados do sistema. Verbas de convenção coletiva e particularidades do contrato não estão incluídas — revise antes da homologação.');
-    doc.save('relatorio-rescisoes.pdf');
+    pdfSalvar(doc, 'relatorio-rescisoes.pdf');
   }
 
   function generateRelatorioFeriasPDF(){
@@ -5257,7 +5291,7 @@
       });
     }
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos cálculos estimados do sistema, conforme Art. 129 a 145 da CLT. Não considera adicionais além do salário base cadastrado — revise antes do pagamento.');
-    doc.save('relatorio-ferias.pdf');
+    pdfSalvar(doc, 'relatorio-ferias.pdf');
   }
 
   function gerarReciboPagamentoPDF(folha){
@@ -5450,7 +5484,7 @@
     doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil — recibo estimado no sistema, não substitui a folha oficial homologada.', mx, 292);
     doc.setTextColor(20,25,30);
 
-    doc.save('recibo-pagamento-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (folha.competencia||'') + '.pdf');
+    pdfSalvar(doc, 'recibo-pagamento-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (folha.competencia||'') + '.pdf');
   }
 
   function gerarReciboProLaborePDF(pl){
@@ -5505,7 +5539,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema (INSS de contribuinte individual + tabela de IRRF, conforme a tabela de INSS/IRRF vigente na competência — ' + tabPl.nome + '). Não substitui a apuração oficial, os eventos do eSocial nem a guia de recolhimento DAS/GPS.');
-    doc.save('recibo-prolabore-' + (pl.socioNome||'socio').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (pl.competencia||'') + '.pdf');
+    pdfSalvar(doc, 'recibo-prolabore-' + (pl.socioNome||'socio').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (pl.competencia||'') + '.pdf');
   }
 
   // =====================================================================================
@@ -5711,7 +5745,7 @@
     doc.setFont('helvetica','bold');
     doc.text('DATA DE EMISSÃO', xr - wData, 283, {align:'right'});
 
-    doc.save(dpNomeArquivo('recibo-ferias', func ? func.nome : 'funcionario'));
+    pdfSalvar(doc, dpNomeArquivo('recibo-ferias', func ? func.nome : 'funcionario'));
   }
 
   // ---- Aviso de Férias (modelo do escritório) ----
@@ -5768,7 +5802,7 @@
     doc.text('143 da CLT (Decreto-Lei nº 5.452/1943).', xi, 221);
     dpAssinatura(doc, pageW/2, 235.8, 85, 'Assinatura do empregado', 10);
 
-    doc.save(dpNomeArquivo('aviso-ferias', func ? func.nome : 'funcionario'));
+    pdfSalvar(doc, dpNomeArquivo('aviso-ferias', func ? func.nome : 'funcionario'));
   }
 
   // ---- Aviso Prévio — carta do empregador (modelo do escritório) ----
@@ -5827,7 +5861,7 @@
     doc.line(x0, 220.6, x0 + 90, 220.6);
     doc.text(' (assinatura do empregado ou do seu responsável legal)', x0, 227.2);
 
-    doc.save(dpNomeArquivo('aviso-previo', func.nome));
+    pdfSalvar(doc, dpNomeArquivo('aviso-previo', func.nome));
   }
 
   // ---- Recibo de Entrega de Vale-Transporte (modelo do escritório) ----
@@ -5875,7 +5909,7 @@
     }
     dpAssinatura(doc, pageW/2, 185.3, 107, 'Assinatura do Empregado', 11);
 
-    doc.save(dpNomeArquivo('recibo-vale-transporte', func.nome));
+    pdfSalvar(doc, dpNomeArquivo('recibo-vale-transporte', func.nome));
   }
 
   // ---- Folha de Ponto (modelo do escritório) ----
@@ -5963,7 +5997,7 @@
       doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(60,60,60);
       doc.text('Total de horas trabalhadas no mês: ' + Math.floor(totalMin/60) + 'h' + (totalMin%60 ? String(totalMin%60).padStart(2,'0') + 'min' : '') + '   |   Faltas: ' + faltas, x0, y + 5.5);
     }
-    doc.save(dpNomeArquivo('folha-ponto' + (preenchida ? '' : '-em-branco') + (mes ? '-' + mes : ''), func.nome));
+    pdfSalvar(doc, dpNomeArquivo('folha-ponto' + (preenchida ? '' : '-em-branco') + (mes ? '-' + mes : ''), func.nome));
   }
 
   function gerarTRCTPDF(resc){
@@ -6173,7 +6207,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Modelo de TRCT gerado a partir do cálculo estimado no sistema, no layout do formulário oficial de referência. Não substitui a homologação oficial nem a comunicação de dispensa ao eSocial — revise com a equipe antes de entregar ao trabalhador.');
-    doc.save('trct-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'trct-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function generateRelatorioResumoPDF(){
@@ -6196,7 +6230,7 @@
       ['Rescisões registradas (histórico)', state.rescisoes.length],
     ].forEach(([label,val])=>{ doc.text(label + ': ' + val, 14, y); y += 7; });
     pdfFooterDisclaimer(doc, 'Resumo consolidado gerado automaticamente pelo sistema a partir dos registros de folha, férias e rescisão. Uso interno do escritório.');
-    doc.save('relatorio-resumo-dp-' + state.competenciaAtiva + '.pdf');
+    pdfSalvar(doc, 'relatorio-resumo-dp-' + state.competenciaAtiva + '.pdf');
   }
 
   const OBRIGACAO_TIPOS = ['Imposto', 'Folha de Pagamento', 'Obrigação Contábil', 'Obrigação Jurídica', 'Outro'];
@@ -7097,7 +7131,7 @@
     doc.text(orient, mx, y);
 
     pdfFooterDisclaimer(doc, 'Classificação automática pelo NCM, com base nas Tabelas 4.3.10 e 4.3.11 da EFD-Contribuições (SPED/Receita Federal) e nas Leis 10.147/2000, 13.097/2015 e 10.485/2002. Itens "a conferir" dependem de verificação adicional (ex.: lista da CMED). Válido para competências até 12/2026 — a partir de 01/2027 o PIS/Cofins é substituído pela CBS (LC 214/2025). Confira antes de utilizar.');
-    doc.save('segregacao-monofasico-' + (cliente ? cliente.name : 'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + comp.replace('-','') + '.pdf');
+    pdfSalvar(doc, 'segregacao-monofasico-' + (cliente ? cliente.name : 'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + comp.replace('-','') + '.pdf');
   }
 
   // Nomes sugeridos para as abas mais comuns do Plano de Contas Referencial oficial (ECF/RFB).
@@ -8499,7 +8533,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Recibo gerado a partir dos dados registrados no sistema. A quitação aqui declarada refere-se exclusivamente ao valor e aos serviços descritos neste documento — confira os dados antes de assinar ou entregar ao pagador.');
-    doc.save('recibo-honorarios-' + nome.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (r.dataPagamento||'').replace(/-/g,'') + '.pdf');
+    pdfSalvar(doc, 'recibo-honorarios-' + nome.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + (r.dataPagamento||'').replace(/-/g,'') + '.pdf');
   }
 
   function baixaEmpresaStatusClass(status){
@@ -8586,7 +8620,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos dados registrados no sistema para este serviço de baixa de empresa. Confira as informações e a documentação antes de finalizar ou enviar ao cliente.');
-    doc.save('relatorio-baixa-empresa-' + (b.nomeEmpresa||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'relatorio-baixa-empresa-' + (b.nomeEmpresa||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function baixaEmpresaPanelHtml(){
@@ -10456,7 +10490,7 @@
     });
     rodape();
     const nomeArq = 'declaracoes-transmitidas' + (f.empresa ? '-' + (clientName(f.empresa)||'').replace(/[^a-z0-9]+/gi,'-').toLowerCase() : '') + (f.ano ? '-'+f.ano : '') + '.pdf';
-    doc.save(nomeArq);
+    pdfSalvar(doc, nomeArq);
   }
 
   // ===== Integração fiscal: notas × declarações × impostos (por regime tributário) =====
@@ -10830,7 +10864,7 @@
       doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Total da empresa: '+fmtBRL(sub), M+176, y+4, {align:'right'}); y += 11;
     });
     rodape();
-    doc.save('relatorio-impostos'+(f.empresa?'-'+fsSlug(clientName(f.empresa)):'')+(f.ano?'-'+f.ano:'')+'.pdf');
+    pdfSalvar(doc, 'relatorio-impostos'+(f.empresa?'-'+fsSlug(clientName(f.empresa)):'')+(f.ano?'-'+f.ano:'')+'.pdf');
   }
 
   function spedCompLabel(c){ return c ? c.slice(5,7)+'/'+c.slice(0,4) : '—'; }
@@ -11369,7 +11403,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Recibo gerado a partir do cálculo estimado no sistema (Lei 4.749/65, tabelas de INSS/IRRF vigentes em 2026). Não substitui a apuração oficial em folha homologada.');
-    doc.save('recibo-13-salario-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + d.ano + '.pdf');
+    pdfSalvar(doc, 'recibo-13-salario-' + (func?func.nome:'funcionario').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + d.ano + '.pdf');
   }
 
 
@@ -11629,7 +11663,7 @@
     doc.setTextColor(20,25,30);
 
     pdfFooterDisclaimer(doc, 'Comprovante gerado a partir dos registros de folha, 13º e férias calculados neste sistema. Não substitui o Informe de Rendimentos oficial emitido pela folha de pagamento homologada — confira os valores antes de usar na Declaração de Imposto de Renda.');
-    doc.save('informe-rendimentos-' + func.nome.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + ano + '.pdf');
+    pdfSalvar(doc, 'informe-rendimentos-' + func.nome.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + ano + '.pdf');
   }
 
   async function loadSindicatos(){
@@ -14621,7 +14655,7 @@
     doc.text(base, mx, y); y += base.length*4.2 + 4;
 
     pdfFooterDisclaimer(doc, 'Documento de apoio gerado a partir dos dados registrados no sistema em ' + new Date(rec.calculadoEm||Date.now()).toLocaleString('pt-BR') + '. É uma estimativa da alíquota efetiva sobre a receita da competência — não substitui a apuração oficial no PGDAS-D, que também considera sublimites estaduais de ICMS/ISS e eventuais retenções. Confira os dados antes de utilizar como memória de cálculo oficial.');
-    doc.save('memoria-calculo-das-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + rec.competencia.replace('-','') + '.pdf');
+    pdfSalvar(doc, 'memoria-calculo-das-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + rec.competencia.replace('-','') + '.pdf');
   }
 
   // Relatório de apoio — memória de cálculo do Lucro Presumido (IRPJ, CSLL, PIS, COFINS, ISS).
@@ -14696,7 +14730,7 @@
     doc.text(base, mx, y); y += base.length*4.2 + 4;
 
     pdfFooterDisclaimer(doc, 'Documento de apoio gerado a partir dos dados registrados no sistema em ' + new Date(rec.calculadoEm||Date.now()).toLocaleString('pt-BR') + '. É uma estimativa — não substitui a apuração oficial na ECF/DCTF nem a guia de recolhimento (DARF). Confira os dados antes de utilizar como memória de cálculo oficial.');
-    doc.save('memoria-calculo-presumido-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + rec.competencia.replace('-','') + '.pdf');
+    pdfSalvar(doc, 'memoria-calculo-presumido-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + rec.competencia.replace('-','') + '.pdf');
   }
 
   function contaLevel(codigo){ return (String(codigo||'').match(/\./g)||[]).length; }
@@ -15648,6 +15682,8 @@
       </table>
       <button type="button" class="btn-detail" id="pdfRazaoBtn" style="margin:12px 0 4px;">Baixar PDF do grupo (razão de todas as contas)</button>
       ${d.contas.map(c=>razaoTabelaHtml(c)).join('')}
+      <div class="form-hint" style="margin-top:6px;">D = saldo devedor · C = saldo credor. Contrapartida em laranja = ainda em "Conta a Classificar".</div>
+      ${d.contas.length ? `<button type="button" class="btn-detail" id="pdfRazaoBtn2" style="margin-top:12px;">Baixar PDF do grupo (razão de todas as contas)</button>` : ''}
     `;
   }
 
@@ -15806,7 +15842,7 @@
     doc.text(legenda, mx, y);
 
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir das notas fiscais registradas manualmente no sistema (controle interno) — não substitui a consulta oficial no portal da NF-e/NFS-e nem a apuração fiscal. Confira se todas as notas do período já foram importadas antes de usar como referência.');
-    doc.save('relatorio-notas-' + tipoOperacao.toLowerCase().replace(/[^a-z0-9]+/gi,'-') + '-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + mesInicio.replace('-','') + '-a-' + mesFim.replace('-','') + '.pdf');
+    pdfSalvar(doc, 'relatorio-notas-' + tipoOperacao.toLowerCase().replace(/[^a-z0-9]+/gi,'-') + '-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + mesInicio.replace('-','') + '-a-' + mesFim.replace('-','') + '.pdf');
   }
 
   function notasFiscaisTableHtml(){
@@ -16192,7 +16228,7 @@
         ['TOTAL','',itens,fmtBRL(tot)]);
     });
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir das notas fiscais registradas no sistema (controle interno), excluídas as canceladas. Valores de classificação são os dos itens (produto − desconto). Não substitui a apuração fiscal oficial.');
-    doc.save('notas-por-competencia-'+(cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase()+'-'+mi.replace('-','')+'-a-'+mf.replace('-','')+'.pdf');
+    pdfSalvar(doc, 'notas-por-competencia-'+(cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase()+'-'+mi.replace('-','')+'-a-'+mf.replace('-','')+'.pdf');
   }
 
   function notasControlePanelHtml(){
@@ -16537,7 +16573,7 @@
     }
 
     pdfFooterDisclaimer(doc, 'Relatório gerado a partir dos lançamentos de impostos registrados no sistema para esta empresa. Confira sempre os valores oficiais na guia/DARF/DAS antes do pagamento.');
-    doc.save('relatorio-impostos-' + cliente.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    pdfSalvar(doc, 'relatorio-impostos-' + cliente.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   function nfModalHtml(){
@@ -20784,7 +20820,7 @@
       const cl = state.clients.find(c=>c.id===spedEmp) || {};
       const doc = spedMontarComprovantePdf(g, cl, comp);
       const b64 = doc.output('datauristring').split(',')[1];
-      doc.save('comprovante-entrega-sped-fiscal-' + comp + '.pdf');
+      pdfSalvar(doc, 'comprovante-entrega-sped-fiscal-' + comp + '.pdf');
       g.comprovanteBase64 = b64; g.comprovanteEm = new Date().toISOString();
       if(await spedSalvarGeracao(g)) render();
     };
@@ -21072,7 +21108,9 @@
         const grupo = v.indexOf('grp:')===0;
         document.getElementById('razaoResultContainer').innerHTML = grupo ? razaoGrupoHtml(v.slice(4), state.contabilEmpresaAtiva) : razaoLancamentosHtml(v, state.contabilEmpresaAtiva);
         const btn = document.getElementById('pdfRazaoBtn');
-        if(btn) btn.onclick = ()=> grupo ? gerarPdfRazaoGrupo(v.slice(4)) : gerarPdfRazao(v);
+        const btn2 = document.getElementById('pdfRazaoBtn2');
+        if(btn2) btn2.onclick = ()=> gerarPdfRazaoGrupo(v.slice(4));
+        if(btn){ btn.onclick = ()=> grupo ? gerarPdfRazaoGrupo(v.slice(4)) : gerarPdfRazao(v); adicionarBotoesImprimir(document.getElementById('razaoResultContainer')); }
         const chk = document.getElementById('razaoSoMov');
         if(chk) chk.onchange = (e)=>{ state.razaoSoMov = e.target.checked; atualizarRazao(); };
       };
@@ -22430,6 +22468,7 @@
     const lcCancel = document.getElementById('lcCancel');
     if(lcCancel) lcCancel.onclick = ()=>{ state.modal=null; state.lancContabilModalData=null; render(); };
     aplicarBuscaSelects(root);
+    adicionarBotoesImprimir(root);
     const lcClienteSelect = document.getElementById('lcCliente');
     if(lcClienteSelect){
       lcClienteSelect.onchange = (e)=>{
