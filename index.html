@@ -8813,6 +8813,13 @@
     });
     return out;
   }
+  // Lançamentos criados pela importação de extrato (OFX) da empresa/banco, dentro de um período.
+  function ofxImportadosNoPeriodo(clientId, de, ate){
+    const banco = ofxBancoSelecionado(clientId);
+    if(!banco) return [];
+    return state.lancamentosContabeis.filter(l=>l.clientId===clientId && l.data>=de && l.data<=ate
+      && /importado via OFX/i.test(l.historico||'') && (l.contaDebito===banco.id || l.contaCredito===banco.id));
+  }
   async function saveLancamentoContabilItem(l){
     if(!l.id) l.id = uid();
     await Store.set('lancamentoscontabeis:'+l.id, JSON.stringify(l), true);
@@ -14582,6 +14589,7 @@
           ${jaN ? `<div><b>${jaN}</b> de ${prev.transacoes.length} transação(ões) deste extrato <b>já foram lançadas</b> e serão ignoradas na importação (sem duplicar).</div>` : ''}
           ${an.excessoIds.length ? `<div style="margin-top:6px;">Há <b>${an.excessoIds.length}</b> lançamento(s) <b>repetido(s)</b> a mais do que o extrato mostra (mesma data, valor, banco e texto).</div><button type="button" class="btn-sm danger" id="ofxRemoverDupBtn" style="margin-top:8px;">Remover os ${an.excessoIds.length} repetido(s)</button>` : ''}
         </div>` : ''; })()}
+        ${(()=>{ const ds = prev.transacoes.map(t=>t.data).sort(); const n = ofxImportadosNoPeriodo(empresa, ds[0], ds[ds.length-1]).length; return n ? `<div class="attach-box" style="margin:10px 0;"><div>Já existem <b>${n}</b> lançamento(s) importados de extrato no período deste arquivo (${fmtDate(ds[0])} a ${fmtDate(ds[ds.length-1])}).</div><div class="form-hint" style="margin:4px 0 8px;">Para refazer a importação do zero, apague-os e importe de novo. Lançamentos feitos à mão não são apagados.</div><button type="button" class="btn-sm danger" id="ofxLimparPeriodoBtn">Apagar os ${n} importados deste período</button></div>` : ''; })()}
         <div class="form-hint" style="margin:10px 0 6px;">${prev.transacoes.length} transação(ões) encontrada(s)${prev.banco?' — Banco '+escapeHtml(prev.banco):''}${prev.conta?' — Conta '+escapeHtml(prev.conta):''}</div>
         <div class="cc-list" style="max-height:260px;">
           ${prev.transacoes.map((t,i)=>`
@@ -21555,6 +21563,18 @@
     };
     const ofxContaBancoEl = document.getElementById('ofxContaBanco');
     if(ofxContaBancoEl) ofxContaBancoEl.onchange = (e)=>{ state.ofxContaBanco = e.target.value; render(); };
+    const ofxLimparPeriodoBtn = document.getElementById('ofxLimparPeriodoBtn');
+    if(ofxLimparPeriodoBtn) ofxLimparPeriodoBtn.onclick = async ()=>{
+      const prev = state.ofxPreview; if(!prev) return;
+      const ds = prev.transacoes.map(t=>t.data).sort();
+      const lista = ofxImportadosNoPeriodo(state.contabilEmpresaAtiva, ds[0], ds[ds.length-1]);
+      if(!lista.length) return;
+      if(!confirm('Apagar ' + lista.length + ' lançamento(s) importados de extrato entre ' + fmtDate(ds[0]) + ' e ' + fmtDate(ds[ds.length-1]) + '? Inclui os que você já classificou (as regras aprendidas serão aplicadas de novo na reimportação). Esta ação não pode ser desfeita — faça um backup antes se tiver dúvida.')) return;
+      for(const l of lista){ await Store.delete('lancamentoscontabeis:'+l.id, true); }
+      await loadLancamentosContabeis();
+      render();
+      alert(lista.length + ' lançamento(s) apagado(s). Agora clique em "Importar" para lançar o extrato de novo.');
+    };
     const ofxRemoverDupBtn = document.getElementById('ofxRemoverDupBtn');
     if(ofxRemoverDupBtn) ofxRemoverDupBtn.onclick = async ()=>{
       const an = state.ofxPreview && state.ofxPreview._an;
