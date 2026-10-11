@@ -14750,6 +14750,12 @@
     `;
   }
 
+  // Próximo código de histórico da empresa: maior código numérico + 1, com 3 dígitos (001, 002, ...).
+  function proximoCodigoHistorico(clientId){
+    let max = 0;
+    state.historicos.filter(h=>h.clientId===clientId).forEach(h=>{ const n = parseInt(String(h.codigo||'').replace(/\D/g,''),10); if(!isNaN(n) && n>max) max=n; });
+    return String(max+1).padStart(3,'0');
+  }
   function historicoModalHtml(){
     const d = state.historicoModalData;
     if(!d) return '';
@@ -14758,7 +14764,7 @@
         <div class="modal">
           <h3>${d.id ? 'Editar histórico padrão' : 'Novo histórico padrão'}</h3>
           <form id="historicoForm">
-            <div class="field"><label>Código</label><input type="text" id="htCodigo" placeholder="Ex: 011" value="${escapeHtml(d.codigo||'')}" required/></div>
+            <div class="field"><label>Código</label><input type="text" id="htCodigo" placeholder="Gerado automaticamente" value="${escapeHtml(d.codigo||'')}"/><div class="form-hint" style="margin-top:4px;">${d.id ? '' : 'Código sugerido automaticamente (próximo da sequência). Pode alterar se quiser.'}</div></div>
             <div class="field"><label>Descrição</label><input type="text" id="htDescricao" value="${escapeHtml(d.descricao||'')}" required/></div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="htCancel">Cancelar</button>
@@ -21844,7 +21850,7 @@
 
     // Histórico Contábil
     const novoHistoricoBtn = document.getElementById('novoHistoricoBtn');
-    if(novoHistoricoBtn) novoHistoricoBtn.onclick = ()=>{ state.historicoModalData = { clientId: state.contabilEmpresaAtiva }; state.modal='historico'; render(); };
+    if(novoHistoricoBtn) novoHistoricoBtn.onclick = ()=>{ state.historicoModalData = { clientId: state.contabilEmpresaAtiva, codigo: proximoCodigoHistorico(state.contabilEmpresaAtiva) }; state.modal='historico'; render(); };
     const htCancel = document.getElementById('htCancel');
     if(htCancel) htCancel.onclick = ()=>{ state.modal=null; state.historicoModalData=null; render(); };
     const historicoForm = document.getElementById('historicoForm');
@@ -21853,10 +21859,15 @@
         e.preventDefault();
         const clientId = (state.historicoModalData && state.historicoModalData.clientId) || state.contabilEmpresaAtiva;
         if(!clientId){ alert('Selecione uma empresa antes de cadastrar um histórico.'); return; }
+        const idEd = (state.historicoModalData && state.historicoModalData.id) || undefined;
+        let cod = document.getElementById('htCodigo').value.trim() || proximoCodigoHistorico(clientId);
+        if(state.historicos.some(x=>x.clientId===clientId && x.id!==idEd && String(x.codigo).trim()===cod)){
+          alert('Já existe um histórico com o código '+cod+' nesta empresa. Use outro código (sugestão: '+proximoCodigoHistorico(clientId)+').'); return;
+        }
         const h = {
-          id: (state.historicoModalData && state.historicoModalData.id) || undefined,
+          id: idEd,
           clientId,
-          codigo: document.getElementById('htCodigo').value,
+          codigo: cod,
           descricao: document.getElementById('htDescricao').value,
         };
         state.modal=null; state.historicoModalData=null;
