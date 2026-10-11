@@ -676,7 +676,7 @@
     contabilRelSubTab: 'balancete',
     balanceteMostrarZeradas: false,
     relDataInicio: '',
-    relDataFim: todayStr(),
+    relDataFim: (()=>{ const t = todayStr(); const [y,m] = t.slice(0,7).split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10); })(),
     relDataFimManual: false,
     propostas: [],
     propostaClienteId: '',
@@ -15214,9 +15214,9 @@
       <div class="form-row">
         <div class="field"><label>Mês de referência (1º ao último dia)</label><input type="month" id="relMes" value="${mesAtual}"/></div>
         <div class="field"><label>Data inicial (deixe em branco para saldo desde o início)</label><input type="date" id="relDataInicio" value="${state.relDataInicio}"/></div>
-        <div class="field"><label>Data final</label><input type="date" id="relDataFim" value="${state.relDataFim}"/></div>
+        <div class="field"><label>Data final (ajustada para o fim do mês)</label><input type="date" id="relDataFim" value="${state.relDataFim}"/></div>
       </div>
-      <div class="form-hint" style="margin:-6px 0 10px;">${state.relDataFimManual ? 'Período escolhido por você. <a href="#" id="relDataAuto">Voltar ao padrão (fim do mês do último lançamento)</a>.' : 'Data final padrão: último dia do mês do lançamento mais recente. Escolha um mês ou ajuste as datas para outro período.'}</div>
+      <div class="form-hint" style="margin:-6px 0 10px;">${state.relDataFimManual ? 'Período escolhido por você. <a href="#" id="relDataAuto">Voltar ao padrão (fim do mês do último lançamento)</a>.' : 'A data final é sempre o último dia do mês (padrão: mês do lançamento mais recente). Escolha o mês de referência para mudar.'}</div>
     `;
   }
 
@@ -20737,7 +20737,7 @@
     const relDataAuto = document.getElementById('relDataAuto');
     if(relDataAuto) relDataAuto.onclick = (e)=>{ e.preventDefault(); state.relDataFimManual = false; state.relDataInicio = ''; render(); };
     const relDataFim = document.getElementById('relDataFim');
-    if(relDataFim) relDataFim.onchange = (e)=>{ state.relDataFim = e.target.value || relDataFimPadrao(state.contabilEmpresaAtiva); state.relDataFimManual = !!e.target.value; render(); };
+    if(relDataFim) relDataFim.onchange = (e)=>{ state.relDataFim = e.target.value ? fimDoMes(e.target.value) : relDataFimPadrao(state.contabilEmpresaAtiva); state.relDataFimManual = !!e.target.value; render(); };
     const razaoContaSelect = document.getElementById('razaoContaSelect');
     if(razaoContaSelect){
       const atualizarRazao = ()=>{
