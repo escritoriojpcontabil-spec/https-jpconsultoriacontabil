@@ -674,6 +674,7 @@
     contabilTab: 'plano',
     contabilEmpresaAtiva: '',
     contabilRelSubTab: 'balancete',
+    balanceteMostrarZeradas: false,
     relDataInicio: '',
     relDataFim: todayStr(),
     propostas: [],
@@ -3074,87 +3075,263 @@
     const c = state.clients.find(x=>x.id===clientId);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const LIM = 232;
     let y = pdfHeader(doc, 'Balancete de Verificação', c ? c.name : '—', c ? c.logo : '');
-    doc.setFontSize(9); doc.setFont('helvetica','normal');
-    doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim), 14, y); y += 8;
-    const linhas = montarBalancete(clientId, state.relDataInicio||null, state.relDataFim);
-    doc.setFontSize(7.5); doc.setFont('helvetica','bold');
-    doc.text('Código', 14, y); doc.text('Conta', 34, y); doc.text('S. Anterior', 120, y); doc.text('Débitos', 145, y); doc.text('Créditos', 168, y); doc.text('S. Atual', 192, y, {align:'right'});
-    y += 5; doc.setFont('helvetica','normal');
-    linhas.forEach(l=>{
-      if(y > 280){ doc.addPage(); y = 20; }
-      if(l.conta.tipo==='Sintética') doc.setFont('helvetica','bold'); else doc.setFont('helvetica','normal');
-      doc.text(l.conta.codigo, 14, y);
-      doc.text(l.conta.nome.slice(0,40), 34, y);
-      doc.text(fmtBRL(l.saldoAnterior), 120, y);
-      doc.text(fmtBRL(l.debitosPeriodo), 145, y);
-      doc.text(fmtBRL(l.creditosPeriodo), 168, y);
-      doc.text(fmtBRL(l.saldoAtual), 192, y, {align:'right'});
-      y += 4.5;
+    const d = balanceteLinhasExibir(clientId);
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    if(c && c.doc){ doc.text('CNPJ/CPF: ' + c.doc, 14, y - 2); y += 4; }
+    doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim) + '   |   ' + d.linhas.length + ' conta(s)' + (d.ocultas ? ' (' + d.ocultas + ' sem movimento ocultas)' : '') + '   |   valores em R$', 14, y); y += 7;
+    const X = { cod:12, conta:32, ant:118, deb:144, cred:170, atual:200 };
+    function cabecalho(){
+      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Código', X.cod, y); doc.text('Conta', X.conta, y);
+      doc.text('Saldo anterior', X.ant, y, {align:'right'}); doc.text('Débitos', X.deb, y, {align:'right'}); doc.text('Créditos', X.cred, y, {align:'right'}); doc.text('Saldo atual', X.atual, y, {align:'right'});
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
+    }
+    function novaPagina(){
+      doc.addPage();
+      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text('JP CONSULTORIA CONTÁBIL — Balancete de Verificação', 12, 7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
+      doc.setTextColor(20,25,30);
+      y = 26; cabecalho();
+    }
+    cabecalho();
+    doc.setFontSize(7.5);
+    let zebra = false;
+    d.linhas.forEach(l=>{
+      if(y + 4.6 > LIM){ novaPagina(); doc.setFontSize(7.5); zebra = false; }
+      const sint = l.conta.tipo==='Sintética';
+      const nat = l.conta.natureza==='Devedora' ? 'Devedora' : 'Credora';
+      if(sint){ doc.setFillColor(231,237,244); doc.rect(10, y-3.3, pageW-20, 4.6, 'F'); }
+      else if(zebra){ doc.setFillColor(246,248,251); doc.rect(10, y-3.3, pageW-20, 4.6, 'F'); }
+      if(!sint) zebra = !zebra;
+      doc.setFont('helvetica', sint ? 'bold' : 'normal'); doc.setTextColor(20,25,30);
+      const recuo = Math.max(0, Math.min(contaLevel(l.conta.codigo), 3) - 1) * 2;
+      doc.text(l.conta.codigo, X.cod, y);
+      doc.text(doc.splitTextToSize(l.conta.nome, 56 - recuo)[0], X.conta + recuo, y);
+      doc.text(razaoSaldoDC(l.saldoAnterior, nat), X.ant, y, {align:'right'});
+      doc.text(Math.abs(l.debitosPeriodo)>0.004 ? razaoNum(l.debitosPeriodo) : '', X.deb, y, {align:'right'});
+      doc.text(Math.abs(l.creditosPeriodo)>0.004 ? razaoNum(l.creditosPeriodo) : '', X.cred, y, {align:'right'});
+      doc.text(razaoSaldoDC(l.saldoAtual, nat), X.atual, y, {align:'right'});
+      y += 4.6;
     });
+    if(!d.linhas.length){ doc.text('Nenhuma conta com movimento ou saldo no período.', X.conta, y); y += 6; }
+    if(y + 16 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+    y += 1.5;
+    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('TOTAIS DO PERÍODO (contas analíticas)', X.conta, y);
+    doc.text(razaoNum(d.totDeb), X.deb, y, {align:'right'});
+    doc.text(razaoNum(d.totCred), X.cred, y, {align:'right'});
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+    if(d.fecha){ doc.setTextColor(30,130,80); doc.text('Conferência: débitos = créditos (partidas dobradas fecham).', X.conta, y); }
+    else { doc.setTextColor(190,50,50); doc.text('ATENÇÃO: débitos e créditos não conferem (diferença de R$ ' + razaoNum(Math.abs(d.totDeb-d.totCred)) + ') — revise os lançamentos.', X.conta, y); }
+    y += 4;
+    doc.setTextColor(100,110,120); doc.setFontSize(7);
+    doc.text('D = saldo devedor · C = saldo credor. Contas em destaque são sintéticas (totais dos grupos).', X.conta, y);
+    doc.setTextColor(20,25,30);
     pdfFooterDisclaimer(doc, 'Balancete de Verificação gerado automaticamente a partir dos Lançamentos Contábeis — Art. 1.184 do Código Civil.');
+    try{
+      const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+      for(let i=1;i<=total;i++){
+        if(doc.setPage) doc.setPage(i);
+        doc.setFontSize(8); doc.setTextColor(140,150,160);
+        doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
+      }
+    }catch(e){}
     doc.save('balancete-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
-  function gerarPdfBalanco(){
-    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
-    const clientId = state.contabilEmpresaAtiva;
-    const c = state.clients.find(x=>x.id===clientId);
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Balanço Patrimonial', c ? c.name : '—', c ? c.logo : '');
-    doc.setFontSize(9); doc.setFont('helvetica','normal');
-    doc.text('Data de referência: ' + fmtDate(state.relDataFim), 14, y); y += 10;
-    const b = montarBalanco(clientId, state.relDataFim);
-    function linhaPdf(nome, valor, negrito){
-      if(negrito){ doc.setFont('helvetica','bold'); } else { doc.setFont('helvetica','normal'); }
-      doc.text(nome, 14, y); doc.text(fmtBRL(valor), 196, y, {align:'right'}); y += 6;
-    }
-    doc.setFont('helvetica','bold'); doc.text('ATIVO', 14, y); y += 7;
-    linhaPdf(b.linhas['1.1']?.nome||'Ativo Circulante', b.linhas['1.1']?.saldo||0);
-    linhaPdf(b.linhas['1.2']?.nome||'Ativo Não Circulante', b.linhas['1.2']?.saldo||0);
-    linhaPdf('TOTAL DO ATIVO', b.totalAtivo, true); y += 6;
-    doc.setFont('helvetica','bold'); doc.text('PASSIVO', 14, y); y += 7;
-    linhaPdf(b.linhas['2.1']?.nome||'Passivo Circulante', b.linhas['2.1']?.saldo||0);
-    linhaPdf(b.linhas['2.2']?.nome||'Passivo Não Circulante', b.linhas['2.2']?.saldo||0); y += 3;
-    doc.setFont('helvetica','bold'); doc.text('PATRIMÔNIO LÍQUIDO', 14, y); y += 7;
-    linhaPdf(b.linhas['3.1']?.nome||'Capital Social', b.linhas['3.1']?.saldo||0);
-    linhaPdf(b.linhas['3.2']?.nome||'Reservas de Lucros', b.linhas['3.2']?.saldo||0);
-    linhaPdf(b.linhas['3.3']?.nome||'Lucros/Prejuízos Acumulados', b.linhas['3.3']?.saldo||0);
-    linhaPdf('Resultado do período', b.resultadoPeriodo);
-    linhaPdf('TOTAL DO PATRIMÔNIO LÍQUIDO', b.totalPL, true);
-    linhaPdf('TOTAL PASSIVO + PATRIMÔNIO LÍQUIDO', b.totalPassivoMaisPL, true);
-    pdfFooterDisclaimer(doc, 'Balanço Patrimonial gerado automaticamente a partir dos Lançamentos Contábeis, conforme Art. 178 a 182 da Lei 6.404/76. ' + (Math.abs(b.totalAtivo-b.totalPassivoMaisPL)<0.01 ? 'Ativo confere com Passivo + PL.' : 'ATENÇÃO: Ativo não confere com Passivo + PL — revise os lançamentos.'));
-    doc.save('balanco-patrimonial-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  // ===== Balanço Patrimonial e DRE: dados em linhas (usados na tela e no PDF) =====
+  function demNum(v){ v = Number(v)||0; return v < -0.004 ? '(' + razaoNum(-v) + ')' : razaoNum(v); }
+  // Sub-contas diretas de um grupo com saldo (ou movimento, na DRE) diferente de zero.
+  function demItens(clientId, prefixo, ini, fim, natGrupo){
+    const nivel = contaLevel(prefixo) + 1;
+    return state.planoContas
+      .filter(c=>c.clientId===clientId && c.codigo.startsWith(prefixo + '.') && contaLevel(c.codigo)===nivel)
+      .sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}))
+      .map(c=>{
+        let v = saldoConta(c, clientId, ini, fim);
+        const nat = c.natureza || natGrupo;
+        if(natGrupo && nat !== natGrupo) v = -v;
+        return { tipo:'item', texto: c.codigo + '  ' + c.nome.replace(/\s*\(Importação OFX\)/,''), valor: v };
+      })
+      .filter(i=>Math.abs(i.valor) > 0.004);
+  }
+  function balancoLinhas(clientId, dataRef){
+    const b = montarBalanco(clientId, dataRef);
+    const L = [];
+    const grupo = (cod, nomePadrao, natGrupo)=>{
+      const pref = planoPrefixo(clientId, cod);
+      const g = b.linhas[cod];
+      L.push({ tipo:'grupo', texto: g ? g.nome : nomePadrao, valor: g ? g.saldo : 0 });
+      if(g) demItens(clientId, pref, null, dataRef, natGrupo).forEach(i=>L.push(i));
+    };
+    L.push({ tipo:'secao', texto:'ATIVO' });
+    grupo('1.1','Ativo Circulante','Devedora'); grupo('1.2','Ativo Não Circulante','Devedora');
+    L.push({ tipo:'total', texto:'TOTAL DO ATIVO', valor:b.totalAtivo });
+    L.push({ tipo:'secao', texto:'PASSIVO' });
+    grupo('2.1','Passivo Circulante','Credora'); grupo('2.2','Passivo Não Circulante','Credora');
+    L.push({ tipo:'total', texto:'TOTAL DO PASSIVO', valor:b.totalPassivo });
+    L.push({ tipo:'secao', texto:'PATRIMÔNIO LÍQUIDO' });
+    grupo('3.1','Capital Social','Credora'); grupo('3.2','Reservas de Lucros','Credora'); grupo('3.3','Lucros/Prejuízos Acumulados','Credora');
+    L.push({ tipo:'grupo', texto:'Resultado do período (ainda não apurado/fechado)', valor:b.resultadoPeriodo });
+    L.push({ tipo:'total', texto:'TOTAL DO PATRIMÔNIO LÍQUIDO', valor:b.totalPL });
+    L.push({ tipo:'total', texto:'TOTAL PASSIVO + PATRIMÔNIO LÍQUIDO', valor:b.totalPassivoMaisPL, destaque:true });
+    return { linhas:L, b, fecha: Math.abs(b.totalAtivo - b.totalPassivoMaisPL) < 0.01 };
+  }
+  function dreLinhas(clientId, ini, fim){
+    const r = calcResultadoExercicio(clientId, ini, fim);
+    const base = r.receitaBruta;
+    const pct = v => base > 0.004 ? (v / base * 100) : null;
+    const L = [];
+    const grupo = (cod, texto, valor, sinal)=>{
+      const pref = planoPrefixo(clientId, cod);
+      L.push({ tipo:'grupo', texto, valor: sinal*valor, pct: pct(sinal*valor) });
+      demItens(clientId, pref, ini, fim, null).forEach(i=>{ const v = sinal*Math.abs(i.valor)*(i.valor<0?-1:1); L.push({ tipo:'item', texto:i.texto, valor:v, pct:pct(v) }); });
+    };
+    grupo('4.1','Receita Bruta de Vendas/Serviços', r.receitaBruta, 1);
+    grupo('4.2','(-) Deduções da Receita', r.deducoes, -1);
+    L.push({ tipo:'total', texto:'(=) Receita Líquida', valor:r.receitaLiquida, pct:pct(r.receitaLiquida) });
+    grupo('5','(-) Custos', r.custos, -1);
+    L.push({ tipo:'total', texto:'(=) Lucro Bruto', valor:r.lucroBruto, pct:pct(r.lucroBruto) });
+    grupo('6.1','(-) Despesas Administrativas', r.despesasAdm, -1);
+    grupo('6.2','(-) Despesas Comerciais', r.despesasCom, -1);
+    grupo('6.3','(-) Despesas Financeiras', r.despesasFin, -1);
+    grupo('6.4','(-) Despesas Tributárias', r.despesasTrib, -1);
+    grupo('6.5','(-) Despesas com Pessoal', r.despesasPessoal, -1);
+    L.push({ tipo:'sub', texto:'(-) Total das despesas operacionais', valor:-r.totalDespesas, pct:pct(-r.totalDespesas) });
+    L.push({ tipo:'total', texto:'(=) RESULTADO DO EXERCÍCIO ' + (r.resultado>=0?'(Lucro)':'(Prejuízo)'), valor:r.resultado, pct:pct(r.resultado), destaque:true, positivo: r.resultado>=0 });
+    return { linhas:L, r, margemBruta: pct(r.lucroBruto), margemLiquida: pct(r.resultado) };
   }
 
-  function gerarPdfDre(){
+  // PDF genérico de demonstrativo (Balanço / DRE): seções, grupos, itens e totais.
+  function pdfDemonstrativo(opts){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
-    const clientId = state.contabilEmpresaAtiva;
-    const c = state.clients.find(x=>x.id===clientId);
+    const c = opts.cliente;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
-    let y = pdfHeader(doc, 'Demonstração do Resultado do Exercício (DRE)', c ? c.name : '—', c ? c.logo : '');
-    doc.setFontSize(9); doc.setFont('helvetica','normal');
-    doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim), 14, y); y += 10;
-    const r = calcResultadoExercicio(clientId, state.relDataInicio||null, state.relDataFim);
-    function linhaPdf(nome, valor, negrito){
-      doc.setFont('helvetica', negrito?'bold':'normal');
-      doc.text(nome, 14, y); doc.text(fmtBRL(valor), 196, y, {align:'right'}); y += 6.5;
+    const pageW = doc.internal.pageSize.getWidth();
+    const LIM = 232;
+    const showPct = !!opts.mostrarPct;
+    const X = { txt:14, val: showPct ? 168 : 196, pct:196 };
+    let y = pdfHeader(doc, opts.titulo, c ? c.name : '—', c ? c.logo : '');
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    if(c && c.doc){ doc.text('CNPJ/CPF: ' + c.doc, 14, y - 2); y += 4; }
+    doc.text(opts.periodo + '   |   valores em R$', 14, y); y += 8;
+    function cab(){
+      if(!showPct && !opts.colunaValor) return;
+      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Descrição', X.txt, y);
+      doc.text('Valor (R$)', X.val, y, {align:'right'});
+      if(showPct) doc.text('% s/ receita bruta', X.pct, y, {align:'right'});
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
     }
-    linhaPdf('Receita Bruta de Vendas/Serviços', r.receitaBruta);
-    linhaPdf('(-) Deduções da Receita', -r.deducoes);
-    linhaPdf('(=) Receita Líquida', r.receitaLiquida, true);
-    linhaPdf('(-) Custos', -r.custos);
-    linhaPdf('(=) Lucro Bruto', r.lucroBruto, true);
-    linhaPdf('(-) Despesas Administrativas', -r.despesasAdm);
-    linhaPdf('(-) Despesas Comerciais', -r.despesasCom);
-    linhaPdf('(-) Despesas Financeiras', -r.despesasFin);
-    linhaPdf('(-) Despesas Tributárias', -r.despesasTrib);
-    linhaPdf('(-) Despesas com Pessoal', -r.despesasPessoal);
-    linhaPdf('(=) RESULTADO DO EXERCÍCIO ' + (r.resultado>=0?'(Lucro)':'(Prejuízo)'), r.resultado, true);
-    pdfFooterDisclaimer(doc, 'DRE gerada automaticamente a partir dos Lançamentos Contábeis, conforme Art. 187 da Lei 6.404/76 (regime de competência).');
-    doc.save('dre-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+    function novaPagina(){
+      doc.addPage();
+      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text('JP CONSULTORIA CONTÁBIL — ' + opts.titulo, 12, 7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
+      doc.setTextColor(20,25,30);
+      y = 26; cab();
+    }
+    cab();
+    let zebra = false;
+    opts.linhas.forEach(l=>{
+      const alt = l.tipo==='secao' ? 8 : (l.tipo==='total' ? 7 : 5.4);
+      if(y + alt > LIM){ novaPagina(); zebra = false; }
+      if(l.tipo==='secao'){
+        y += 2;
+        doc.setFillColor(27,58,92); doc.rect(10, y-4.6, pageW-20, 6.6, 'F');
+        doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+        doc.text(l.texto, X.txt, y);
+        doc.setTextColor(20,25,30); y += 6.2; zebra = false; return;
+      }
+      if(l.tipo==='total'){
+        y += 1.2;
+        const cor = l.destaque ? (l.positivo===false ? [253,236,234] : [225,244,233]) : [231,237,244];
+        doc.setFillColor(...cor); doc.rect(10, y-4.4, pageW-20, 6.6, 'F');
+        doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-4.4, pageW-10, y-4.4);
+        doc.setFont('helvetica','bold'); doc.setFontSize(9);
+        doc.text(l.texto, X.txt, y);
+        doc.text(demNum(l.valor), X.val, y, {align:'right'});
+        if(showPct && l.pct!=null) doc.text(razaoNum(l.pct) + '%', X.pct, y, {align:'right'});
+        y += 7; zebra = false; return;
+      }
+      if(l.tipo==='grupo' || l.tipo==='sub'){
+        doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+        doc.text(l.texto, X.txt + (l.tipo==='sub'?0:2), y);
+        doc.text(demNum(l.valor), X.val, y, {align:'right'});
+        if(showPct && l.pct!=null) doc.text(razaoNum(l.pct) + '%', X.pct, y, {align:'right'});
+        y += 5.8; zebra = false; return;
+      }
+      // item
+      if(zebra){ doc.setFillColor(246,248,251); doc.rect(10, y-3.4, pageW-20, 4.8, 'F'); }
+      zebra = !zebra;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,70,80);
+      doc.text(doc.splitTextToSize(l.texto, showPct ? 118 : 140)[0], X.txt + 8, y);
+      doc.text(demNum(l.valor), X.val, y, {align:'right'});
+      if(showPct && l.pct!=null) doc.text(razaoNum(l.pct) + '%', X.pct, y, {align:'right'});
+      doc.setTextColor(20,25,30);
+      y += 4.8;
+    });
+    if(opts.notaFinal){
+      if(y + 12 > LIM){ novaPagina(); }
+      y += 4; doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      const n = opts.notaFinal;
+      doc.setTextColor(...(n.ok ? [30,130,80] : [190,50,50]));
+      doc.text(doc.splitTextToSize(n.texto, 180), 14, y);
+      doc.setTextColor(20,25,30);
+    }
+    pdfFooterDisclaimer(doc, opts.disclaimer);
+    try{
+      const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+      for(let i=1;i<=total;i++){
+        if(doc.setPage) doc.setPage(i);
+        doc.setFontSize(8); doc.setTextColor(140,150,160);
+        doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
+      }
+    }catch(e){}
+    doc.save(opts.arquivo);
+  }
+  function nomeArquivo(prefixo, c){ return prefixo + '-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf'; }
+
+  function gerarPdfBalanco(){
+    const clientId = state.contabilEmpresaAtiva;
+    const c = state.clients.find(x=>x.id===clientId);
+    const d = balancoLinhas(clientId, state.relDataFim);
+    pdfDemonstrativo({
+      titulo:'Balanço Patrimonial', cliente:c, periodo:'Data de referência: ' + fmtDate(state.relDataFim),
+      linhas:d.linhas, colunaValor:true,
+      notaFinal: d.fecha ? { ok:true, texto:'Balanço fechado: Ativo = Passivo + Patrimônio Líquido.' }
+        : { ok:false, texto:'ATENÇÃO: Ativo (' + razaoNum(d.b.totalAtivo) + ') diferente de Passivo + PL (' + razaoNum(d.b.totalPassivoMaisPL) + '). Revise os lançamentos.' },
+      disclaimer:'Balanço Patrimonial gerado automaticamente a partir dos Lançamentos Contábeis, conforme Art. 178 a 182 da Lei 6.404/76. Valores entre parênteses são negativos.',
+      arquivo: nomeArquivo('balanco-patrimonial', c)
+    });
+  }
+  function gerarPdfDre(){
+    const clientId = state.contabilEmpresaAtiva;
+    const c = state.clients.find(x=>x.id===clientId);
+    const ini = state.relDataInicio || null;
+    const d = dreLinhas(clientId, ini, state.relDataFim);
+    const m = (v)=> v==null ? '—' : razaoNum(v) + '%';
+    pdfDemonstrativo({
+      titulo:'Demonstração do Resultado do Exercício (DRE)', cliente:c,
+      periodo:'Período: ' + (ini?fmtDate(ini):'início') + ' a ' + fmtDate(state.relDataFim),
+      linhas:d.linhas, mostrarPct:true,
+      notaFinal:{ ok: d.r.resultado>=0, texto:'Margem bruta: ' + m(d.margemBruta) + '   |   Margem líquida: ' + m(d.margemLiquida) + '   |   ' + (d.r.resultado>=0 ? 'Resultado positivo (lucro) no período.' : 'Resultado negativo (prejuízo) no período.') },
+      disclaimer:'DRE gerada automaticamente a partir dos Lançamentos Contábeis, conforme Art. 187 da Lei 6.404/76 (regime de competência). Valores entre parênteses são negativos.',
+      arquivo: nomeArquivo('dre', c)
+    });
   }
 
   // Dados do Livro Razão de uma conta (usados na tela e no PDF).
@@ -7597,10 +7774,13 @@
     }
     const prefix = conta.codigo + '.';
     const filhas = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica' && c.codigo.startsWith(prefix));
+    // O saldo do grupo segue a natureza do próprio grupo: uma conta redutora (ex.: provisão em
+    // "Ativo", de natureza credora) subtrai do total em vez de somar.
+    const natGrupo = conta.natureza || (filhas[0] && filhas[0].natureza) || 'Devedora';
     let total = 0;
     filhas.forEach(f=>{
       const {debitos, creditos} = movimentoConta(f.id, clientId, dataInicio, dataFim);
-      total += f.natureza==='Devedora' ? (debitos-creditos) : (creditos-debitos);
+      total += natGrupo==='Devedora' ? (debitos-creditos) : (creditos-debitos);
     });
     return total;
   }
@@ -7645,6 +7825,16 @@
       })();
       return { conta: c, saldoAnterior, debitosPeriodo: mov.debitos, creditosPeriodo: mov.creditos, saldoAtual };
     });
+  }
+  // Linhas do balancete prontas para exibir: por padrão oculta contas sem saldo e sem movimento.
+  function balanceteLinhasExibir(clientId){
+    const todas = montarBalancete(clientId, state.relDataInicio||null, state.relDataFim);
+    const comValor = l => Math.abs(l.saldoAnterior)>0.004 || Math.abs(l.debitosPeriodo)>0.004 || Math.abs(l.creditosPeriodo)>0.004 || Math.abs(l.saldoAtual)>0.004;
+    const linhas = state.balanceteMostrarZeradas ? todas : todas.filter(comValor);
+    const analiticas = todas.filter(l=>l.conta.tipo==='Analítica');
+    const totDeb = analiticas.reduce((a,l)=>a+l.debitosPeriodo,0);
+    const totCred = analiticas.reduce((a,l)=>a+l.creditosPeriodo,0);
+    return { linhas, totDeb, totCred, ocultas: todas.length - linhas.length, fecha: Math.abs(totDeb-totCred) < 0.01 };
   }
   function dataAnterior(dataStr){
     const d = new Date(dataStr + 'T00:00:00');
@@ -14732,57 +14922,51 @@
     const clientId = state.contabilEmpresaAtiva;
     if(!clientId) return `<div class="empty">Selecione uma empresa acima.</div>`;
     if(!state.planoContas.some(c=>c.clientId===clientId)) return `<div class="empty">Esta empresa ainda não tem plano de contas. Cadastre em Plano de Contas primeiro.</div>`;
-    const linhas = montarBalancete(clientId, state.relDataInicio||null, state.relDataFim);
-    const totalDeb = linhas.reduce((s,l)=> s + (l.conta.tipo==='Analítica'?l.debitosPeriodo:0), 0);
-    const totalCred = linhas.reduce((s,l)=> s + (l.conta.tipo==='Analítica'?l.creditosPeriodo:0), 0);
+    const d = balanceteLinhasExibir(clientId);
+    const num = v => Math.abs(v)>0.004 ? razaoNum(v) : '';
     return `
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:0 0 10px;"><input type="checkbox" id="balanceteZeradas" ${state.balanceteMostrarZeradas?'checked':''}/> Mostrar também as contas sem movimento e sem saldo${d.ocultas ? ' (' + d.ocultas + ' oculta(s))' : ''}</label>
       <table>
         <thead><tr><th>Código</th><th>Conta</th><th style="text-align:right">Saldo anterior</th><th style="text-align:right">Débitos</th><th style="text-align:right">Créditos</th><th style="text-align:right">Saldo atual</th></tr></thead>
         <tbody>
-          ${linhas.map(l=>`
+          ${d.linhas.map(l=>{ const nat = l.conta.natureza==='Devedora'?'Devedora':'Credora'; return `
             <tr class="${l.conta.tipo==='Sintética'?'conta-sintetica':''}">
               <td class="mono">${escapeHtml(l.conta.codigo)}</td>
               <td class="conta-nivel-${Math.min(contaLevel(l.conta.codigo),3)}">${escapeHtml(l.conta.nome)}</td>
-              <td style="text-align:right" class="mono">${fmtBRL(l.saldoAnterior)}</td>
-              <td style="text-align:right" class="mono">${fmtBRL(l.debitosPeriodo)}</td>
-              <td style="text-align:right" class="mono">${fmtBRL(l.creditosPeriodo)}</td>
-              <td style="text-align:right" class="mono">${fmtBRL(l.saldoAtual)}</td>
-            </tr>
-          `).join('')}
-          <tr class="conta-sintetica"><td colspan="3">Totais do período</td><td style="text-align:right">${fmtBRL(totalDeb)}</td><td style="text-align:right">${fmtBRL(totalCred)}</td><td></td></tr>
+              <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(l.saldoAnterior, nat)}</td>
+              <td style="text-align:right" class="mono">${num(l.debitosPeriodo)}</td>
+              <td style="text-align:right" class="mono">${num(l.creditosPeriodo)}</td>
+              <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(l.saldoAtual, nat)}</td>
+            </tr>`; }).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--ink-soft);">Nenhuma conta com movimento ou saldo no período.</td></tr>'}
+          <tr class="conta-sintetica"><td colspan="3">Totais do período</td><td style="text-align:right" class="mono">${razaoNum(d.totDeb)}</td><td style="text-align:right" class="mono">${razaoNum(d.totCred)}</td><td></td></tr>
         </tbody>
       </table>
-      <div class="legis-note">Balancete de Verificação — Art. 1.184 do Código Civil e Art. 178 da Lei 6.404/76 (aplicável subsidiariamente). Os totais de débitos e créditos do período devem ser iguais (partidas dobradas); se não baterem, revise os lançamentos.</div>
+      <div class="legis-note" style="${d.fecha?'':'color:#C0392B;'}">${d.fecha ? '✓ Débitos e créditos do período conferem (partidas dobradas fecham).' : 'ATENÇÃO: débitos e créditos não conferem (diferença de R$ ' + razaoNum(Math.abs(d.totDeb-d.totCred)) + ') — revise os lançamentos.'} D = saldo devedor · C = saldo credor. Balancete de Verificação — Art. 1.184 do Código Civil e Art. 178 da Lei 6.404/76 (aplicável subsidiariamente).</div>
       <button type="button" class="btn-detail" id="pdfBalanceteBtn" style="margin-top:12px;">Baixar PDF</button>
     `;
   }
 
+  function demTabelaHtml(linhas, mostrarPct){
+    const cols = mostrarPct ? 3 : 2;
+    return `<table>
+      <thead><tr><th>Descrição</th><th style="text-align:right">Valor (R$)</th>${mostrarPct?'<th style="text-align:right">% s/ receita bruta</th>':''}</tr></thead>
+      <tbody>${linhas.map(l=>{
+        const pct = mostrarPct ? `<td style="text-align:right" class="mono">${l.pct!=null && l.tipo!=='secao' ? razaoNum(l.pct)+'%' : ''}</td>` : '';
+        if(l.tipo==='secao') return `<tr class="conta-sintetica" style="background:var(--navy,#1B3A5C); color:#fff;"><td colspan="${cols}">${escapeHtml(l.texto)}</td></tr>`;
+        if(l.tipo==='total') return `<tr class="conta-sintetica" style="${l.destaque?(l.positivo===false?'background:#FDECEA;':'background:#E1F4E9;'):''}"><td>${escapeHtml(l.texto)}</td><td style="text-align:right; white-space:nowrap;" class="mono">${demNum(l.valor)}</td>${pct}</tr>`;
+        if(l.tipo==='grupo' || l.tipo==='sub') return `<tr style="font-weight:700;"><td>${escapeHtml(l.texto)}</td><td style="text-align:right; white-space:nowrap;" class="mono">${demNum(l.valor)}</td>${pct}</tr>`;
+        return `<tr style="color:var(--ink-soft);"><td style="padding-left:28px;">${escapeHtml(l.texto)}</td><td style="text-align:right; white-space:nowrap;" class="mono">${demNum(l.valor)}</td>${pct}</tr>`;
+      }).join('')}</tbody></table>`;
+  }
   function balancoContentHtml(){
     const clientId = state.contabilEmpresaAtiva;
     if(!clientId) return `<div class="empty">Selecione uma empresa acima.</div>`;
     if(!state.planoContas.some(c=>c.clientId===clientId)) return `<div class="empty">Esta empresa ainda não tem plano de contas. Cadastre em Plano de Contas primeiro.</div>`;
-    const b = montarBalanco(clientId, state.relDataFim);
-    const linha = (nome, valor, destaque)=>`<div class="cr-line ${destaque?'total':''}"><span>${escapeHtml(nome)}</span><span>${fmtBRL(valor)}</span></div>`;
+    const d = balancoLinhas(clientId, state.relDataFim);
     return `
-      <div class="calc-result">
-        <div class="form-hint" style="margin:0 0 6px; text-transform:none; font-weight:700; color:var(--ink);">ATIVO</div>
-        ${linha(b.linhas['1.1']?.nome||'Ativo Circulante', b.linhas['1.1']?.saldo||0)}
-        ${linha(b.linhas['1.2']?.nome||'Ativo Não Circulante', b.linhas['1.2']?.saldo||0)}
-        ${linha('TOTAL DO ATIVO', b.totalAtivo, true)}
-      </div>
-      <div class="calc-result" style="margin-top:12px;">
-        <div class="form-hint" style="margin:0 0 6px; text-transform:none; font-weight:700; color:var(--ink);">PASSIVO</div>
-        ${linha(b.linhas['2.1']?.nome||'Passivo Circulante', b.linhas['2.1']?.saldo||0)}
-        ${linha(b.linhas['2.2']?.nome||'Passivo Não Circulante', b.linhas['2.2']?.saldo||0)}
-        <div class="form-hint" style="margin:10px 0 6px; text-transform:none; font-weight:700; color:var(--ink);">PATRIMÔNIO LÍQUIDO</div>
-        ${linha(b.linhas['3.1']?.nome||'Capital Social', b.linhas['3.1']?.saldo||0)}
-        ${linha(b.linhas['3.2']?.nome||'Reservas de Lucros', b.linhas['3.2']?.saldo||0)}
-        ${linha(b.linhas['3.3']?.nome||'Lucros/Prejuízos Acumulados', b.linhas['3.3']?.saldo||0)}
-        ${linha('Resultado do período (ainda não apurado/fechado)', b.resultadoPeriodo)}
-        ${linha('TOTAL DO PATRIMÔNIO LÍQUIDO', b.totalPL, true)}
-        ${linha('TOTAL PASSIVO + PATRIMÔNIO LÍQUIDO', b.totalPassivoMaisPL, true)}
-      </div>
-      <div class="legis-note">${Math.abs(b.totalAtivo - b.totalPassivoMaisPL) < 0.01 ? '✓ Balanço fechado: Ativo = Passivo + Patrimônio Líquido.' : '⚠ Atenção: Ativo (' + fmtBRL(b.totalAtivo) + ') diferente de Passivo + PL (' + fmtBRL(b.totalPassivoMaisPL) + ') — revise os lançamentos, algo está em desacordo com as partidas dobradas.'} Estrutura conforme Art. 178 a 182 da Lei 6.404/76.</div>
+      <div class="form-hint" style="margin:0 0 8px;">Posição em <b>${fmtDate(state.relDataFim)}</b> · valores em R$ (entre parênteses = negativo)</div>
+      ${demTabelaHtml(d.linhas, false)}
+      <div class="legis-note" style="${d.fecha?'':'color:#C0392B;'}">${d.fecha ? '✓ Balanço fechado: Ativo = Passivo + Patrimônio Líquido.' : '⚠ Atenção: Ativo (' + fmtBRL(d.b.totalAtivo) + ') diferente de Passivo + PL (' + fmtBRL(d.b.totalPassivoMaisPL) + ') — revise os lançamentos, algo está em desacordo com as partidas dobradas.'} Estrutura conforme Art. 178 a 182 da Lei 6.404/76.</div>
       <button type="button" class="btn-detail" id="pdfBalancoBtn" style="margin-top:12px;">Baixar PDF</button>
     `;
   }
@@ -14791,23 +14975,13 @@
     const clientId = state.contabilEmpresaAtiva;
     if(!clientId) return `<div class="empty">Selecione uma empresa acima.</div>`;
     if(!state.planoContas.some(c=>c.clientId===clientId)) return `<div class="empty">Esta empresa ainda não tem plano de contas. Cadastre em Plano de Contas primeiro.</div>`;
-    const r = calcResultadoExercicio(clientId, state.relDataInicio||null, state.relDataFim);
-    const linha = (nome, valor, destaque)=>`<div class="cr-line ${destaque?'total':''}"><span>${escapeHtml(nome)}</span><span>${fmtBRL(valor)}</span></div>`;
+    const ini = state.relDataInicio || null;
+    const d = dreLinhas(clientId, ini, state.relDataFim);
+    const m = (v)=> v==null ? '—' : razaoNum(v) + '%';
     return `
-      <div class="calc-result">
-        ${linha('Receita Bruta de Vendas/Serviços', r.receitaBruta)}
-        ${linha('(-) Deduções da Receita', -r.deducoes)}
-        ${linha('(=) Receita Líquida', r.receitaLiquida, true)}
-        ${linha('(-) Custos', -r.custos)}
-        ${linha('(=) Lucro Bruto', r.lucroBruto, true)}
-        ${linha('(-) Despesas Administrativas', -r.despesasAdm)}
-        ${linha('(-) Despesas Comerciais', -r.despesasCom)}
-        ${linha('(-) Despesas Financeiras', -r.despesasFin)}
-        ${linha('(-) Despesas Tributárias', -r.despesasTrib)}
-        ${linha('(-) Despesas com Pessoal', -r.despesasPessoal)}
-        ${linha('(=) RESULTADO DO EXERCÍCIO ' + (r.resultado>=0?'(Lucro)':'(Prejuízo)'), r.resultado, true)}
-      </div>
-      <div class="legis-note">Demonstração do Resultado do Exercício (DRE) — estrutura conforme Art. 187 da Lei 6.404/76. Regime de competência: as receitas e despesas entram pela data do lançamento contábil, independentemente do efetivo recebimento/pagamento.</div>
+      <div class="form-hint" style="margin:0 0 8px;">Período: <b>${ini?fmtDate(ini):'início'}</b> a <b>${fmtDate(state.relDataFim)}</b> · valores em R$ (entre parênteses = negativo) · % sobre a receita bruta</div>
+      ${demTabelaHtml(d.linhas, true)}
+      <div class="legis-note">Margem bruta: <b>${m(d.margemBruta)}</b> · Margem líquida: <b>${m(d.margemLiquida)}</b>. Demonstração do Resultado do Exercício (DRE) — estrutura conforme Art. 187 da Lei 6.404/76. Regime de competência: as receitas e despesas entram pela data do lançamento contábil, independentemente do efetivo recebimento/pagamento.</div>
       <button type="button" class="btn-detail" id="pdfDreBtn" style="margin-top:12px;">Baixar PDF</button>
     `;
   }
@@ -20264,6 +20438,8 @@
       razaoContaSelect.onchange = atualizarRazao;
       atualizarRazao();
     }
+    const balanceteZeradas = document.getElementById('balanceteZeradas');
+    if(balanceteZeradas) balanceteZeradas.onchange = (e)=>{ state.balanceteMostrarZeradas = e.target.checked; render(); };
     const pdfBalanceteBtn = document.getElementById('pdfBalanceteBtn');
     if(pdfBalanceteBtn) pdfBalanceteBtn.onclick = ()=> gerarPdfBalancete();
     const pdfBalancoBtn = document.getElementById('pdfBalancoBtn');
