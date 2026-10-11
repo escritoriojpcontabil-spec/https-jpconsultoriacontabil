@@ -11837,7 +11837,9 @@
   async function deleteNotaFiscal(id){
     const nf = state.notasFiscais.find(n=>n.id===id);
     await Store.delete('notasfiscais:'+id, true);
-    await loadNotasFiscais(); render();
+    await loadNotasFiscais();
+    if(nf && nf.clientId){ try{ await contabilizarNotas([nf.clientId],{silent:true}); }catch(e){ console.error(e); } }
+    render();
     if(nf && nf.clientId && nf.dataEmissao){ try{ await fiscalSincronizar([{clientId:nf.clientId, comp:String(nf.dataEmissao).slice(0,7)}]); render(); }catch(e){} }
   }
 
@@ -14943,6 +14945,7 @@
         <button type="button" class="btn-add" id="novoLancContabilBtn">+ Novo lançamento</button>
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
+      ${notasContabilCardHtml()}
       <div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
   }
@@ -15095,6 +15098,160 @@
       sel.addEventListener('change', ()=>{ if(inp.value){ /* mantém o filtro */ } });
       new MutationObserver(()=>{ if(inp.value){ inp.value=''; } info.style.display='none'; Array.from(sel.options).forEach(o=>{ o.hidden=false; o.disabled=false; }); }).observe(sel, {childList:true});
     });
+  }
+
+
+  // ===== Lançamento contábil automático das notas fiscais (compras, vendas e serviços) =====
+  // Venda (Saída):        D Clientes (Contas a Receber)  /  C Receita de Vendas
+  // Serviço prestado:     D Clientes (Contas a Receber)  /  C Receita de Prestação de Serviços
+  // Compra (Entrada):     D Estoque (Mercadorias p/ Revenda, Matérias-Primas…)  /  C Fornecedores
+  // Um lançamento por nota, com id fixo ("nf-<id da nota>"): rodar de novo atualiza em vez de duplicar.
+  // Nota cancelada ou excluída remove o lançamento. Lançamento editado à mão não é mais sobrescrito.
+  function nfContaPorPadroes(clientId, padroes, prefixos, nat){
+    const analiticas = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica' && !c.papel && !c.pessoaTipo);
+    for(const re of padroes){
+      const c = analiticas.find(x=>re.test(String(x.nome||'')) && (!prefixos || prefixos.some(p=>String(x.codigo).startsWith(p))) && (!nat || x.natureza===nat));
+      if(c) return c;
+    }
+    return null;
+  }
+
+  // Conta individual por cliente/fornecedor: criada sozinha no Plano de Contas, ao lado da conta genérica
+  // ("Clientes (Contas a Receber)" ou "Fornecedores Nacionais"), com código sequencial (ex.: 1.01.04.0002).
+  function nfPessoaDaNota(n){
+    const entrada = n.tipoOperacao==='Entrada';
+    const nome = String((entrada ? n.emitNome : n.destNome) || '').replace(/\s+/g,' ').trim();
+    const doc = String((entrada ? n.emitDoc : n.destDoc) || '').replace(/\D/g,'');
+    if(!nome && !doc) return null;
+    const chave = doc.length>=11 ? doc : semAcento(nome).replace(/[^a-z0-9]+/g,' ').trim();
+    if(!chave) return null;
+    return { tipo: entrada ? 'fornecedor' : 'cliente', nome: nome || ('Documento ' + doc), doc, chave };
+  }
+  async function nfContaDaPessoa(clientId, n, generica){
+    const p = nfPessoaDaNota(n);
+    if(!p || !generica || !planoMascaraNova(clientId)) return null;
+    const todas = state.planoContas.filter(c=>c.clientId===clientId);
+    const ja = todas.find(c=>c.pessoaTipo===p.tipo && (c.pessoaChave===p.chave || (p.doc && c.pessoaDoc===p.doc)));
+    if(ja) return ja;
+    const partes = String(generica.codigo).split('.');
+    if(partes.length < 2) return null;
+    partes.pop();
+    const pai = partes.join('.');
+    let max = 0;
+    todas.forEach(c=>{ if(String(c.codigo).startsWith(pai+'.')){ const resto = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(resto)) max = Math.max(max, parseInt(resto,10)); } });
+    const conta = { id: uid(), clientId, codigo: pai + '.' + String(max+1).padStart(4,'0'), nome: p.nome.slice(0,70),
+      tipo:'Analítica', natureza: generica.natureza, contaSuperior: pai,
+      pessoaTipo: p.tipo, pessoaChave: p.chave, pessoaDoc: p.doc, origemAutomatica: true };
+    if(generica.modelo) conta.modelo = generica.modelo;
+    await Store.set('planocontas:'+conta.id, JSON.stringify(conta), true);
+    state.planoContas.push(conta);
+    return conta;
+  }
+  function nfContasDaOperacao(clientId, n){
+    const op = n.tipoOperacao;
+    const clientes = nfContaPorPadroes(clientId, [/^clientes/i, /contas? a receber/i, /duplicatas a receber/i], ['1'], 'Devedora');
+    if(op==='Saída'){
+      const rec = nfContaPorPadroes(clientId, [/^receita de vendas de mercadorias/i, /^receita de vendas/i, /^vendas? de/i, /^receita (bruta|operacional)/i, /^receita(?! financeira)(?!s? de loca)/i], null, 'Credora');
+      return { deb: clientes, cred: rec, faltam: [!clientes && 'Clientes (Contas a Receber)', !rec && 'Receita de Vendas'].filter(Boolean) };
+    }
+    if(op==='Serviços'){
+      const rec = nfContaPorPadroes(clientId, [/^receita de presta[cç][aã]o de servi/i, /^receita de servi[cç]os/i, /^presta[cç][aã]o de servi/i, /^receita(?! financeira)(?!s? de loca)/i], null, 'Credora');
+      return { deb: clientes, cred: rec, faltam: [!clientes && 'Clientes (Contas a Receber)', !rec && 'Receita de Prestação de Serviços'].filter(Boolean) };
+    }
+    // Entrada (compra)
+    const forn = nfContaPorPadroes(clientId, [/^fornecedores nacionais/i, /^fornecedores/i], ['2'], 'Credora');
+    const servico = /NFS/i.test(n.tipo||'');
+    const est = nfContaPorPadroes(clientId, servico
+      ? [/servi[cç]os? (de terceiros|contratados|tomados|prestados por)/i, /^materiais aplicados em servi/i, /^materiais de consumo/i]
+      : [/^mercadorias para revenda/i, /^mat[ée]rias-primas/i, /^materiais de consumo/i, /^materiais de embalagem/i], ['1','5','6'], 'Devedora');
+    return { deb: est, cred: forn, faltam: [!est && (servico ? 'Serviços de Terceiros / Materiais' : 'Mercadorias para Revenda / Matérias-Primas'), !forn && 'Fornecedores'].filter(Boolean) };
+  }
+  function nfHistoricoContabil(n){
+    const num = (n.numero||'S/N') + (n.serie ? '/' + n.serie : '');
+    const tipo = (n.tipo||'Nota fiscal').replace(/\s*\(.*\)/,'');
+    if(n.tipoOperacao==='Entrada') return 'Compra conf. ' + tipo + ' nº ' + num + (n.emitNome ? ' — ' + n.emitNome : '');
+    if(n.tipoOperacao==='Serviços') return 'Prestação de serviços conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + n.destNome : '');
+    return 'Venda conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + n.destNome : '');
+  }
+  async function contabilizarNotas(clientIds, opts){
+    opts = opts || {};
+    const res = { criados:0, atualizados:0, removidos:0, mantidosManual:0, contasCriadas:0, semConta:{}, semPlano:[], notas:0 };
+    let planoMudou = false;
+    const ids = (clientIds && clientIds.length) ? clientIds : Array.from(new Set(state.notasFiscais.map(n=>n.clientId)));
+    const escrever = [], apagar = [];
+    for(const clientId of ids){
+      if(!state.planoContas.some(c=>c.clientId===clientId)){ if(state.notasFiscais.some(n=>n.clientId===clientId)) res.semPlano.push(clientId); continue; }
+      const notas = state.notasFiscais.filter(n=>n.clientId===clientId);
+      const vivas = {};
+      notas.forEach(n=>{
+        if(n.status==='Cancelada' || !n.dataEmissao || !(Number(n.valor)>0)) return;
+        vivas[n.id] = n;
+      });
+      const existentes = {};
+      state.lancamentosContabeis.filter(l=>l.clientId===clientId && l.origemNota).forEach(l=>{ existentes[l.origemNota] = l; });
+      for(const nid of Object.keys(vivas)){
+        const n = vivas[nid];
+        res.notas++;
+        const c = nfContasDaOperacao(clientId, n);
+        if(!c.deb || !c.cred){ (res.semConta[clientId] = res.semConta[clientId] || new Set()); c.faltam.forEach(f=>res.semConta[clientId].add(f)); continue; }
+        let contaDeb = c.deb, contaCred = c.cred;
+        const antes = state.planoContas.length;
+        if(n.tipoOperacao==='Entrada'){ const pc = await nfContaDaPessoa(clientId, n, c.cred); if(pc) contaCred = pc; }
+        else { const pc = await nfContaDaPessoa(clientId, n, c.deb); if(pc) contaDeb = pc; }
+        if(state.planoContas.length > antes){ res.contasCriadas++; planoMudou = true; }
+        const novo = { id:'nf-'+nid, clientId, data:String(n.dataEmissao).slice(0,10), valor: Math.round((Number(n.valor)||0)*100)/100,
+          contaDebito:contaDeb.id, contaCredito:contaCred.id, historico: nfHistoricoContabil(n) + ' (lançamento automático da nota fiscal)',
+          origemAutomatica:true, origemNota:nid };
+        const ex = existentes[nid];
+        if(!ex){ escrever.push(novo); res.criados++; continue; }
+        if(ex.editadoManual){ res.mantidosManual++; continue; }
+        if(ex.data!==novo.data || Number(ex.valor)!==novo.valor || ex.contaDebito!==novo.contaDebito || ex.contaCredito!==novo.contaCredito || ex.historico!==novo.historico){
+          escrever.push(Object.assign({}, ex, novo)); res.atualizados++;
+        }
+      }
+      Object.keys(existentes).forEach(nid=>{
+        if(vivas[nid]) return;
+        const ex = existentes[nid];
+        if(ex.editadoManual){ res.mantidosManual++; return; }
+        apagar.push(ex.id); res.removidos++;
+      });
+    }
+    Object.keys(res.semConta).forEach(k=>{ res.semConta[k] = Array.from(res.semConta[k]); });
+    for(let i=0;i<escrever.length;i+=15){ await Promise.all(escrever.slice(i,i+15).map(l=>saveLancamentoContabilSilent(l))); }
+    for(let i=0;i<apagar.length;i+=15){ await Promise.all(apagar.slice(i,i+15).map(id=>Store.delete('lancamentoscontabeis:'+id, true).catch(()=>{}))); }
+    if(escrever.length || apagar.length){ await loadLancamentosContabeis(); }
+    if((escrever.length || apagar.length || planoMudou) && !opts.silent) render();
+    return res;
+  }
+  function nfResumoContabil(res){
+    const p = [];
+    if(res.contasCriadas) p.push(res.contasCriadas + ' conta(s) de cliente/fornecedor criada(s) no Plano de Contas');
+    if(res.criados) p.push(res.criados + ' lançamento(s) criado(s)');
+    if(res.atualizados) p.push(res.atualizados + ' atualizado(s)');
+    if(res.removidos) p.push(res.removidos + ' removido(s) (nota cancelada/excluída)');
+    if(res.mantidosManual) p.push(res.mantidosManual + ' editado(s) à mão mantido(s)');
+    if(!p.length) p.push('nenhuma alteração — tudo já estava lançado');
+    let txt = p.join(' · ');
+    const falt = Object.keys(res.semConta).map(cid=>clientName(cid) + ': falta conta ' + res.semConta[cid].join(', '));
+    if(falt.length) txt += ' — ATENÇÃO, notas sem lançar: ' + falt.join('; ');
+    if(res.semPlano.length) txt += ' — sem plano de contas: ' + res.semPlano.map(clientName).join(', ');
+    return txt;
+  }
+  function notasContabilCardHtml(){
+    const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? state.clients.map(c=>c.id) : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
+    const notas = state.notasFiscais.filter(n=>ids.includes(n.clientId) && n.status!=='Cancelada' && n.dataEmissao && Number(n.valor)>0);
+    const lancadas = new Set(state.lancamentosContabeis.filter(l=>l.origemNota).map(l=>l.origemNota));
+    const pend = notas.filter(n=>!lancadas.has(n.id)).length;
+    return `
+      <div class="attach-box" style="margin:0 0 14px;">
+        <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Lançamento automático das notas fiscais</label>
+        <div class="form-hint" style="margin:0 0 10px;">Cada nota fiscal vira um lançamento contábil: <b>venda</b> (D Cliente / C Receita de Vendas), <b>serviço prestado</b> (D Cliente / C Receita de Serviços) e <b>compra</b> (D Estoque ou Despesa / C Fornecedor). O sistema também <b>cria sozinho a conta de cada cliente e de cada fornecedor</b> no Plano de Contas (pelo CNPJ/CPF ou nome da nota), ao lado da conta genérica, e lança nela. Acontece sozinho ao importar ou cadastrar a nota; use o botão para lançar as notas que já estavam cadastradas. Notas canceladas ou excluídas retiram o lançamento, e o que você editar à mão é preservado.</div>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <button type="button" class="btn-add" id="nfContabilizarBtn">Gerar lançamentos das notas fiscais</button>
+          <span class="form-hint" style="margin:0;">${notas.length} nota(s) no escopo · <b>${pend}</b> ainda sem lançamento</span>
+        </div>
+        <div id="nfContabilMsg" class="lookup-msg" style="display:none; margin-top:10px;"></div>
+      </div>`;
   }
 
   function lancContabilModalHtml(){
@@ -19474,6 +19631,8 @@
           ok++;
         }
         await loadNotasFiscais();
+        let contabTxt = '';
+        if(ok){ try{ const rc = await contabilizarNotas(Array.from(new Set(paresSync.map(p=>p.clientId))), {silent:true}); contabTxt = nfResumoContabil(rc); }catch(err){ console.error(err); } }
         let sincTxt = '';
         if(paresSync.length){
           showMsg('Notas importadas. Vinculando às declarações e calculando impostos...', 'info');
@@ -19485,6 +19644,7 @@
         if(naoXml) parts.push(naoXml + ' arquivo(s) em outro formato (cadastre-os individualmente, um de cada vez)');
         if(failed) parts.push(failed + ' com erro de leitura/formato');
         if(sincTxt) parts.push('Declarações e impostos: ' + sincTxt);
+        if(contabTxt) parts.push('Contabilidade: ' + contabTxt);
         showMsg('Importação em lote concluída: ' + parts.join(' · ') + '.', ok > 0 ? 'success' : 'error');
         updateNfResults();
       };
@@ -19524,7 +19684,7 @@
           const pares = [{clientId:nf.clientId, comp:String(nf.dataEmissao||'').slice(0,7)}];
           if(compAntiga) pares.push({clientId: idAntigo || nf.clientId, comp:compAntiga});
           return fiscalSincronizar(pares);
-        }).then(()=>render()).catch(err=>console.error(err));
+        }).then(()=>contabilizarNotas([nf.clientId],{silent:true}).catch(e=>console.error(e))).then(()=>render()).catch(err=>console.error(err));
       };
     }
     wireNfDeleteButtons();
@@ -22082,6 +22242,18 @@
     });
 
     // Lançamentos Contábeis
+    const nfContabilizarBtn = document.getElementById('nfContabilizarBtn');
+    if(nfContabilizarBtn) nfContabilizarBtn.onclick = async ()=>{
+      const msg = document.getElementById('nfContabilMsg');
+      nfContabilizarBtn.disabled = true; nfContabilizarBtn.textContent = 'Gerando…';
+      try{
+        const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? null : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
+        const r = await contabilizarNotas(ids, {silent:true});
+        render();
+        const m2 = document.getElementById('nfContabilMsg');
+        if(m2){ m2.textContent = nfResumoContabil(r); m2.className = 'lookup-msg ' + (Object.keys(r.semConta).length || r.semPlano.length ? 'error' : 'success'); m2.style.display='block'; }
+      }catch(e){ console.error(e); if(msg){ msg.textContent = 'Falha ao gerar: ' + ((e&&(e.code||e.message))||'erro'); msg.className='lookup-msg error'; msg.style.display='block'; } nfContabilizarBtn.disabled=false; nfContabilizarBtn.textContent='Gerar lançamentos das notas fiscais'; }
+    };
     const novoLancContabilBtn = document.getElementById('novoLancContabilBtn');
     if(novoLancContabilBtn) novoLancContabilBtn.onclick = ()=>{ state.lancContabilModalData = {}; state.modal='lancContabil'; render(); };
     const lcCancel = document.getElementById('lcCancel');
@@ -22125,7 +22297,7 @@
           if(ofxNormalizaMemo(pad).length < 3){ alert('A palavra-chave precisa ter ao menos 3 letras (sem números).'); return; }
           regraPedida = { clientId: cid, padrao: pad, conta: bancoDeb ? contaCredito : contaDebito, sentido: bancoDeb ? 'entrada' : 'saida' };
         }
-        const l = Object.assign({}, base, {
+        const l = Object.assign({}, base, base.origemNota ? {editadoManual:true} : {}, {
           clientId: document.getElementById('lcCliente').value,
           data: document.getElementById('lcData').value,
           valor: document.getElementById('lcValor').value,
