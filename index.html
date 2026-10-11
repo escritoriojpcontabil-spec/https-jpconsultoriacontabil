@@ -7222,7 +7222,7 @@
   // Lê um arquivo OFX de extrato bancário (aceita tanto o formato SGML clássico — OFX 1.x,
   // usado pela maioria dos bancos brasileiros — quanto o XML — OFX 2.x).
   function parseOfx(text){
-    const transacoes = [];
+    const transacoes = []; let ignoradas = 0;
     const stmtRe = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
     let m;
     while((m = stmtRe.exec(text)) !== null){
@@ -7240,13 +7240,15 @@
       const dateMatch = dtposted.match(/(\d{4})(\d{2})(\d{2})/);
       const data = dateMatch ? dateMatch[1] + '-' + dateMatch[2] + '-' + dateMatch[3] : '';
       const valor = parseFloat(trnamt.replace(',', '.')) || 0;
+      // Linhas de saldo do extrato (SALDO ANTERIOR, SALDO TOTAL DISPONÍVEL DIA…) não são movimentação.
+      if(/^\s*SALDO\b/i.test(memo||'') && /(ANTERIOR|TOTAL|FINAL|INICIAL|DISPON|DO DIA|PARCIAL)/i.test(memo)){ ignoradas++; continue; }
       if(data) transacoes.push({ tipo: trntype, data, valor, fitid, memo: memo || 'Lançamento bancário (OFX)' });
     }
     const bankIdMatch = text.match(/<BANKID>([^<\r\n]*)/i);
     const acctIdMatch = text.match(/<ACCTID>([^<\r\n]*)/i);
     return {
       ok: transacoes.length > 0,
-      transacoes,
+      transacoes, ignoradas,
       banco: bankIdMatch ? bankIdMatch[1].trim() : '',
       conta: acctIdMatch ? acctIdMatch[1].trim() : '',
     };
@@ -16105,7 +16107,8 @@
         <div class="form-hint" style="margin:-4px 0 14px; font-weight:700;">Empresa selecionada: ${escapeHtml(clientName(empresa))}</div>
         <div class="attach-box">
           <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo OFX</label>
-          <div class="field" style="margin-bottom:0;"><label>Arquivo .ofx</label><input type="file" id="ofxInput" accept=".ofx,.qfx"/></div>
+          <div class="field" style="margin-bottom:0;"><label>Arquivo .ofx</label><input type="file" id="ofxInput" accept=".ofx,.qfx,.OFX,.QFX,*/*"/></div>
+          ${prev && prev.transacoes && prev.transacoes.length ? `<div id="ofxCarregado" style="margin-top:10px; padding:10px 12px; background:#E8F5E9; border-left:4px solid #2E7D32; border-radius:4px;">✓ Arquivo carregado: <b>${escapeHtml(state.ofxNomeArquivo||'extrato.ofx')}</b> — ${prev.transacoes.length} movimentação(ões)${prev.ignoradas?' ('+prev.ignoradas+' linha(s) de saldo ignorada(s))':''}. Confira a lista abaixo e clique em <b>Importar</b>. Para trocar o arquivo, escolha outro neste campo.</div>` : ''}
         </div>
         ${(()=>{
           const bancos = contasBancoDaEmpresa(empresa);
@@ -20394,7 +20397,11 @@
           }
           // XML: parse and prefill the form for review before saving.
           let text;
-          try{ text = await file.text(); }
+          try{
+          const buf = await file.arrayBuffer();
+          try{ text = new TextDecoder('utf-8', {fatal:true}).decode(buf); }
+          catch(e2){ text = new TextDecoder('windows-1252').decode(buf); }
+        }
           catch(err){ showMsg('Não foi possível ler o arquivo selecionado.', 'error'); return; }
           const xmlHash = await hashArquivoTexto(text);
           if(notaFiscalArquivoJaExiste(xmlHash)){
@@ -23202,6 +23209,7 @@
     });
 
     // Importação OFX
+    if(state.ofxRolar){ state.ofxRolar = false; const _oc = document.getElementById('ofxCarregado'); if(_oc && _oc.scrollIntoView) setTimeout(()=>_oc.scrollIntoView({block:'center'}),50); }
     const ofxInput = document.getElementById('ofxInput');
     if(ofxInput){
       ofxInput.onchange = async (e)=>{
@@ -23214,7 +23222,7 @@
         catch(err){ showMsg('Não foi possível ler o arquivo.', 'error'); return; }
         const result = parseOfx(text);
         if(!result.ok){ showMsg('Não foi possível encontrar transações neste arquivo OFX. Confirme se é um extrato bancário válido.', 'error'); return; }
-        state.ofxPreview = result;
+        state.ofxPreview = result; state.ofxNomeArquivo = file.name; state.ofxRolar = true;
         showMsg(result.transacoes.length + ' transação(ões) encontrada(s). Confirme a importação abaixo.', 'success');
         render();
       };
