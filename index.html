@@ -15083,6 +15083,7 @@
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
           <span class="mono" style="font-weight:700;">${fmtBRL(l.valor)}</span>
+          <button class="btn-sm" data-dup-lanc="${l.id}" title="Duplicar para os meses seguintes (apropriação)">Duplicar</button>
           <button class="btn-sm" data-edit-lanc="${l.id}">Editar</button>
           <button class="btn-sm danger" data-del-lanc="${l.id}">Excluir</button>
         </div>
@@ -15813,6 +15814,99 @@
     if(todos) todos.onchange = ()=>{ e.desmarcados = {}; if(!todos.checked) tcLancamentos(clientId).forEach(l=>{ e.desmarcados[l.id] = true; }); document.querySelectorAll('.tc-chk').forEach(ch=>{ ch.checked = todos.checked; }); resumo(); };
     const des = document.getElementById('tcDesfazer');
     if(des) des.onclick = (ev)=>{ ev.preventDefault(); tcDesfazer(); };
+  }
+
+
+  // ===== Duplicar lançamento para os meses seguintes (apropriação de impostos, despesas antecipadas etc.) =====
+  function dupSomaMes(ymd, n){
+    const [y,m,d] = ymd.split('-').map(Number);
+    const base = new Date(Date.UTC(y, m-1+n, 1));
+    const ultimo = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth()+1, 0)).getUTCDate();
+    return base.getUTCFullYear() + '-' + String(base.getUTCMonth()+1).padStart(2,'0') + '-' + String(Math.min(d, ultimo)).padStart(2,'0');
+  }
+  function dupPlano(l, p){
+    const n = Math.max(1, Math.min(120, parseInt(p.meses,10)||0));
+    const total = Number(l.valor)||0;
+    const parcelas = [];
+    let acum = 0;
+    for(let i=1;i<=n;i++){
+      let v;
+      if(p.modo==='ratear'){
+        v = i<n ? Math.round(total/n*100)/100 : Math.round((total-acum)*100)/100;
+        acum += v;
+      } else v = total;
+      const data = p.fim ? p.fim : null;
+      parcelas.push({ i, n, data: dupSomaMes(l.data, i), valor: v });
+    }
+    return parcelas;
+  }
+  function dupModalHtml(){
+    const d = state.dupLancData;
+    if(!d) return '';
+    const l = state.lancamentosContabeis.find(x=>x.id===d.id);
+    if(!l) return '';
+    const plano = dupPlano(l, d);
+    const existentes = {}; state.lancamentosContabeis.forEach(x=>{ if(x.duplicadoDe===l.id) existentes[x.data] = true; });
+    const soma = Math.round(plano.reduce((a,p)=>a+p.valor,0)*100)/100;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>Duplicar lançamento para os meses seguintes</h3>
+          <div class="form-hint" style="margin:-4px 0 12px;"><b>${fmtDate(l.data)}</b> · D: ${escapeHtml(contaNomeById(l.contaDebito))} · C: ${escapeHtml(contaNomeById(l.contaCredito))} · <b>${fmtBRL(l.valor)}</b><br>${escapeHtml(l.historico||'')}</div>
+          <form id="dupForm">
+            <div class="form-row">
+              <div class="field"><label>Quantidade de meses seguintes</label><input type="number" id="dpMeses" min="1" max="120" step="1" value="${d.meses}" required/></div>
+              <div class="field"><label>Valor de cada lançamento</label><select id="dpModo">
+                <option value="igual" ${d.modo==='igual'?'selected':''}>Repetir o mesmo valor (${fmtBRL(l.valor)})</option>
+                <option value="ratear" ${d.modo==='ratear'?'selected':''}>Ratear o valor entre os meses (apropriação)</option></select></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Conta Débito das cópias</label><select id="dpDeb">${contasAnaliticasOptionsHtml(d.contaDebito, l.clientId)}</select></div>
+              <div class="field"><label>Conta Crédito das cópias</label><select id="dpCred">${contasAnaliticasOptionsHtml(d.contaCredito, l.clientId)}</select></div>
+            </div>
+            <div class="field"><label>Histórico das cópias (a parcela, como "2/6", é acrescentada no fim)</label><input type="text" id="dpHist" value="${escapeHtml(d.historico)}"/></div>
+            <div class="form-hint" style="margin:0 0 6px;"><b>Prévia</b> — ${plano.length} lançamento(s), total ${fmtBRL(soma)}${Object.keys(existentes).length ? ' · <span style="color:#B06A00;">datas que já têm cópia serão puladas</span>' : ''}</div>
+            <div style="max-height:180px; overflow:auto; margin-bottom:10px;"><table><thead><tr><th>Parcela</th><th>Data</th><th style="text-align:right">Valor</th></tr></thead><tbody>
+              ${plano.map(p=>`<tr style="${existentes[p.data]?'opacity:.5;':''}"><td>${p.i}/${p.n}</td><td>${fmtDate(p.data)}${existentes[p.data]?' (já existe)':''}</td><td style="text-align:right" class="mono">${razaoNum(p.valor)}</td></tr>`).join('')}
+            </tbody></table></div>
+            <div class="form-hint" style="margin:0 0 10px;">A data mantém o mesmo dia do mês (em meses mais curtos, vai para o último dia). O lançamento original não é alterado.</div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="dpCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Criar ${plano.length} lançamento(s)</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  }
+  async function dupCriar(){
+    const d = state.dupLancData;
+    const l = state.lancamentosContabeis.find(x=>x.id===d.id);
+    if(!l) return;
+    if(d.contaDebito===d.contaCredito){ alert('A conta de débito e a de crédito não podem ser a mesma.'); return; }
+    const plano = dupPlano(l, d);
+    const existentes = {}; state.lancamentosContabeis.forEach(x=>{ if(x.duplicadoDe===l.id) existentes[x.data] = true; });
+    const novos = plano.filter(p=>!existentes[p.data] && p.valor>0).map(p=>({
+      id: uid(), clientId:l.clientId, data:p.data, valor:p.valor, contaDebito:d.contaDebito, contaCredito:d.contaCredito,
+      historico: (d.historico||l.historico||'').replace(/\s+$/,'') + ' — parcela ' + p.i + '/' + p.n, duplicadoDe:l.id, parcela:p.i + '/' + p.n,
+    }));
+    state.modal = null; state.dupLancData = null; render();
+    if(!novos.length){ alert('Nada a criar: todas as datas já têm cópia deste lançamento.'); return; }
+    for(let i=0;i<novos.length;i+=15){ await Promise.all(novos.slice(i,i+15).map(x=>saveLancamentoContabilSilent(x))); }
+    await loadLancamentosContabeis(); render();
+  }
+  function dupLigar(){
+    const d = state.dupLancData;
+    const rerender = ()=>{ render(); };
+    const por = (id, ev, fn)=>{ const el = document.getElementById(id); if(el) el[ev] = fn; };
+    por('dpMeses','oninput',(x)=>{ d.meses = x.target.value; });
+    por('dpMeses','onchange',(x)=>{ d.meses = x.target.value; rerender(); });
+    por('dpModo','onchange',(x)=>{ d.modo = x.target.value; rerender(); });
+    por('dpDeb','onchange',(x)=>{ d.contaDebito = x.target.value; });
+    por('dpCred','onchange',(x)=>{ d.contaCredito = x.target.value; });
+    por('dpHist','oninput',(x)=>{ d.historico = x.target.value; });
+    por('dpCancel','onclick',()=>{ state.modal=null; state.dupLancData=null; render(); });
+    const f = document.getElementById('dupForm');
+    if(f) f.onsubmit = (e)=>{ e.preventDefault(); dupCriar(); };
   }
 
   function lancContabilModalHtml(){
@@ -19304,6 +19398,7 @@
       ${state.modal==='conta' ? contaModalHtml() : ''}
       ${state.modal==='planoModelo' ? pmModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
+      ${state.modal==='dupLanc' ? dupModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
@@ -22937,6 +23032,15 @@
         })();
       };
     }
+    root.querySelectorAll('[data-dup-lanc]').forEach(el=>{
+      el.onclick = ()=>{
+        const l = state.lancamentosContabeis.find(x=>x.id===el.getAttribute('data-dup-lanc'));
+        if(!l) return;
+        state.dupLancData = { id:l.id, meses:6, modo:'igual', contaDebito:l.contaDebito, contaCredito:l.contaCredito, historico:l.historico||'' };
+        state.modal = 'dupLanc'; render();
+      };
+    });
+    if(document.getElementById('dupForm')) dupLigar();
     root.querySelectorAll('[data-edit-lanc]').forEach(el=>{
       el.onclick = ()=>{
         const l = state.lancamentosContabeis.find(x=>x.id===el.getAttribute('data-edit-lanc'));
@@ -23685,7 +23789,7 @@
 
     const modalBg = document.getElementById('modalBg');
     if(modalBg){
-      modalBg.addEventListener('mousedown', (e)=>{ if(e.target.id==='modalBg'){ state.modal=null; state.clientModalData=null; state.viewClientId=null; state.obrigacaoModalData=null; state.avisoModalData=null; state.msgTemplateData=null; state.msgSendData=null; state.sitFiscalModalData=null; state.userAccessModalData=null; state.nfModalData=null; state.funcModalData=null; state.parcModalData=null; state.relatorioViewClientId=null; state.contaModalData=null; state.historicoModalData=null; state.lancContabilModalData=null; render(); } });
+      modalBg.addEventListener('mousedown', (e)=>{ if(e.target.id==='modalBg'){ state.modal=null; state.clientModalData=null; state.viewClientId=null; state.obrigacaoModalData=null; state.avisoModalData=null; state.msgTemplateData=null; state.msgSendData=null; state.sitFiscalModalData=null; state.userAccessModalData=null; state.nfModalData=null; state.funcModalData=null; state.parcModalData=null; state.relatorioViewClientId=null; state.contaModalData=null; state.historicoModalData=null; state.lancContabilModalData=null; state.dupLancData=null; render(); } });
     }
     const txCancel = document.getElementById('txCancel');
     if(txCancel) txCancel.onclick = ()=>{ state.modal=null; render(); };
