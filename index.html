@@ -2841,6 +2841,7 @@
   function pdfFooterDisclaimer(doc, texto){
     const pageW = doc.internal.pageSize.getWidth();
     const pageH = doc.internal.pageSize.getHeight();
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
     const lines = doc.splitTextToSize(texto, pageW-32);
     const h = lines.length*4.2 + 8;
     const y = pageH - 37 - h;
@@ -3366,6 +3367,134 @@
     if(Math.abs(v) < 0.005) return razaoNum(0);
     const letra = v >= 0 ? (nat==='Devedora' ? 'D' : 'C') : (nat==='Devedora' ? 'C' : 'D');
     return razaoNum(Math.abs(v)) + ' ' + letra;
+  }
+
+
+  // ===== Livro Diário =====
+  // Lançamentos em ordem cronológica, com número de ordem fixo (posição na sequência completa da empresa),
+  // para que o mesmo lançamento mantenha o mesmo número em qualquer período consultado.
+  function diarioDados(clientId){
+    const todos = state.lancamentosContabeis.filter(l=>l.clientId===clientId)
+      .sort((a,b)=>(a.data||'').localeCompare(b.data||'') || String(a.id).localeCompare(String(b.id)));
+    const ini = state.relDataInicio || '', fim = state.relDataFim || '9999-12-31';
+    const nomeConta = (id)=>{ const k = state.planoContas.find(x=>x.id===id); return k ? { cod:k.codigo, nome:k.nome } : { cod:'—', nome:'(conta removida)' }; };
+    const itens = [];
+    todos.forEach((l,i)=>{
+      if(l.data < ini || l.data > fim) return;
+      itens.push({ n:i+1, id:l.id, data:l.data, valor:Number(l.valor)||0, deb:nomeConta(l.contaDebito), cred:nomeConta(l.contaCredito),
+        historico:l.historico||'', pendente: /reclassificar contrapartida/i.test(l.historico||'') });
+    });
+    const dias = [];
+    itens.forEach(it=>{ let d = dias[dias.length-1]; if(!d || d.data!==it.data){ d = { data:it.data, itens:[], total:0 }; dias.push(d); } d.itens.push(it); d.total += it.valor; });
+    const total = itens.reduce((a,b)=>a+b.valor,0);
+    return { itens, dias, total: Math.round(total*100)/100 };
+  }
+  function diarioContentHtml(){
+    const clientId = state.contabilEmpresaAtiva;
+    if(!clientId) return `<div class="empty">Selecione uma empresa acima.</div>`;
+    const d = diarioDados(clientId);
+    const corpo = d.dias.map(dia=>`
+      <tr class="conta-sintetica" style="background:#E7EDF4;"><td colspan="4">${fmtDate(dia.data)}</td><td style="text-align:right" class="mono">${razaoNum(dia.total)}</td></tr>
+      ${dia.itens.map(it=>`<tr>
+        <td class="mono">${it.n}</td>
+        <td>${escapeHtml(it.deb.cod+' '+it.deb.nome)}</td>
+        <td>${escapeHtml(it.cred.cod+' '+it.cred.nome)}</td>
+        <td style="${it.pendente?'color:#B06A00;':''}">${escapeHtml(it.historico)}</td>
+        <td style="text-align:right" class="mono">${razaoNum(it.valor)}</td></tr>`).join('')}
+    `).join('');
+    return `
+      <div class="form-hint" style="margin:0 0 8px;">Período: <b>${state.relDataInicio?fmtDate(state.relDataInicio):'início'}</b> a <b>${fmtDate(state.relDataFim)}</b> · ${d.itens.length} lançamento(s) · valores em R$</div>
+      <table>
+        <thead><tr><th>Nº</th><th>Conta debitada</th><th>Conta creditada</th><th>Histórico</th><th style="text-align:right">Valor</th></tr></thead>
+        <tbody>${corpo || '<tr><td colspan="5" style="text-align:center; color:var(--ink-soft);">Nenhum lançamento no período.</td></tr>'}</tbody>
+      </table>
+      <div class="legis-note"><b>Total do período: ${fmtBRL(d.total)}</b> (débitos = créditos, pois cada lançamento é em partidas dobradas). O número de ordem é fixo: o mesmo lançamento mantém o mesmo número em qualquer período. Histórico em laranja = ainda em "Conta a Classificar".</div>
+      <button type="button" class="btn-detail" id="pdfDiarioBtn" style="margin-top:12px;">Baixar PDF</button>
+    `;
+  }
+  function gerarPdfDiario(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const clientId = state.contabilEmpresaAtiva;
+    const c = state.clients.find(x=>x.id===clientId);
+    const d = diarioDados(clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const LIM = 232;
+    let y = pdfHeader(doc, 'Livro Diário', c ? c.name : '—', c ? c.logo : '');
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    if(c && c.doc){ doc.text('CNPJ/CPF: ' + c.doc, 14, y - 2); y += 4; }
+    doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim) + '   |   ' + d.itens.length + ' lançamento(s)   |   valores em R$', 14, y); y += 7;
+    const X = { n:12, conta:26, deb:158, cred:195 };
+    function cabecalho(){
+      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Nº', X.n, y); doc.text('Conta / Histórico', X.conta, y);
+      doc.text('Débito', X.deb, y, {align:'right'}); doc.text('Crédito', X.cred, y, {align:'right'});
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
+    }
+    function novaPagina(){
+      doc.addPage();
+      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text('JP CONSULTORIA CONTÁBIL — Livro Diário', 12, 7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
+      doc.setTextColor(20,25,30);
+      y = 26; cabecalho();
+    }
+    cabecalho();
+    doc.setFontSize(7.5);
+    d.dias.forEach(dia=>{
+      if(y + 4.6 + 13 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+      doc.setFillColor(231,237,244); doc.rect(10, y-3.4, pageW-20, 4.8, 'F');
+      doc.setFont('helvetica','bold'); doc.setTextColor(20,25,30);
+      doc.text(fmtDate(dia.data), X.n, y);
+      doc.text('Total do dia: ' + razaoNum(dia.total), X.cred, y, {align:'right'});
+      y += 5.2;
+      dia.itens.forEach(it=>{
+        let hist = doc.splitTextToSize(it.historico, 140);
+        if(hist.length > 2){ hist = hist.slice(0,2); hist[1] = String(hist[1]).replace(/\s*\S{0,3}$/,'') + '…'; }
+        const h = 3.6*2 + hist.length*3.4 + 2;
+        if(y + h > LIM){ novaPagina(); doc.setFontSize(7.5); }
+        doc.setFont('helvetica','normal'); doc.setTextColor(20,25,30);
+        doc.text(String(it.n), X.n, y);
+        doc.text(doc.splitTextToSize(it.deb.cod + '  ' + it.deb.nome, 110)[0], X.conta, y);
+        doc.text(razaoNum(it.valor), X.deb, y, {align:'right'});
+        y += 3.6;
+        doc.text('a  ' + doc.splitTextToSize(it.cred.cod + '  ' + it.cred.nome, 106)[0], X.conta + 3, y);
+        doc.text(razaoNum(it.valor), X.cred, y, {align:'right'});
+        y += 3.6;
+        doc.setFontSize(7); doc.setTextColor(it.pendente?176:100, it.pendente?106:110, it.pendente?0:120);
+        doc.text(hist, X.conta + 3, y);
+        y += hist.length*3.4 + 1.6;
+        doc.setFontSize(7.5); doc.setTextColor(20,25,30);
+        doc.setDrawColor(225,230,236); doc.setLineWidth(0.1); doc.line(12, y-2.6, pageW-12, y-2.6);
+      });
+      y += 1;
+    });
+    if(!d.itens.length){ doc.text('Nenhum lançamento no período.', X.conta, y); y += 6; }
+    if(y + 14 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+    y += 1;
+    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('TOTAL DO PERÍODO (' + d.itens.length + ' lançamentos)', X.conta, y);
+    doc.text(razaoNum(d.total), X.deb, y, {align:'right'});
+    doc.text(razaoNum(d.total), X.cred, y, {align:'right'});
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(100,110,120);
+    doc.text('Lançamentos em partidas dobradas, em ordem cronológica. O número de ordem é fixo para cada lançamento.', X.conta, y);
+    doc.setTextColor(20,25,30);
+    pdfFooterDisclaimer(doc, 'Livro Diário gerado automaticamente a partir dos Lançamentos Contábeis — Arts. 1.180 a 1.184 do Código Civil. Para fins de escrituração formal, o livro deve ser autenticado conforme a legislação (SPED Contábil/Junta Comercial).');
+    try{
+      const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+      for(let i=1;i<=total;i++){
+        if(doc.setPage) doc.setPage(i);
+        doc.setFontSize(8); doc.setTextColor(140,150,160);
+        doc.text('Folha ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
+      }
+    }catch(e){}
+    doc.save(nomeArquivo('livro-diario', c));
   }
 
   function gerarPdfRazao(contaId){
@@ -15187,6 +15316,7 @@
     else if(state.contabilRelSubTab==='balanco') content = balancoContentHtml();
     else if(state.contabilRelSubTab==='dre') content = dreContentHtml();
     else if(state.contabilRelSubTab==='razao') content = razaoContentHtml();
+    else if(state.contabilRelSubTab==='diario') content = diarioContentHtml();
     return `
       <div class="panel-head"><h3>Balanço, Balancete e DRE</h3></div>
       <div class="form-hint" style="margin:-4px 0 14px;">Relatórios de apoio contábil calculados automaticamente a partir dos Lançamentos Contábeis desta empresa, conforme a Lei 6.404/76 (estrutura das demonstrações financeiras) e o Código Civil (escrituração — Art. 1.179 a 1.195).</div>
@@ -15197,6 +15327,7 @@
         <button type="button" class="dept-tab-btn ${state.contabilRelSubTab==='balanco'?'active':''}" data-rel-subtab="balanco">Balanço Patrimonial</button>
         <button type="button" class="dept-tab-btn ${state.contabilRelSubTab==='dre'?'active':''}" data-rel-subtab="dre">DRE</button>
         <button type="button" class="dept-tab-btn ${state.contabilRelSubTab==='razao'?'active':''}" data-rel-subtab="razao">Livro Razão</button>
+        <button type="button" class="dept-tab-btn ${state.contabilRelSubTab==='diario'?'active':''}" data-rel-subtab="diario">Livro Diário</button>
       </div>
       <div id="relContent">${content}</div>
     `;
@@ -20598,6 +20729,8 @@
     }
     const balanceteZeradas = document.getElementById('balanceteZeradas');
     if(balanceteZeradas) balanceteZeradas.onchange = (e)=>{ state.balanceteMostrarZeradas = e.target.checked; render(); };
+    const pdfDiarioBtn = document.getElementById('pdfDiarioBtn');
+    if(pdfDiarioBtn) pdfDiarioBtn.onclick = ()=> gerarPdfDiario();
     const pdfBalanceteBtn = document.getElementById('pdfBalanceteBtn');
     if(pdfBalanceteBtn) pdfBalanceteBtn.onclick = ()=> gerarPdfBalancete();
     const pdfBalancoBtn = document.getElementById('pdfBalancoBtn');
