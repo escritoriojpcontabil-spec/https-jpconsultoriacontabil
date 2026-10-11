@@ -11562,11 +11562,12 @@
   }
   async function entrarFirebase(fu){
     const username = String(fu.email||'').split('@')[0];
-    let aut = null;
-    try{ const d = await autorizadosDoc(fu.uid).get(); if(d.exists) aut = d.data(); }catch(e){ aut = null; }
+    let aut = null, errLeitura = '';
+    try{ const d = await autorizadosDoc(fu.uid).get(); if(d.exists) aut = d.data(); }catch(e){ aut = null; errLeitura = (e && (e.code || e.message)) || 'erro'; }
     if(!aut){
       try{ await firebase.auth().signOut(); }catch(e){}
-      state.authError = 'Seu acesso não está autorizado. Fale com o administrador do escritório.';
+      state.authError = 'Seu acesso não está autorizado. Fale com o administrador do escritório.' +
+        (errLeitura ? ' [Falha ao ler a lista de autorizados: ' + errLeitura + ']' : ' [Não existe documento em jp_autorizados com o ID ' + fu.uid + ']');
       return false;
     }
     let u = null;
