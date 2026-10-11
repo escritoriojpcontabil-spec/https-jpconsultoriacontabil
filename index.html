@@ -3082,7 +3082,7 @@
     doc.setFontSize(8.5); doc.setFont('helvetica','normal');
     if(c && c.doc){ doc.text('CNPJ/CPF: ' + c.doc, 14, y - 2); y += 4; }
     doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim) + '   |   ' + d.linhas.length + ' conta(s)' + (d.ocultas ? ' (' + d.ocultas + ' sem movimento ocultas)' : '') + '   |   valores em R$', 14, y); y += 7;
-    const X = { cod:12, conta:32, ant:118, deb:144, cred:170, atual:200 };
+    const X = { cod:12, conta:32, ant:114, deb:140, cred:166, atual:195 };
     function cabecalho(){
       doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
       doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
@@ -3387,7 +3387,7 @@
     doc.setFont('helvetica','normal');
     doc.text('Período: ' + (dados.inicioReal ? fmtDate(dados.inicioReal) : 'início') + ' a ' + fmtDate(state.relDataFim) + '   |   ' + dados.linhas.length + ' lançamento(s)   |   valores em R$', 14, y); y += 7;
 
-    const X = { data:12, hist:29, contra:83, deb:150, cred:171, saldo:198 };
+    const X = { data:12, hist:29, contra:83, deb:148, cred:169, saldo:195 };
     function cabecalhoTabela(){
       doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
       doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
