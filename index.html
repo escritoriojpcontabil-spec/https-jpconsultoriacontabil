@@ -7849,7 +7849,7 @@
           { nome:'Intangível', itens:[a('Marcas e Patentes',D), a('Softwares e Licenças',D), a('(-) Amortização Acumulada',C)] },
         ]},
       ]},
-      { nome:'PASSIVO', nat:C, subs:[
+      { nome:'PASSIVO E PATRIMÔNIO LÍQUIDO', nat:C, subs:[
         { nome:'PASSIVO CIRCULANTE', contas:[
           { nome:'Fornecedores', itens:L(['Fornecedores Nacionais','Fornecedores Estrangeiros'],C) },
           { nome:'Obrigações Trabalhistas', itens:[a('Salários e Encargos a Pagar',C,'obrig_trabalhistas'), a('Pró-labore a Pagar',C), a('FGTS a Recolher',C), a('INSS a Recolher',C), a('Provisão de Férias e 13º Salário',C)] },
@@ -7862,11 +7862,11 @@
           { nome:'Empréstimos e Financiamentos de Longo Prazo', itens:L(['Empréstimos Bancários de Longo Prazo','Financiamentos de Longo Prazo'],C) },
           { nome:'Parcelamentos de Longo Prazo', itens:L(['Parcelamentos de Tributos de Longo Prazo'],C) },
         ]},
-      ]},
-      { nome:'PATRIMÔNIO LÍQUIDO', nat:C, subs:[
-        { nome:'Capital Social', contas:[ { nome:'Capital Subscrito', itens:[a('Capital Social Subscrito',C), a('(-) Capital Social a Integralizar',D)] } ] },
-        { nome:'Reservas', contas:[ { nome:'Reservas de Lucros', itens:L(['Reserva Legal','Reserva de Lucros'],C) } ] },
-        { nome:'Lucros/Prejuízos Acumulados', contas:[ { nome:'Lucros ou Prejuízos', itens:[a('Lucros Acumulados',C), a('(-) Prejuízos Acumulados',D), a('(-) Distribuição de Lucros',D)] } ] },
+        { nome:'PATRIMÔNIO LÍQUIDO', contas:[
+          { nome:'Capital Social', itens:[a('Capital Social Subscrito',C), a('(-) Capital Social a Integralizar',D)] },
+          { nome:'Reservas de Lucros', itens:L(['Reserva Legal','Reserva de Lucros'],C) },
+          { nome:'Lucros/Prejuízos Acumulados', itens:[a('Lucros Acumulados',C), a('(-) Prejuízos Acumulados',D), a('(-) Distribuição de Lucros',D)] },
+        ]},
       ]},
       { nome:'RECEITAS', nat:C, subs:[
         { nome:'Receita Bruta de Vendas/Serviços', contas:[
@@ -7923,11 +7923,75 @@
     return state.planoContas.some(c=>c.clientId===clientId && (c.codigo==='1.01' || c.modelo));
   }
   // Converte um prefixo legado dos relatórios (ex.: '6.5', '1.1') para a máscara da empresa.
+  // Numeração nova: Patrimônio Líquido dentro do grupo 2 (2.03), Receitas 3, Custos 4, Despesas 5.
+  function planoNumNova(clientId){
+    return state.planoContas.some(c=>c.clientId===clientId && c.codigo==='2.03');
+  }
+  // Conta de balanço (Ativo/Passivo/PL) e conta de PL, conforme a numeração da empresa.
+  function contaEhBalanco(clientId, codigo){
+    return planoNumNova(clientId) ? /^[12](\.|$)/.test(String(codigo||'')) : /^[123](\.|$)/.test(String(codigo||''));
+  }
+  function contaEhPL(clientId, codigo){
+    return planoNumNova(clientId) ? /^2\.03(\.|$)/.test(String(codigo||'')) : /^3(\.|$)/.test(String(codigo||''));
+  }
   function planoPrefixo(clientId, legado){
     if(!planoMascaraNova(clientId)) return legado;
     const seg = String(legado).split('.');
+    if(planoNumNova(clientId)){
+      if(seg[0]==='3'){ const r = ['2','03']; if(seg[1]) r.push(seg[1].padStart(2,'0')); return r.join('.'); }
+      if(seg[0]==='4') seg[0]='3'; else if(seg[0]==='5') seg[0]='4'; else if(seg[0]==='6') seg[0]='5';
+    }
     if(seg.length>=2) seg[1] = seg[1].padStart(2,'0');
     return seg.join('.');
+  }
+  // Converte o plano de uma empresa da numeração antiga (PL=3, Receitas=4, Custos=5, Despesas=6)
+  // para a nova (PL=2.03, Receitas=3, Custos=4, Despesas=5). Os ids das contas não mudam, então
+  // os lançamentos continuam apontando para as mesmas contas.
+  function planoPrecisaConverter(clientId){
+    return planoMascaraNova(clientId) && !planoNumNova(clientId) && state.planoContas.some(c=>c.clientId===clientId && c.codigo==='3') && !state.planoContas.some(c=>c.clientId===clientId && c.codigo==='2.03');
+  }
+  function planoPlanoConversao(clientId){
+    const contas = state.planoContas.filter(c=>c.clientId===clientId).slice().sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}));
+    const p4 = n=>String(n).padStart(4,'0');
+    const mapa = {}; const apagar = []; const seq = {};
+    contas.forEach(c=>{
+      const seg = String(c.codigo).split('.');
+      if(seg[0]==='3'){
+        if(seg.length===1){ mapa[c.id] = {codigo:'2.03', nome:'PATRIMÔNIO LÍQUIDO', sup:'2'}; }
+        else if(seg.length===2){ mapa[c.id] = {codigo:'2.03.'+seg[1], sup:'2.03'}; }
+        else if(c.tipo==='Analítica'){
+          const pai = '2.03.'+seg[1]; seq[pai] = (seq[pai]||0)+1;
+          mapa[c.id] = {codigo: pai+'.'+p4(seq[pai]), sup: pai};
+        } else { apagar.push(c.id); }
+      } else if(seg[0]==='4'||seg[0]==='5'||seg[0]==='6'){
+        const n = String(+seg[0]-1); const novo = [n].concat(seg.slice(1)).join('.');
+        const sup = seg.length>1 ? [n].concat(seg.slice(1,-1)).join('.') : null;
+        mapa[c.id] = {codigo: novo, sup: sup||null};
+      }
+    });
+    return {mapa, apagar, total: contas.length};
+  }
+  async function planoConverterNumeracao(clientId){
+    if(!planoPrecisaConverter(clientId)) return {ok:false, motivo:'Este plano já está na numeração nova (ou não segue o modelo padrão).'};
+    const {mapa, apagar} = planoPlanoConversao(clientId);
+    // segurança: nenhum código novo pode colidir com uma conta que permanece
+    const usados = new Set(); let colisao = false;
+    state.planoContas.filter(c=>c.clientId===clientId && !apagar.includes(c.id)).forEach(c=>{
+      const cod = mapa[c.id] ? mapa[c.id].codigo : c.codigo;
+      if(usados.has(cod)) colisao = true; usados.add(cod);
+    });
+    if(colisao) return {ok:false, motivo:'Há códigos que ficariam repetidos após a conversão. Nada foi alterado.'};
+    let alteradas = 0;
+    for(const c of state.planoContas.filter(x=>x.clientId===clientId)){
+      if(apagar.includes(c.id)){ await Store.delete('planocontas:'+c.id, true); continue; }
+      const m = mapa[c.id]; if(!m) continue;
+      const nova = Object.assign({}, c, {codigo:m.codigo, contaSuperior:m.sup});
+      if(m.nome) nova.nome = m.nome;
+      await Store.set('planocontas:'+c.id, JSON.stringify(nova), true);
+      alteradas++;
+    }
+    await loadPlanoContas();
+    return {ok:true, alteradas, removidas: apagar.length};
   }
   function pmModeloDaEmpresa(clientId){
     const cli = state.clients.find(c=>c.id===clientId);
@@ -8081,7 +8145,7 @@
     const receitaBruta = somaGrupo(planoPrefixo(clientId,'4.1'));
     const deducoes = somaGrupo(planoPrefixo(clientId,'4.2'));
     const receitaLiquida = receitaBruta - deducoes;
-    const custos = somaGrupo('5');
+    const custos = somaGrupo(planoPrefixo(clientId,'5'));
     const lucroBruto = receitaLiquida - custos;
     const despesasAdm = somaGrupo(planoPrefixo(clientId,'6.1'));
     const despesasCom = somaGrupo(planoPrefixo(clientId,'6.2'));
@@ -14864,7 +14928,7 @@
         </div>
         <button type="button" class="btn-calc" id="criarPlanoContasPadraoBtn">Criar plano de contas padrão (máscara antiga X.X.XX.XXX.XXXX)</button>
         <div class="form-hint" style="margin-top:8px;">Isso cria a estrutura básica (Ativo, Passivo, Patrimônio Líquido, Receitas, Custos, Despesas) já na máscara X.X.XX.XXX / X.X.XX.XXX.XXXX — depois é só editar/adicionar conforme a necessidade.</div>
-      ` : `<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
+      ` : `${planoPrecisaConverter(state.contabilEmpresaAtiva) ? `<div class="legis-note" style="margin-bottom:12px;">Este plano usa a numeração antiga (Patrimônio Líquido = 3, Receitas = 4, Custos = 5, Despesas = 6). A numeração nova é: <b>Passivo e Patrimônio Líquido = 2</b> (PL em 2.03), <b>Receitas = 3</b>, Custos = 4 e Despesas = 5. Os lançamentos continuam nas mesmas contas; só os códigos mudam. <button type="button" class="btn-add" id="pmConverterNumBtn" style="margin-left:8px;">Converter para a numeração nova</button></div>` : ''}<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
 
       ${pmSecaoHtml()}
 
@@ -15140,7 +15204,7 @@
   function siIdLanc(clientId, contaId){ return 'abertura-'+clientId+'-'+contaId; }
   function siAberturas(clientId){ return state.lancamentosContabeis.filter(l=>l.clientId===clientId && l.aberturaSaldo===true); }
   function siContasBalanco(clientId){
-    return state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica' && /^[123](\.|$)/.test(String(c.codigo||'')))
+    return state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica' && contaEhBalanco(clientId, c.codigo))
       .sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}));
   }
   function siContrapartidaPadrao(clientId, ab){
@@ -15150,7 +15214,7 @@
       let best=null, n=0; Object.keys(ids).forEach(k=>{ if(ids[k]>n){ n=ids[k]; best=k; } });
       if(best && ab.length>1) return best;
       return best; }
-    const pl = analiticas.filter(c=>/^3(\.|$)/.test(c.codigo));
+    const pl = analiticas.filter(c=>contaEhPL(clientId, c.codigo));
     return (pl.find(c=>/saldos? iniciais|abertura|ajustes? de/i.test(c.nome)) || pl.find(c=>/lucros?.*acumulad|preju[ií]zos?/i.test(c.nome)) || pl[0] || {}).id || '';
   }
   function saldosIniciaisPanelHtml(){
@@ -15169,13 +15233,13 @@
     const cpPadrao = siContrapartidaPadrao(empresa, ab);
     const dataAb = (ab[0] && ab[0].data) || (new Date().getFullYear()-1)+'-12-31';
     if(!contas.length) return cab + `<div class="empty">Esta empresa ainda não tem plano de contas. Crie o plano na aba "Plano de Contas".</div>`;
-    const pl = contas.filter(c=>/^3(\.|$)/.test(c.codigo));
+    const pl = contas.filter(c=>contaEhPL(empresa, c.codigo));
     return cab + `
       <div class="form-hint" style="margin:-4px 0 14px; font-weight:700;">Empresa selecionada: ${escapeHtml(clientName(empresa))}</div>
       <div class="form-row">
         <div class="field"><label>Data do saldo (dia anterior ao 1º lançamento)</label><input type="date" id="siData" value="${dataAb}"/></div>
         <div class="field"><label>Contrapartida (Patrimônio Líquido)</label>
-          <select id="siContra">${pl.length? '' : '<option value="">— Crie uma conta analítica no grupo 3 (Patrimônio Líquido) —</option>'}
+          <select id="siContra">${pl.length? '' : '<option value="">— Crie uma conta analítica no Patrimônio Líquido —</option>'}
             ${pl.map(c=>`<option value="${c.id}" ${c.id===cpPadrao?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}
           </select></div>
       </div>
@@ -15183,7 +15247,7 @@
       <table class="tbl" id="siTabela" style="width:100%;">
         <thead><tr><th style="text-align:left;">Conta</th><th style="width:150px;">Valor (R$)</th><th style="width:130px;">Natureza</th></tr></thead>
         <tbody>
-        ${contas.filter(c=>!/^3(\.|$)/.test(c.codigo) || c.id!==cpPadrao).map(c=>{
+        ${contas.filter(c=>!contaEhPL(empresa, c.codigo) || c.id!==cpPadrao).map(c=>{
           const ex = porConta[c.id];
           const dc = ex ? ex.dc : (c.natureza==='Credora' ? 'C' : 'D');
           return `<tr>
@@ -15346,7 +15410,7 @@
     const servico = /NFS/i.test(n.tipo||'');
     const est = nfContaPorPadroes(clientId, servico
       ? [/servi[cç]os? (de terceiros|contratados|tomados|prestados por)/i, /^materiais aplicados em servi/i, /^materiais de consumo/i]
-      : [/^mercadorias para revenda/i, /^mat[ée]rias-primas/i, /^materiais de consumo/i, /^materiais de embalagem/i], ['1','5','6'], 'Devedora');
+      : [/^mercadorias para revenda/i, /^mat[ée]rias-primas/i, /^materiais de consumo/i, /^materiais de embalagem/i], ['1','4','5','6'], 'Devedora');
     return { deb: est, cred: forn, faltam: [!est && (servico ? 'Serviços de Terceiros / Materiais' : 'Mercadorias para Revenda / Matérias-Primas'), !forn && 'Fornecedores'].filter(Boolean) };
   }
   function nfHistoricoContabil(n){
@@ -22783,6 +22847,15 @@
       };
     }
 
+    const pmConverterNumBtn = document.getElementById('pmConverterNumBtn');
+    if(pmConverterNumBtn) pmConverterNumBtn.onclick = async ()=>{
+      const emp = state.contabilEmpresaAtiva;
+      if(!confirm('Converter o plano de contas de "'+clientName(emp)+'" para a numeração nova?\n\nPatrimônio Líquido passa para 2.03, Receitas para 3, Custos para 4 e Despesas para 5. Os lançamentos continuam nas mesmas contas. Recomenda-se fazer um backup antes.')) return;
+      pmConverterNumBtn.disabled = true; pmConverterNumBtn.textContent = 'Convertendo…';
+      const r = await planoConverterNumeracao(emp);
+      alert(r.ok ? 'Plano convertido: '+r.alteradas+' conta(s) renumerada(s).' : r.motivo);
+      render();
+    };
     const criarPlanoContasPadraoBtn = document.getElementById('criarPlanoContasPadraoBtn');
     if(criarPlanoContasPadraoBtn){
       criarPlanoContasPadraoBtn.onclick = async ()=>{
