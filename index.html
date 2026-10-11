@@ -3157,35 +3157,135 @@
     doc.save('dre-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
+  // Dados do Livro Razão de uma conta (usados na tela e no PDF).
+  function razaoDados(contaId, clientId){
+    const conta = state.planoContas.find(x=>x.id===contaId);
+    if(!conta) return null;
+    const nat = conta.natureza==='Devedora' ? 'Devedora' : 'Credora';
+    const lancs = state.lancamentosContabeis.filter(l=>l.clientId===clientId && (l.contaDebito===contaId || l.contaCredito===contaId) && (!state.relDataInicio || l.data>=state.relDataInicio) && l.data<=state.relDataFim)
+      .sort((a,b)=>(a.data||'').localeCompare(b.data||'') || String(a.id).localeCompare(String(b.id)));
+    const saldoAnterior = state.relDataInicio ? saldoConta(conta, clientId, null, dataAnterior(state.relDataInicio)) : 0;
+    let saldo = saldoAnterior, totDeb = 0, totCred = 0;
+    const linhas = lancs.map(l=>{
+      const isDeb = l.contaDebito===contaId;
+      const v = Number(l.valor)||0;
+      if(isDeb) totDeb += v; else totCred += v;
+      saldo += nat==='Devedora' ? (isDeb ? v : -v) : (isDeb ? -v : v);
+      const outra = state.planoContas.find(x=>x.id===(isDeb ? l.contaCredito : l.contaDebito));
+      return {
+        data: l.data, isDeb, valor: v, saldo,
+        historico: String(l.historico||'').replace(/\s*\(importado via OFX[^)]*\)\s*$/i,'').trim() || '—',
+        contra: outra ? outra.codigo + ' ' + outra.nome.replace(/\s*\(Importação OFX\)/,'') : '—',
+        pendente: !!(outra && (outra.papel==='classificar' || /Conta a Classificar/i.test(outra.nome))),
+      };
+    });
+    const inicioReal = state.relDataInicio || (linhas[0] ? linhas[0].data : '');
+    return { conta, nat, linhas, saldoAnterior, totDeb, totCred, saldoFinal: saldo, inicioReal };
+  }
+  function razaoNum(v){ return (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2}); }
+  // Saldo com indicação D (devedor) ou C (credor), em vez de sinal negativo.
+  function razaoSaldoDC(valor, nat){
+    const v = Number(valor)||0;
+    if(Math.abs(v) < 0.005) return razaoNum(0);
+    const letra = v >= 0 ? (nat==='Devedora' ? 'D' : 'C') : (nat==='Devedora' ? 'C' : 'D');
+    return razaoNum(Math.abs(v)) + ' ' + letra;
+  }
+
   function gerarPdfRazao(contaId){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const clientId = state.contabilEmpresaAtiva;
     const c = state.clients.find(x=>x.id===clientId);
-    const conta = state.planoContas.find(x=>x.id===contaId);
-    if(!conta) return;
+    const dados = razaoDados(contaId, clientId);
+    if(!dados) return;
+    const conta = dados.conta;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const LIM = 232; // acima da caixa de observação do rodapé
     let y = pdfHeader(doc, 'Livro Razão — ' + conta.codigo + ' ' + conta.nome, c ? c.name : '—', c ? c.logo : '');
-    doc.setFontSize(9); doc.setFont('helvetica','normal');
-    doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim), 14, y); y += 8;
-    const lancs = state.lancamentosContabeis.filter(l=>l.clientId===clientId && (l.contaDebito===contaId || l.contaCredito===contaId) && (!state.relDataInicio || l.data>=state.relDataInicio) && l.data<=state.relDataFim).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
-    let saldoAcum = state.relDataInicio ? saldoConta(conta, clientId, null, dataAnterior(state.relDataInicio)) : 0;
-    doc.setFontSize(8); doc.setFont('helvetica','bold');
-    doc.text('Data', 14, y); doc.text('Histórico', 38, y); doc.text('Débito', 140, y); doc.text('Crédito', 165, y); doc.text('Saldo', 196, y, {align:'right'});
-    y += 5; doc.setFont('helvetica','normal');
-    lancs.forEach(l=>{
-      if(y > 280){ doc.addPage(); y = 20; }
-      const isDeb = l.contaDebito===contaId;
-      const valorSigned = conta.natureza==='Devedora' ? (isDeb? l.valor : -l.valor) : (isDeb? -l.valor : l.valor);
-      saldoAcum += Number(valorSigned)||0;
-      doc.text(fmtDate(l.data), 14, y);
-      doc.text((l.historico||'').slice(0,55), 38, y);
-      doc.text(isDeb?fmtBRL(l.valor):'', 140, y);
-      doc.text(!isDeb?fmtBRL(l.valor):'', 165, y);
-      doc.text(fmtBRL(saldoAcum), 196, y, {align:'right'});
-      y += 5;
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    if(c && c.doc){ doc.text('CNPJ/CPF: ' + c.doc, 14, y - 2); y += 4; }
+    doc.setFont('helvetica','bold');
+    doc.text('Conta: ' + conta.codigo + ' — ' + conta.nome + '  (natureza ' + (dados.nat==='Devedora'?'devedora':'credora') + ')', 14, y); y += 5;
+    doc.setFont('helvetica','normal');
+    doc.text('Período: ' + (dados.inicioReal ? fmtDate(dados.inicioReal) : 'início') + ' a ' + fmtDate(state.relDataFim) + '   |   ' + dados.linhas.length + ' lançamento(s)   |   valores em R$', 14, y); y += 7;
+
+    const X = { data:12, hist:29, contra:83, deb:150, cred:171, saldo:198 };
+    function cabecalhoTabela(){
+      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Data', X.data, y); doc.text('Histórico', X.hist, y); doc.text('Contrapartida', X.contra, y);
+      doc.text('Débito', X.deb, y, {align:'right'}); doc.text('Crédito', X.cred, y, {align:'right'}); doc.text('Saldo', X.saldo, y, {align:'right'});
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
+    }
+    function novaPagina(){
+      doc.addPage();
+      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text('JP CONSULTORIA CONTÁBIL — Livro Razão', 12, 7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      doc.text(doc.splitTextToSize(conta.codigo + ' ' + conta.nome, 80)[0], pageW-12, 7, {align:'right'});
+      doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
+      doc.setTextColor(20,25,30);
+      y = 26; cabecalhoTabela();
+    }
+    cabecalhoTabela();
+    doc.setFontSize(7.5);
+    // linha de saldo anterior
+    doc.setFont('helvetica','bold');
+    doc.text('Saldo anterior', X.hist, y);
+    doc.text(razaoSaldoDC(dados.saldoAnterior, dados.nat), X.saldo, y, {align:'right'});
+    doc.setFont('helvetica','normal'); y += 5;
+
+    let zebra = false;
+    dados.linhas.forEach(r=>{
+      let hist = doc.splitTextToSize(r.historico, 50);
+      if(hist.length > 2){ hist = hist.slice(0,2); hist[1] = String(hist[1]).replace(/\s*\S{0,3}$/,'') + '…'; }
+      const contra = doc.splitTextToSize(r.contra, 40).slice(0,2);
+      const nl = Math.max(hist.length, contra.length, 1);
+      const h = nl*3.6 + 1.6;
+      if(y + h > LIM){ novaPagina(); doc.setFontSize(7.5); zebra = false; }
+      if(zebra){ doc.setFillColor(244,247,250); doc.rect(10, y-3.4, pageW-20, h, 'F'); }
+      zebra = !zebra;
+      doc.setTextColor(20,25,30);
+      doc.text(fmtDate(r.data), X.data, y);
+      doc.text(hist, X.hist, y);
+      if(r.pendente) doc.setTextColor(176,106,0);
+      doc.text(contra, X.contra, y);
+      doc.setTextColor(20,25,30);
+      if(r.isDeb) doc.text(razaoNum(r.valor), X.deb, y, {align:'right'}); else doc.text(razaoNum(r.valor), X.cred, y, {align:'right'});
+      doc.text(razaoSaldoDC(r.saldo, dados.nat), X.saldo, y, {align:'right'});
+      y += h;
     });
+    if(!dados.linhas.length){ doc.text('Nenhum lançamento no período.', X.hist, y); y += 6; }
+
+    // totais
+    if(y + 18 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+    y += 1;
+    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3, pageW-10, y-3);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('TOTAIS DO PERÍODO', X.hist, y);
+    doc.text(razaoNum(dados.totDeb), X.deb, y, {align:'right'});
+    doc.text(razaoNum(dados.totCred), X.cred, y, {align:'right'});
+    y += 5;
+    doc.text('SALDO FINAL em ' + fmtDate(state.relDataFim), X.hist, y);
+    doc.text(razaoSaldoDC(dados.saldoFinal, dados.nat), X.saldo, y, {align:'right'});
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(7);
+    doc.setTextColor(100,110,120);
+    doc.text('D = saldo devedor · C = saldo credor. Contrapartida em laranja = ainda em "Conta a Classificar".', X.hist, y);
+    doc.setTextColor(20,25,30);
+
     pdfFooterDisclaimer(doc, 'Livro Razão gerado automaticamente a partir dos Lançamentos Contábeis — Art. 1.184 do Código Civil.');
+    // numeração de páginas
+    try{
+      const total = doc.getNumberOfPages ? doc.getNumberOfPages() : (doc.internal.getNumberOfPages ? doc.internal.getNumberOfPages() : 1);
+      for(let i=1;i<=total;i++){
+        if(doc.setPage) doc.setPage(i);
+        doc.setFontSize(8); doc.setTextColor(140,150,160);
+        doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
+      }
+    }catch(e){}
     doc.save('razao-' + conta.codigo.replace(/\./g,'-') + '-' + (c?c.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
@@ -14726,22 +14826,27 @@
     `;
   }
   function razaoLancamentosHtml(contaId, clientId){
-    const conta = state.planoContas.find(c=>c.id===contaId);
-    if(!conta) return '';
-    const lancs = state.lancamentosContabeis.filter(l=>l.clientId===clientId && (l.contaDebito===contaId || l.contaCredito===contaId) && (!state.relDataInicio || l.data>=state.relDataInicio) && l.data<=state.relDataFim).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
-    let saldoAcum = state.relDataInicio ? saldoConta(conta, clientId, null, dataAnterior(state.relDataInicio)) : 0;
-    const linhasHtml = lancs.map(l=>{
-      const isDeb = l.contaDebito===contaId;
-      const valorSigned = conta.natureza==='Devedora' ? (isDeb? l.valor : -l.valor) : (isDeb? -l.valor : l.valor);
-      saldoAcum += Number(valorSigned)||0;
-      return `<tr><td>${fmtDate(l.data)}</td><td>${escapeHtml(l.historico||'')}</td><td style="text-align:right" class="mono">${isDeb?fmtBRL(l.valor):''}</td><td style="text-align:right" class="mono">${!isDeb?fmtBRL(l.valor):''}</td><td style="text-align:right" class="mono">${fmtBRL(saldoAcum)}</td></tr>`;
-    }).join('');
+    const d = razaoDados(contaId, clientId);
+    if(!d) return '';
+    const linhasHtml = d.linhas.map(r=>`<tr>
+      <td>${fmtDate(r.data)}</td>
+      <td>${escapeHtml(r.historico)}</td>
+      <td style="${r.pendente?'color:#B06A00;':''}">${escapeHtml(r.contra)}</td>
+      <td style="text-align:right" class="mono">${r.isDeb?razaoNum(r.valor):''}</td>
+      <td style="text-align:right" class="mono">${!r.isDeb?razaoNum(r.valor):''}</td>
+      <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(r.saldo, d.nat)}</td></tr>`).join('');
     return `
-      <div class="form-hint" style="margin:14px 0 6px;">Razão da conta ${escapeHtml(conta.codigo)} — ${escapeHtml(conta.nome)}</div>
+      <div class="form-hint" style="margin:14px 0 6px;"><b>Razão da conta ${escapeHtml(d.conta.codigo)} — ${escapeHtml(d.conta.nome)}</b> (natureza ${d.nat==='Devedora'?'devedora':'credora'}) · ${d.inicioReal?fmtDate(d.inicioReal):'início'} a ${fmtDate(state.relDataFim)} · ${d.linhas.length} lançamento(s) · valores em R$</div>
       <table>
-        <thead><tr><th>Data</th><th>Histórico</th><th style="text-align:right">Débito</th><th style="text-align:right">Crédito</th><th style="text-align:right">Saldo</th></tr></thead>
-        <tbody>${linhasHtml || '<tr><td colspan="5" style="text-align:center; color:var(--ink-soft);">Nenhum lançamento no período.</td></tr>'}</tbody>
+        <thead><tr><th>Data</th><th>Histórico</th><th>Contrapartida</th><th style="text-align:right">Débito</th><th style="text-align:right">Crédito</th><th style="text-align:right">Saldo</th></tr></thead>
+        <tbody>
+          <tr style="font-weight:700;"><td colspan="5">Saldo anterior</td><td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(d.saldoAnterior, d.nat)}</td></tr>
+          ${linhasHtml || '<tr><td colspan="6" style="text-align:center; color:var(--ink-soft);">Nenhum lançamento no período.</td></tr>'}
+          <tr style="font-weight:700; border-top:2px solid var(--ink-soft);"><td colspan="3">TOTAIS DO PERÍODO</td><td style="text-align:right" class="mono">${razaoNum(d.totDeb)}</td><td style="text-align:right" class="mono">${razaoNum(d.totCred)}</td><td></td></tr>
+          <tr style="font-weight:700;"><td colspan="5">SALDO FINAL em ${fmtDate(state.relDataFim)}</td><td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(d.saldoFinal, d.nat)}</td></tr>
+        </tbody>
       </table>
+      <div class="form-hint" style="margin-top:6px;">D = saldo devedor · C = saldo credor. Contrapartida em laranja = ainda em "Conta a Classificar".</div>
       <button type="button" class="btn-detail" id="pdfRazaoBtn" style="margin-top:12px;">Baixar PDF</button>
     `;
   }
