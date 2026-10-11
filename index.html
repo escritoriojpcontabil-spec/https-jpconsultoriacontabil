@@ -15834,9 +15834,12 @@
       if(p.modo==='ratear'){
         v = i<n ? Math.round(total/n*100)/100 : Math.round((total-acum)*100)/100;
         acum += v;
+      } else if(p.modo==='manual'){
+        const bruto = (p.valores && p.valores[i]!=null) ? p.valores[i] : '';
+        const num = pesqNumero(bruto);
+        v = num!=null ? Math.round(num*100)/100 : 0;
       } else v = total;
-      const data = p.fim ? p.fim : null;
-      parcelas.push({ i, n, data: dupSomaMes(l.data, i), valor: v });
+      parcelas.push({ i, n, data: (p.datas && p.datas[i]) || dupSomaMes(l.data, i), valor: v });
     }
     return parcelas;
   }
@@ -15857,22 +15860,25 @@
             <div class="form-row">
               <div class="field"><label>Quantidade de meses seguintes</label><input type="number" id="dpMeses" min="1" max="120" step="1" value="${d.meses}" required/></div>
               <div class="field"><label>Valor de cada lançamento</label><select id="dpModo">
-                <option value="igual" ${d.modo==='igual'?'selected':''}>Repetir o mesmo valor (${fmtBRL(l.valor)})</option>
-                <option value="ratear" ${d.modo==='ratear'?'selected':''}>Ratear o valor entre os meses (apropriação)</option></select></div>
+                <option value="manual" ${d.modo==='manual'?'selected':''}>Informar o valor de cada mês (valores diferentes)</option>
+                <option value="ratear" ${d.modo==='ratear'?'selected':''}>Ratear o valor do lançamento entre os meses</option>
+                <option value="igual" ${d.modo==='igual'?'selected':''}>Repetir o mesmo valor (${fmtBRL(l.valor)})</option></select></div>
             </div>
             <div class="form-row">
               <div class="field"><label>Conta Débito das cópias</label><select id="dpDeb">${contasAnaliticasOptionsHtml(d.contaDebito, l.clientId)}</select></div>
               <div class="field"><label>Conta Crédito das cópias</label><select id="dpCred">${contasAnaliticasOptionsHtml(d.contaCredito, l.clientId)}</select></div>
             </div>
             <div class="field"><label>Histórico das cópias (a parcela, como "2/6", é acrescentada no fim)</label><input type="text" id="dpHist" value="${escapeHtml(d.historico)}"/></div>
-            <div class="form-hint" style="margin:0 0 6px;"><b>Prévia</b> — ${plano.length} lançamento(s), total ${fmtBRL(soma)}${Object.keys(existentes).length ? ' · <span style="color:#B06A00;">datas que já têm cópia serão puladas</span>' : ''}</div>
+            <div class="form-hint" style="margin:0 0 6px;"><b>Prévia</b> — <span id="dpResumo">${d.modo==='manual' ? plano.filter(p=>p.valor>0).length + ' mês(es) com valor, total ' + fmtBRL(soma) : plano.length + ' lançamento(s), total ' + fmtBRL(soma)}</span>${d.modo==='manual' ? ' · meses sem valor não são criados' : ''}${Object.keys(existentes).length ? ' · <span style="color:#B06A00;">datas que já têm cópia serão puladas</span>' : ''}</div>
             <div style="max-height:180px; overflow:auto; margin-bottom:10px;"><table><thead><tr><th>Parcela</th><th>Data</th><th style="text-align:right">Valor</th></tr></thead><tbody>
-              ${plano.map(p=>`<tr style="${existentes[p.data]?'opacity:.5;':''}"><td>${p.i}/${p.n}</td><td>${fmtDate(p.data)}${existentes[p.data]?' (já existe)':''}</td><td style="text-align:right" class="mono">${razaoNum(p.valor)}</td></tr>`).join('')}
+              ${plano.map(p=>`<tr style="${existentes[p.data]?'opacity:.5;':''}"><td>${p.i}/${p.n}</td>
+                <td>${d.modo==='manual' ? `<input type="date" class="dp-data" data-i="${p.i}" value="${p.data}" style="width:150px;"/>` : fmtDate(p.data)}${existentes[p.data]?' (já existe)':''}</td>
+                <td style="text-align:right" class="mono">${d.modo==='manual' ? `<input type="text" inputmode="decimal" class="dp-valor" data-i="${p.i}" value="${escapeHtml((d.valores&&d.valores[p.i])||'')}" placeholder="0,00" style="width:130px; text-align:right;"/>` : razaoNum(p.valor)}</td></tr>`).join('')}
             </tbody></table></div>
             <div class="form-hint" style="margin:0 0 10px;">A data mantém o mesmo dia do mês (em meses mais curtos, vai para o último dia). O lançamento original não é alterado.</div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="dpCancel">Cancelar</button>
-              <button type="submit" class="btn-add">Criar ${plano.length} lançamento(s)</button>
+              <button type="submit" class="btn-add">Criar lançamentos</button>
             </div>
           </form>
         </div>
@@ -15889,8 +15895,8 @@
       id: uid(), clientId:l.clientId, data:p.data, valor:p.valor, contaDebito:d.contaDebito, contaCredito:d.contaCredito,
       historico: (d.historico||l.historico||'').replace(/\s+$/,'') + ' — parcela ' + p.i + '/' + p.n, duplicadoDe:l.id, parcela:p.i + '/' + p.n,
     }));
+    if(!novos.length){ alert(d.modo==='manual' ? 'Nada a criar: informe o valor de pelo menos um mês.' : 'Nada a criar: todas as datas já têm cópia deste lançamento.'); return; }
     state.modal = null; state.dupLancData = null; render();
-    if(!novos.length){ alert('Nada a criar: todas as datas já têm cópia deste lançamento.'); return; }
     for(let i=0;i<novos.length;i+=15){ await Promise.all(novos.slice(i,i+15).map(x=>saveLancamentoContabilSilent(x))); }
     await loadLancamentosContabeis(); render();
   }
@@ -15901,6 +15907,14 @@
     por('dpMeses','oninput',(x)=>{ d.meses = x.target.value; });
     por('dpMeses','onchange',(x)=>{ d.meses = x.target.value; rerender(); });
     por('dpModo','onchange',(x)=>{ d.modo = x.target.value; rerender(); });
+    document.querySelectorAll('.dp-valor').forEach(el=>{ el.oninput = ()=>{
+      d.valores = d.valores || {}; d.valores[el.dataset.i] = el.value;
+      const l = state.lancamentosContabeis.find(x=>x.id===d.id); const pl = dupPlano(l, d);
+      const r = document.getElementById('dpResumo');
+      if(r) r.textContent = pl.filter(p=>p.valor>0).length + ' mês(es) com valor, total ' + fmtBRL(pl.reduce((a,p)=>a+p.valor,0));
+    }; });
+    document.querySelectorAll('.dp-data').forEach(el=>{ el.onchange = ()=>{ d.datas = d.datas || {}; d.datas[el.dataset.i] = el.value; }; });
+    document.querySelector('.dp-valor') && setTimeout(()=>{ const a = document.querySelector('.dp-valor'); if(a && !a.value && document.activeElement===document.body) a.focus(); }, 0);
     por('dpDeb','onchange',(x)=>{ d.contaDebito = x.target.value; });
     por('dpCred','onchange',(x)=>{ d.contaCredito = x.target.value; });
     por('dpHist','oninput',(x)=>{ d.historico = x.target.value; });
@@ -23036,7 +23050,7 @@
       el.onclick = ()=>{
         const l = state.lancamentosContabeis.find(x=>x.id===el.getAttribute('data-dup-lanc'));
         if(!l) return;
-        state.dupLancData = { id:l.id, meses:6, modo:'igual', contaDebito:l.contaDebito, contaCredito:l.contaCredito, historico:l.historico||'' };
+        state.dupLancData = { id:l.id, meses:6, modo:'manual', valores:{}, datas:{}, contaDebito:l.contaDebito, contaCredito:l.contaCredito, historico:l.historico||'' };
         state.modal = 'dupLanc'; render();
       };
     });
