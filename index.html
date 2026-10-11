@@ -3498,6 +3498,124 @@
     doc.save(nomeArquivo('livro-diario', c));
   }
 
+
+  function gerarPdfRazaoGrupo(grupoId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const clientId = state.contabilEmpresaAtiva;
+    const c = state.clients.find(x=>x.id===clientId);
+    const dg = razaoGrupoDados(grupoId, clientId);
+    if(!dg) return;
+    const g = dg.grupo;
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const LIM = 232;
+    let y = pdfHeader(doc, 'Livro Razão — Grupo ' + g.codigo + ' ' + g.nome, c ? c.name : '—', c ? c.logo : '');
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    if(c && c.doc){ doc.text('CNPJ/CPF: ' + c.doc, 14, y - 2); y += 4; }
+    doc.setFont('helvetica','bold');
+    doc.text('Grupo: ' + g.codigo + ' — ' + g.nome + '  (' + dg.contas.length + ' conta(s))', 14, y); y += 5;
+    doc.setFont('helvetica','normal');
+    doc.text('Período: início a ' + fmtDate(state.relDataFim) + '   |   valores em R$' + (dg.ocultas ? '   |   ' + dg.ocultas + ' conta(s) sem movimento omitida(s)' : ''), 14, y); y += 7;
+    const X = { data:12, hist:29, contra:83, deb:148, cred:169, saldo:195 };
+    function cabecalhoTabela(){
+      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Data', X.data, y); doc.text('Histórico', X.hist, y); doc.text('Contrapartida', X.contra, y);
+      doc.text('Débito', X.deb, y, {align:'right'}); doc.text('Crédito', X.cred, y, {align:'right'}); doc.text('Saldo', X.saldo, y, {align:'right'});
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
+    }
+    function novaPagina(){
+      doc.addPage();
+      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text('JP CONSULTORIA CONTÁBIL — Livro Razão', 12, 7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      doc.text(doc.splitTextToSize('Grupo ' + g.codigo + ' ' + g.nome, 80)[0], pageW-12, 7, {align:'right'});
+      doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
+      doc.setTextColor(20,25,30);
+      y = 26; cabecalhoTabela();
+    }
+    cabecalhoTabela();
+    dg.contas.forEach(d=>{
+      // faixa da conta (com o título preso ao menos às duas primeiras linhas)
+      if(y + 5 + 4.8*3 > LIM){ novaPagina(); }
+      y += 1;
+      doc.setFillColor(231,237,244); doc.rect(10, y-3.6, pageW-20, 5, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(27,58,92);
+      doc.text(doc.splitTextToSize(d.conta.codigo + ' — ' + d.conta.nome, 170)[0], X.data, y);
+      doc.setTextColor(20,25,30); y += 5;
+      doc.setFontSize(7.5);
+      doc.text('Saldo anterior', X.hist, y);
+      doc.text(razaoSaldoDC(d.saldoAnterior, d.nat), X.saldo, y, {align:'right'});
+      doc.setFont('helvetica','normal'); y += 4.6;
+      let zebra = false;
+      d.linhas.forEach(r=>{
+        let hist = doc.splitTextToSize(r.historico, 50);
+        if(hist.length > 2){ hist = hist.slice(0,2); hist[1] = String(hist[1]).replace(/\s*\S{0,3}$/,'') + '…'; }
+        const contra = doc.splitTextToSize(r.contra, 40).slice(0,2);
+        const nl = Math.max(hist.length, contra.length, 1);
+        const h = nl*3.6 + 1.6;
+        if(y + h > LIM){ novaPagina(); doc.setFontSize(7.5); zebra = false; }
+        if(zebra){ doc.setFillColor(244,247,250); doc.rect(10, y-3.4, pageW-20, h, 'F'); }
+        zebra = !zebra;
+        doc.setTextColor(20,25,30);
+        doc.text(fmtDate(r.data), X.data, y);
+        doc.text(hist, X.hist, y);
+        if(r.pendente) doc.setTextColor(176,106,0);
+        doc.text(contra, X.contra, y);
+        doc.setTextColor(20,25,30);
+        if(r.isDeb) doc.text(razaoNum(r.valor), X.deb, y, {align:'right'}); else doc.text(razaoNum(r.valor), X.cred, y, {align:'right'});
+        doc.text(razaoSaldoDC(r.saldo, d.nat), X.saldo, y, {align:'right'});
+        y += h;
+      });
+      if(y + 6 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+      doc.setDrawColor(190,200,212); doc.setLineWidth(0.15); doc.line(10, y-2.8, pageW-10, y-2.8);
+      doc.setFont('helvetica','bold');
+      doc.text('Total da conta', X.hist, y);
+      doc.text(razaoNum(d.totDeb), X.deb, y, {align:'right'}); doc.text(razaoNum(d.totCred), X.cred, y, {align:'right'});
+      doc.text(razaoSaldoDC(d.saldoFinal, d.nat), X.saldo, y, {align:'right'});
+      doc.setFont('helvetica','normal'); y += 6;
+    });
+    if(!dg.contas.length){ doc.text('Nenhuma conta do grupo com movimento ou saldo no período.', X.hist, y); y += 6; }
+
+    // resumo do grupo
+    if(y + 14 + dg.contas.length*4.6 > LIM){ novaPagina(); }
+    y += 2;
+    doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+    doc.text('RESUMO DO GRUPO ' + g.codigo + ' — ' + doc.splitTextToSize(g.nome, 90)[0], X.data, y);
+    doc.text('Débitos', X.deb, y, {align:'right'}); doc.text('Créditos', X.cred, y, {align:'right'}); doc.text('Saldo final', X.saldo, y, {align:'right'});
+    doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
+    dg.contas.forEach(d=>{
+      if(y + 4.6 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+      doc.text(doc.splitTextToSize(d.conta.codigo + '  ' + d.conta.nome, 112)[0], X.data, y);
+      doc.text(razaoNum(d.totDeb), X.deb, y, {align:'right'}); doc.text(razaoNum(d.totCred), X.cred, y, {align:'right'});
+      doc.text(razaoSaldoDC(d.saldoFinal, d.nat), X.saldo, y, {align:'right'});
+      y += 4.4;
+    });
+    if(y + 6 > LIM){ novaPagina(); }
+    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3, pageW-10, y-3);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('TOTAL DO GRUPO', X.data, y);
+    doc.text(razaoNum(dg.tot.deb), X.deb, y, {align:'right'}); doc.text(razaoNum(dg.tot.cred), X.cred, y, {align:'right'});
+    doc.text(razaoSaldoDC(dg.tot.fim, dg.nat), X.saldo, y, {align:'right'});
+    y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(100,110,120);
+    doc.text('D = saldo devedor · C = saldo credor. Contrapartida em laranja = ainda em "Conta a Classificar".', X.data, y);
+    doc.setTextColor(20,25,30);
+    pdfFooterDisclaimer(doc, 'Livro Razão do grupo gerado automaticamente a partir dos Lançamentos Contábeis — Art. 1.184 do Código Civil.');
+    try{
+      const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+      for(let i=1;i<=total;i++){
+        if(doc.setPage) doc.setPage(i);
+        doc.setFontSize(8); doc.setTextColor(140,150,160);
+        doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
+      }
+    }catch(e){}
+    doc.save(nomeArquivo('razao-grupo-' + g.codigo.replace(/\./g,'-'), c));
+  }
+
   function gerarPdfRazao(contaId){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const clientId = state.contabilEmpresaAtiva;
@@ -15453,14 +15571,15 @@
     return `
       <div class="field" style="max-width:420px;">
         <label>Conta</label>
-        <select id="razaoContaSelect">${contasAnaliticas.map(c=>`<option value="${c.id}">${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}</select>
+        <select id="razaoContaSelect">
+          <optgroup label="Grupos — razão de todas as contas do grupo">${razaoGrupos(clientId).map(g=>`<option value="grp:${g.id}">▸ GRUPO ${escapeHtml(g.codigo)} — ${escapeHtml(g.nome)}</option>`).join('')}</optgroup>
+          <optgroup label="Contas individuais">${contasAnaliticas.map(c=>`<option value="${c.id}">${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}</optgroup>
+        </select>
       </div>
       <div id="razaoResultContainer"></div>
     `;
   }
-  function razaoLancamentosHtml(contaId, clientId){
-    const d = razaoDados(contaId, clientId);
-    if(!d) return '';
+  function razaoTabelaHtml(d){
     const linhasHtml = d.linhas.map(r=>`<tr>
       <td>${fmtDate(r.data)}</td>
       <td>${escapeHtml(r.historico)}</td>
@@ -15479,8 +15598,56 @@
           <tr style="font-weight:700;"><td colspan="5">SALDO FINAL em ${fmtDate(state.relDataFim)}</td><td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(d.saldoFinal, d.nat)}</td></tr>
         </tbody>
       </table>
+    `;
+  }
+  function razaoLancamentosHtml(contaId, clientId){
+    const d = razaoDados(contaId, clientId);
+    if(!d) return '';
+    return razaoTabelaHtml(d) + `
       <div class="form-hint" style="margin-top:6px;">D = saldo devedor · C = saldo credor. Contrapartida em laranja = ainda em "Conta a Classificar".</div>
       <button type="button" class="btn-detail" id="pdfRazaoBtn" style="margin-top:12px;">Baixar PDF</button>
+    `;
+  }
+
+  // ----- Razão por grupo (ex.: todos os fornecedores, todos os clientes) -----
+  function razaoGrupos(clientId){
+    const todas = state.planoContas.filter(c=>c.clientId===clientId);
+    return todas.filter(c=>c.tipo==='Sintética' && todas.some(a=>a.tipo==='Analítica' && String(a.codigo).startsWith(c.codigo+'.')))
+      .sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}));
+  }
+  function razaoGrupoDados(grupoId, clientId){
+    const g = state.planoContas.find(x=>x.id===grupoId);
+    if(!g) return null;
+    const filhas = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica' && String(c.codigo).startsWith(g.codigo+'.'))
+      .sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}));
+    const todas = filhas.map(c=>razaoDados(c.id, clientId)).filter(Boolean);
+    const contas = state.razaoSoMov===false ? todas : todas.filter(d=>d.linhas.length || Math.abs(d.saldoAnterior)>0.004 || Math.abs(d.saldoFinal)>0.004);
+    const nat = g.natureza==='Devedora' ? 'Devedora' : (g.natureza==='Credora' ? 'Credora' : (contas[0] ? contas[0].nat : 'Devedora'));
+    const sinal = (d)=> d.nat===nat ? 1 : -1;
+    const tot = { ant:0, deb:0, cred:0, fim:0 };
+    contas.forEach(d=>{ tot.ant += sinal(d)*d.saldoAnterior; tot.deb += d.totDeb; tot.cred += d.totCred; tot.fim += sinal(d)*d.saldoFinal; });
+    return { grupo:g, nat, contas, ocultas: todas.length - contas.length, tot };
+  }
+  function razaoGrupoHtml(grupoId, clientId){
+    const d = razaoGrupoDados(grupoId, clientId);
+    if(!d) return '';
+    const resumo = d.contas.map(c=>`<tr><td class="mono">${escapeHtml(c.conta.codigo)}</td><td>${escapeHtml(c.conta.nome)}</td>
+      <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(c.saldoAnterior, c.nat)}</td>
+      <td style="text-align:right" class="mono">${razaoNum(c.totDeb)}</td><td style="text-align:right" class="mono">${razaoNum(c.totCred)}</td>
+      <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(c.saldoFinal, c.nat)}</td></tr>`).join('');
+    return `
+      <div class="form-hint" style="margin:14px 0 6px;"><b>Razão do grupo ${escapeHtml(d.grupo.codigo)} — ${escapeHtml(d.grupo.nome)}</b> · ${d.contas.length} conta(s)${d.ocultas?' ('+d.ocultas+' sem movimento ocultas)':''} · até ${fmtDate(state.relDataFim)} · valores em R$</div>
+      <label style="display:flex; align-items:center; gap:8px; margin:0 0 10px;"><input type="checkbox" id="razaoSoMov" ${state.razaoSoMov===false?'':'checked'}/> Mostrar só contas com movimento ou saldo</label>
+      <table>
+        <thead><tr><th>Código</th><th>Conta</th><th style="text-align:right">Saldo anterior</th><th style="text-align:right">Débitos</th><th style="text-align:right">Créditos</th><th style="text-align:right">Saldo final</th></tr></thead>
+        <tbody>${resumo || '<tr><td colspan="6" style="text-align:center; color:var(--ink-soft);">Nenhuma conta com movimento ou saldo no período.</td></tr>'}
+          <tr style="font-weight:700; border-top:2px solid var(--ink-soft);"><td colspan="2">TOTAL DO GRUPO</td>
+            <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(d.tot.ant, d.nat)}</td><td style="text-align:right" class="mono">${razaoNum(d.tot.deb)}</td><td style="text-align:right" class="mono">${razaoNum(d.tot.cred)}</td>
+            <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(d.tot.fim, d.nat)}</td></tr>
+        </tbody>
+      </table>
+      <button type="button" class="btn-detail" id="pdfRazaoBtn" style="margin:12px 0 4px;">Baixar PDF do grupo (razão de todas as contas)</button>
+      ${d.contas.map(c=>razaoTabelaHtml(c)).join('')}
     `;
   }
 
@@ -20901,9 +21068,13 @@
     const razaoContaSelect = document.getElementById('razaoContaSelect');
     if(razaoContaSelect){
       const atualizarRazao = ()=>{
-        document.getElementById('razaoResultContainer').innerHTML = razaoLancamentosHtml(razaoContaSelect.value, state.contabilEmpresaAtiva);
+        const v = razaoContaSelect.value;
+        const grupo = v.indexOf('grp:')===0;
+        document.getElementById('razaoResultContainer').innerHTML = grupo ? razaoGrupoHtml(v.slice(4), state.contabilEmpresaAtiva) : razaoLancamentosHtml(v, state.contabilEmpresaAtiva);
         const btn = document.getElementById('pdfRazaoBtn');
-        if(btn) btn.onclick = ()=> gerarPdfRazao(razaoContaSelect.value);
+        if(btn) btn.onclick = ()=> grupo ? gerarPdfRazaoGrupo(v.slice(4)) : gerarPdfRazao(v);
+        const chk = document.getElementById('razaoSoMov');
+        if(chk) chk.onchange = (e)=>{ state.razaoSoMov = e.target.checked; atualizarRazao(); };
       };
       razaoContaSelect.onchange = atualizarRazao;
       atualizarRazao();
