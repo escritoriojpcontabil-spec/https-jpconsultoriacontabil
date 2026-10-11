@@ -677,6 +677,7 @@
     balanceteMostrarZeradas: false,
     relDataInicio: '',
     relDataFim: todayStr(),
+    relDataFimManual: false,
     propostas: [],
     propostaClienteId: '',
     propostaModoAvulso: false,
@@ -15194,12 +15195,28 @@
     `;
   }
 
+  function fimDoMes(ymd){
+    const [y,m] = String(ymd).slice(0,7).split('-').map(Number);
+    return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10);
+  }
+  // Data final padrão = último dia do mês do lançamento mais recente da empresa (em vez de "hoje"),
+  // enquanto o usuário não escolher outra data.
+  function relDataFimPadrao(clientId){
+    let ult = '';
+    state.lancamentosContabeis.forEach(l=>{ if(l.clientId===clientId && l.data && l.data>ult) ult = l.data; });
+    return fimDoMes(ult || todayStr());
+  }
   function periodoSeletorHtml(){
+    if(!state.relDataFimManual) state.relDataFim = relDataFimPadrao(state.contabilEmpresaAtiva);
+    const ini = state.relDataInicio, fim = state.relDataFim;
+    const mesAtual = (ini && fim && ini.slice(0,7)===fim.slice(0,7) && ini.slice(8)==='01' && fim===fimDoMes(fim)) ? fim.slice(0,7) : '';
     return `
       <div class="form-row">
+        <div class="field"><label>Mês de referência (1º ao último dia)</label><input type="month" id="relMes" value="${mesAtual}"/></div>
         <div class="field"><label>Data inicial (deixe em branco para saldo desde o início)</label><input type="date" id="relDataInicio" value="${state.relDataInicio}"/></div>
         <div class="field"><label>Data final</label><input type="date" id="relDataFim" value="${state.relDataFim}"/></div>
       </div>
+      <div class="form-hint" style="margin:-6px 0 10px;">${state.relDataFimManual ? 'Período escolhido por você. <a href="#" id="relDataAuto">Voltar ao padrão (fim do mês do último lançamento)</a>.' : 'Data final padrão: último dia do mês do lançamento mais recente. Escolha um mês ou ajuste as datas para outro período.'}</div>
     `;
   }
 
@@ -20714,9 +20731,13 @@
       el.onclick = ()=>{ state.contabilRelSubTab = el.getAttribute('data-rel-subtab'); render(); };
     });
     const relDataInicio = document.getElementById('relDataInicio');
-    if(relDataInicio) relDataInicio.onchange = (e)=>{ state.relDataInicio = e.target.value; render(); };
+    if(relDataInicio) relDataInicio.onchange = (e)=>{ state.relDataInicio = e.target.value; state.relDataFimManual = true; render(); };
+    const relMes = document.getElementById('relMes');
+    if(relMes) relMes.onchange = (e)=>{ const v = e.target.value; if(!v) return; state.relDataInicio = v+'-01'; state.relDataFim = fimDoMes(v+'-01'); state.relDataFimManual = true; render(); };
+    const relDataAuto = document.getElementById('relDataAuto');
+    if(relDataAuto) relDataAuto.onclick = (e)=>{ e.preventDefault(); state.relDataFimManual = false; state.relDataInicio = ''; render(); };
     const relDataFim = document.getElementById('relDataFim');
-    if(relDataFim) relDataFim.onchange = (e)=>{ state.relDataFim = e.target.value; render(); };
+    if(relDataFim) relDataFim.onchange = (e)=>{ state.relDataFim = e.target.value || relDataFimPadrao(state.contabilEmpresaAtiva); state.relDataFimManual = !!e.target.value; render(); };
     const razaoContaSelect = document.getElementById('razaoContaSelect');
     if(razaoContaSelect){
       const atualizarRazao = ()=>{
