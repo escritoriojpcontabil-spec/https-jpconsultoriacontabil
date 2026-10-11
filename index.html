@@ -8820,6 +8820,24 @@
     return state.lancamentosContabeis.filter(l=>l.clientId===clientId && l.data>=de && l.data<=ate
       && /importado via OFX/i.test(l.historico||'') && (l.contaDebito===banco.id || l.contaCredito===banco.id));
   }
+  // Apaga vários lançamentos em paralelo (blocos de 15), mostrando o progresso no botão e avisando se algo falhar.
+  async function apagarLancamentosEmLote(ids, btn){
+    const txt = btn ? btn.textContent : '';
+    if(btn) btn.disabled = true;
+    let feitos = 0, falhas = 0, ultimoErro = '';
+    for(let i=0; i<ids.length; i+=15){
+      const bloco = ids.slice(i, i+15);
+      await Promise.all(bloco.map(async id=>{
+        try{ await Store.delete('lancamentoscontabeis:'+id, true); }
+        catch(e){ falhas++; ultimoErro = (e && (e.code||e.message)) || 'erro'; }
+      }));
+      feitos += bloco.length;
+      if(btn) btn.textContent = 'Apagando… ' + Math.min(feitos, ids.length) + ' de ' + ids.length;
+    }
+    await loadLancamentosContabeis();
+    if(btn){ btn.disabled = false; btn.textContent = txt; }
+    return { total: ids.length, falhas, ultimoErro };
+  }
   async function saveLancamentoContabilItem(l){
     if(!l.id) l.id = uid();
     await Store.set('lancamentoscontabeis:'+l.id, JSON.stringify(l), true);
@@ -21570,20 +21588,22 @@
       const lista = ofxImportadosNoPeriodo(state.contabilEmpresaAtiva, ds[0], ds[ds.length-1]);
       if(!lista.length) return;
       if(!confirm('Apagar ' + lista.length + ' lançamento(s) importados de extrato entre ' + fmtDate(ds[0]) + ' e ' + fmtDate(ds[ds.length-1]) + '? Inclui os que você já classificou (as regras aprendidas serão aplicadas de novo na reimportação). Esta ação não pode ser desfeita — faça um backup antes se tiver dúvida.')) return;
-      for(const l of lista){ await Store.delete('lancamentoscontabeis:'+l.id, true); }
-      await loadLancamentosContabeis();
+      const res = await apagarLancamentosEmLote(lista.map(l=>l.id), ofxLimparPeriodoBtn);
       render();
-      alert(lista.length + ' lançamento(s) apagado(s). Agora clique em "Importar" para lançar o extrato de novo.');
+      alert(res.falhas
+        ? (res.total - res.falhas) + ' apagado(s); ' + res.falhas + ' não puderam ser apagados (' + res.ultimoErro + '). Tente de novo.'
+        : res.total + ' lançamento(s) apagado(s). Agora clique em "Importar" para lançar o extrato de novo.');
     };
     const ofxRemoverDupBtn = document.getElementById('ofxRemoverDupBtn');
     if(ofxRemoverDupBtn) ofxRemoverDupBtn.onclick = async ()=>{
       const an = state.ofxPreview && state.ofxPreview._an;
       if(!an || !an.excessoIds.length) return;
       if(!confirm('Remover ' + an.excessoIds.length + ' lançamento(s) repetido(s)? Serão mantidos os que já estão classificados e, entre os pendentes, o mais antigo. Confira se o extrato realmente mostra menos lançamentos iguais do que o sistema.')) return;
-      for(const id of an.excessoIds){ await Store.delete('lancamentoscontabeis:'+id, true); }
-      await loadLancamentosContabeis();
+      const res = await apagarLancamentosEmLote(an.excessoIds, ofxRemoverDupBtn);
       render();
-      alert(an.excessoIds.length + ' lançamento(s) repetido(s) removido(s).');
+      alert(res.falhas
+        ? (res.total - res.falhas) + ' removido(s); ' + res.falhas + ' falharam (' + res.ultimoErro + '). Tente de novo.'
+        : res.total + ' lançamento(s) repetido(s) removido(s).');
     };
     const ofxConfirmImportBtn = document.getElementById('ofxConfirmImportBtn');
     if(ofxConfirmImportBtn){
