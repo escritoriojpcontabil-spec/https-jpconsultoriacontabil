@@ -15406,6 +15406,233 @@
       </div>`;
   }
 
+
+  // ===== Pesquisa na contabilidade (fornecedores, clientes, valores) por mês, ano ou todo o período =====
+  function pesqEstado(){
+    if(!state.pesq){ const hoje = todayStr(); state.pesq = { q:'', modo:'mes', mes:null, ano:hoje.slice(0,4), vmin:'', vmax:'', tipo:'todos' }; }
+    return state.pesq;
+  }
+  function pesqNumero(txt){
+    let t = String(txt||'').trim().replace(/^R\$\s*/i,'');
+    if(!/^\d[\d.,]*$/.test(t)) return null;
+    if(t.indexOf(',')>=0) t = t.replace(/\./g,'').replace(',','.');
+    else if((t.match(/\./g)||[]).length>1) t = t.replace(/\./g,'');
+    const n = parseFloat(t);
+    return isNaN(n) ? null : n;
+  }
+  function pesqEhTipo(conta, tipo){
+    if(!conta) return false;
+    if(tipo==='fornecedor') return conta.pessoaTipo==='fornecedor' || /^fornecedores?\b/i.test(conta.nome||'');
+    if(tipo==='cliente') return conta.pessoaTipo==='cliente' || /^clientes?\b/i.test(conta.nome||'');
+    return false;
+  }
+  function pesqDados(clientId){
+    const e = pesqEstado();
+    const contas = {}; state.planoContas.filter(c=>c.clientId===clientId).forEach(c=>{ contas[c.id] = c; });
+    // período
+    let ini = '', fim = '9999-12-31', rotulo = 'Todo o período';
+    if(e.modo==='mes'){
+      const ym = e.mes || (state.relDataFim||todayStr()).slice(0,7);
+      ini = ym+'-01'; fim = fimDoMes(ini); rotulo = 'Mês ' + ym.slice(5) + '/' + ym.slice(0,4);
+    } else if(e.modo==='ano'){
+      ini = e.ano+'-01-01'; fim = e.ano+'-12-31'; rotulo = 'Ano ' + e.ano;
+    }
+    const termos = semAcento(e.q).split(/\s+/).filter(Boolean);
+    const valorBusca = pesqNumero(e.q);
+    const vmin = e.vmin!=='' ? pesqNumero(e.vmin) : null, vmax = e.vmax!=='' ? pesqNumero(e.vmax) : null;
+    const res = [];
+    state.lancamentosContabeis.forEach(l=>{
+      if(l.clientId!==clientId || !l.data || l.data<ini || l.data>fim) return;
+      const d = contas[l.contaDebito], c = contas[l.contaCredito];
+      const valor = Number(l.valor)||0;
+      if(e.tipo!=='todos' && !(pesqEhTipo(d,e.tipo) || pesqEhTipo(c,e.tipo))) return;
+      if(vmin!=null && valor < vmin - 0.004) return;
+      if(vmax!=null && valor > vmax + 0.004) return;
+      if(termos.length){
+        const hay = semAcento([l.historico, d&&d.codigo, d&&d.nome, d&&d.pessoaDoc, c&&c.codigo, c&&c.nome, c&&c.pessoaDoc, razaoNum(valor), valor.toFixed(2)].join(' '));
+        const docs = [d&&d.pessoaDoc, c&&c.pessoaDoc].filter(Boolean).join(' ');
+        const okTexto = termos.every(t=>{ if(hay.indexOf(t)>=0) return true; const dg = t.replace(/\D/g,''); return dg.length>=8 && docs.indexOf(dg)>=0; });
+        const okValor = valorBusca!=null && Math.abs(valor - valorBusca) < 0.005;
+        if(!okTexto && !okValor) return;
+      }
+      res.push({ id:l.id, data:l.data, valor, deb:d, cred:c, historico:l.historico||'' });
+    });
+    res.sort((a,b)=>a.data.localeCompare(b.data) || String(a.id).localeCompare(String(b.id)));
+    const total = Math.round(res.reduce((a,b)=>a+b.valor,0)*100)/100;
+    // totais por fornecedor / cliente (conta individual ou genérica)
+    const por = {};
+    res.forEach(r=>{
+      [['fornecedor',r.deb,'D'],['fornecedor',r.cred,'C'],['cliente',r.deb,'D'],['cliente',r.cred,'C']].forEach(([tp,conta,lado])=>{
+        if(!conta || !pesqEhTipo(conta,tp)) return;
+        if(e.tipo!=='todos' && e.tipo!==tp) return;
+        const k = conta.id;
+        const o = por[k] || (por[k] = { conta, tipo:tp, qtd:0, deb:0, cred:0 });
+        o.qtd++; if(lado==='D') o.deb += r.valor; else o.cred += r.valor;
+      });
+    });
+    const grupos = Object.keys(por).map(k=>por[k]).sort((a,b)=>String(a.conta.codigo).localeCompare(String(b.conta.codigo), undefined, {numeric:true}));
+    return { itens:res, total, rotulo, ini, fim, grupos, e };
+  }
+  function pesqResultadoHtml(){
+    const clientId = state.contabilEmpresaAtiva;
+    const d = pesqDados(clientId);
+    const nomeConta = (c)=> c ? escapeHtml(c.codigo + ' ' + c.nome) : '—';
+    const grupos = d.grupos.length ? `
+      <div class="form-hint" style="margin:14px 0 6px;"><b>Totais por ${d.e.tipo==='cliente'?'cliente':d.e.tipo==='fornecedor'?'fornecedor':'fornecedor / cliente'}</b> (no resultado)</div>
+      <table><thead><tr><th>Conta</th><th style="text-align:right">Lanç.</th><th style="text-align:right">Débitos</th><th style="text-align:right">Créditos</th></tr></thead><tbody>
+      ${d.grupos.map(g=>`<tr><td>${nomeConta(g.conta)}</td><td style="text-align:right" class="mono">${g.qtd}</td><td style="text-align:right" class="mono">${razaoNum(g.deb)}</td><td style="text-align:right" class="mono">${razaoNum(g.cred)}</td></tr>`).join('')}
+      </tbody></table>` : '';
+    return `
+      <div class="form-hint" style="margin:14px 0 6px;"><b>${d.itens.length} lançamento(s)</b> · ${escapeHtml(d.rotulo)} · soma dos valores: <b>${fmtBRL(d.total)}</b></div>
+      ${grupos}
+      <div class="form-hint" style="margin:14px 0 6px;"><b>Lançamentos encontrados</b></div>
+      <table><thead><tr><th>Data</th><th>Conta debitada</th><th>Conta creditada</th><th>Histórico</th><th style="text-align:right">Valor</th></tr></thead><tbody>
+      ${d.itens.map(r=>`<tr><td>${fmtDate(r.data)}</td><td>${nomeConta(r.deb)}</td><td>${nomeConta(r.cred)}</td><td>${escapeHtml(r.historico)}</td><td style="text-align:right; white-space:nowrap;" class="mono">${razaoNum(r.valor)}</td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center; color:var(--ink-soft);">Nenhum lançamento encontrado com esses filtros.</td></tr>'}
+      ${d.itens.length ? `<tr style="font-weight:700; border-top:2px solid var(--ink-soft);"><td colspan="4">TOTAL</td><td style="text-align:right" class="mono">${razaoNum(d.total)}</td></tr>` : ''}
+      </tbody></table>
+      ${d.itens.length ? `<button type="button" class="btn-detail" id="pdfPesquisaBtn" style="margin-top:12px;">Baixar PDF da pesquisa</button>` : ''}
+    `;
+  }
+  function pesquisaContabilPanelHtml(){
+    const empresa = state.contabilEmpresaAtiva;
+    const cab = `<div class="panel-head"><h3>Pesquisar na contabilidade</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Encontre lançamentos por <b>fornecedor, cliente, conta, histórico, CNPJ/CPF</b> ou por <b>valor</b> (digite o valor exato, como 1.234,56, ou use o valor mínimo e máximo). Escolha o período: um mês, um ano ou todo o período.</div>`;
+    if(!empresa) return cab + deptSelecioneUmaEmpresaHtml('pesquisar');
+    const e = pesqEstado();
+    if(!e.mes) e.mes = (state.relDataFim || todayStr()).slice(0,7);
+    const anoAtual = new Date().getFullYear();
+    const anos = []; for(let a=anoAtual+1; a>=anoAtual-8; a--) anos.push(String(a));
+    if(!anos.includes(e.ano)) anos.push(e.ano);
+    return cab + `
+      <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">Empresa selecionada: ${escapeHtml(clientName(empresa))}</div>
+      <div class="form-row">
+        <div class="field" style="flex:2;"><label>Buscar (fornecedor, cliente, histórico ou valor)</label><input type="search" id="pqTexto" value="${escapeHtml(e.q)}" placeholder="Ex.: ALFA, 12.345.678/0001-90, 1.234,56, aluguel…" autocomplete="off"/></div>
+        <div class="field"><label>Tipo</label><select id="pqTipo">
+          <option value="todos" ${e.tipo==='todos'?'selected':''}>Todos os lançamentos</option>
+          <option value="fornecedor" ${e.tipo==='fornecedor'?'selected':''}>Só fornecedores</option>
+          <option value="cliente" ${e.tipo==='cliente'?'selected':''}>Só clientes</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Período</label><select id="pqModo">
+          <option value="mes" ${e.modo==='mes'?'selected':''}>Mensal</option>
+          <option value="ano" ${e.modo==='ano'?'selected':''}>Anual</option>
+          <option value="tudo" ${e.modo==='tudo'?'selected':''}>Todo o período</option></select></div>
+        <div class="field" id="pqMesBox" style="${e.modo==='mes'?'':'display:none;'}"><label>Mês</label><input type="month" id="pqMes" value="${e.mes}"/></div>
+        <div class="field" id="pqAnoBox" style="${e.modo==='ano'?'':'display:none;'}"><label>Ano</label><select id="pqAno">${anos.map(a=>`<option value="${a}" ${a===e.ano?'selected':''}>${a}</option>`).join('')}</select></div>
+        <div class="field"><label>Valor mínimo (R$)</label><input type="text" id="pqVmin" value="${escapeHtml(e.vmin)}" placeholder="0,00" inputmode="decimal"/></div>
+        <div class="field"><label>Valor máximo (R$)</label><input type="text" id="pqVmax" value="${escapeHtml(e.vmax)}" placeholder="0,00" inputmode="decimal"/></div>
+      </div>
+      <div id="pqResultado">${pesqResultadoHtml()}</div>
+    `;
+  }
+  function pesqLigarResultado(){
+    const btn = document.getElementById('pdfPesquisaBtn');
+    if(btn){ btn.onclick = ()=> gerarPdfPesquisa(); adicionarBotoesImprimir(document.getElementById('pqResultado')); }
+  }
+  function pesqLigar(){
+    const e = pesqEstado();
+    const atualizar = ()=>{ const r = document.getElementById('pqResultado'); if(r){ r.innerHTML = pesqResultadoHtml(); pesqLigarResultado(); } };
+    const ligar = (id, ev, fn)=>{ const el = document.getElementById(id); if(el) el[ev] = fn; };
+    let timer = null;
+    ligar('pqTexto','oninput',(x)=>{ e.q = x.target.value; clearTimeout(timer); timer = setTimeout(atualizar, 180); });
+    ligar('pqTipo','onchange',(x)=>{ e.tipo = x.target.value; atualizar(); });
+    ligar('pqModo','onchange',(x)=>{ e.modo = x.target.value;
+      document.getElementById('pqMesBox').style.display = e.modo==='mes' ? '' : 'none';
+      document.getElementById('pqAnoBox').style.display = e.modo==='ano' ? '' : 'none'; atualizar(); });
+    ligar('pqMes','onchange',(x)=>{ e.mes = x.target.value || e.mes; atualizar(); });
+    ligar('pqAno','onchange',(x)=>{ e.ano = x.target.value; atualizar(); });
+    ligar('pqVmin','oninput',(x)=>{ e.vmin = x.target.value; clearTimeout(timer); timer = setTimeout(atualizar, 250); });
+    ligar('pqVmax','oninput',(x)=>{ e.vmax = x.target.value; clearTimeout(timer); timer = setTimeout(atualizar, 250); });
+    pesqLigarResultado();
+  }
+  function gerarPdfPesquisa(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const clientId = state.contabilEmpresaAtiva;
+    const c = state.clients.find(x=>x.id===clientId);
+    const d = pesqDados(clientId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const LIM = 232;
+    let y = pdfHeader(doc, 'Pesquisa na Contabilidade', c ? c.name : '—', c ? c.logo : '');
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    if(c && c.doc){ doc.text('CNPJ/CPF: ' + c.doc, 14, y - 2); y += 4; }
+    const filtros = [d.rotulo];
+    if(d.e.q) filtros.push('busca: "' + d.e.q + '"');
+    if(d.e.tipo!=='todos') filtros.push(d.e.tipo==='fornecedor' ? 'só fornecedores' : 'só clientes');
+    if(d.e.vmin!=='') filtros.push('mín. ' + d.e.vmin);
+    if(d.e.vmax!=='') filtros.push('máx. ' + d.e.vmax);
+    doc.text(doc.splitTextToSize('Filtros: ' + filtros.join('  |  '), 182), 14, y); y += 5;
+    doc.text(d.itens.length + ' lançamento(s)   |   soma dos valores: ' + razaoNum(d.total) + '   |   valores em R$', 14, y); y += 7;
+    const X = { data:12, conta:29, deb:195 };
+    function cabecalho(){
+      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Data', X.data, y); doc.text('Contas / Histórico', X.conta, y); doc.text('Valor', X.deb, y, {align:'right'});
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
+    }
+    function novaPagina(){
+      doc.addPage();
+      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text('JP CONSULTORIA CONTÁBIL — Pesquisa na Contabilidade', 12, 7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
+      doc.setTextColor(20,25,30);
+      y = 26; cabecalho();
+    }
+    if(d.grupos.length){
+      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Totais por fornecedor / cliente', X.data, y);
+      doc.text('Lanç.', 130, y, {align:'right'}); doc.text('Débitos', 162, y, {align:'right'}); doc.text('Créditos', X.deb, y, {align:'right'});
+      doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
+      d.grupos.forEach(g=>{
+        if(y + 4.6 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+        doc.setFontSize(7.5);
+        doc.text(doc.splitTextToSize(g.conta.codigo + '  ' + g.conta.nome, 100)[0], X.data, y);
+        doc.text(String(g.qtd), 130, y, {align:'right'}); doc.text(razaoNum(g.deb), 162, y, {align:'right'}); doc.text(razaoNum(g.cred), X.deb, y, {align:'right'});
+        y += 4.4;
+      });
+      y += 4;
+      if(y + 20 > LIM){ novaPagina(); }
+    }
+    cabecalho();
+    doc.setFontSize(7.5);
+    d.itens.forEach(r=>{
+      let hist = doc.splitTextToSize(r.historico, 140);
+      if(hist.length > 2){ hist = hist.slice(0,2); hist[1] = String(hist[1]).replace(/\s*\S{0,3}$/,'') + '…'; }
+      const h = 3.6 + hist.length*3.4 + 2;
+      if(y + h > LIM){ novaPagina(); doc.setFontSize(7.5); }
+      doc.setFont('helvetica','normal'); doc.setTextColor(20,25,30); doc.setFontSize(7.5);
+      doc.text(fmtDate(r.data), X.data, y);
+      const dn = r.deb ? r.deb.codigo + ' ' + r.deb.nome : '—', cn = r.cred ? r.cred.codigo + ' ' + r.cred.nome : '—';
+      doc.text(doc.splitTextToSize('D ' + dn + '   |   C ' + cn, 140)[0], X.conta, y);
+      doc.text(razaoNum(r.valor), X.deb, y, {align:'right'});
+      y += 3.6;
+      doc.setFontSize(7); doc.setTextColor(100,110,120);
+      doc.text(hist, X.conta, y);
+      y += hist.length*3.4 + 1.6;
+      doc.setDrawColor(225,230,236); doc.setLineWidth(0.1); doc.line(12, y-2.6, pageW-12, y-2.6);
+    });
+    if(!d.itens.length){ doc.text('Nenhum lançamento encontrado.', X.conta, y); y += 6; }
+    if(y + 10 > LIM){ novaPagina(); }
+    y += 1;
+    doc.setTextColor(20,25,30); doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('TOTAL (' + d.itens.length + ' lançamentos)', X.conta, y); doc.text(razaoNum(d.total), X.deb, y, {align:'right'});
+    pdfFooterDisclaimer(doc, 'Pesquisa gerada a partir dos Lançamentos Contábeis da empresa, com os filtros indicados acima.');
+    try{
+      const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+      for(let i=1;i<=total;i++){
+        if(doc.setPage) doc.setPage(i);
+        doc.setFontSize(8); doc.setTextColor(140,150,160);
+        doc.text('Página ' + i + ' de ' + total, pageW-12, doc.internal.pageSize.getHeight()-10, {align:'right'});
+      }
+    }catch(e){}
+    pdfSalvar(doc, nomeArquivo('pesquisa-contabil', c));
+  }
+
   function lancContabilModalHtml(){
     const d = state.lancContabilModalData;
     if(!d) return '';
@@ -17521,6 +17748,7 @@
     else if(state.contabilTab==='historico') tabContent = historicosPanelHtml();
     else if(state.contabilTab==='lancamentos') tabContent = lancamentosContabeisPanelHtml();
     else if(state.contabilTab==='saldos') tabContent = saldosIniciaisPanelHtml();
+    else if(state.contabilTab==='pesquisa') tabContent = pesquisaContabilPanelHtml();
     else if(state.contabilTab==='ofx') tabContent = ofxImportPanelHtml();
     else if(state.contabilTab==='relatorios') tabContent = relatoriosContabeisPanelHtml();
     return `
@@ -17530,6 +17758,7 @@
           <button type="button" class="dp-tab-btn ${state.contabilTab==='plano'?'active':''}" data-contabil-tab="plano">Plano de Contas</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='historico'?'active':''}" data-contabil-tab="historico">Histórico Contábil</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='lancamentos'?'active':''}" data-contabil-tab="lancamentos">Lançamentos Contábeis</button>
+          <button type="button" class="dp-tab-btn ${state.contabilTab==='pesquisa'?'active':''}" data-contabil-tab="pesquisa">🔍 Pesquisar</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='saldos'?'active':''}" data-contabil-tab="saldos">Saldos Iniciais</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='ofx'?'active':''}" data-contabil-tab="ofx">Importação OFX</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='relatorios'?'active':''}" data-contabil-tab="relatorios">Balanço, Balancete e DRE</button>
@@ -22469,6 +22698,7 @@
     if(lcCancel) lcCancel.onclick = ()=>{ state.modal=null; state.lancContabilModalData=null; render(); };
     aplicarBuscaSelects(root);
     adicionarBotoesImprimir(root);
+    if(document.getElementById('pqTexto')) pesqLigar();
     const lcClienteSelect = document.getElementById('lcCliente');
     if(lcClienteSelect){
       lcClienteSelect.onchange = (e)=>{
