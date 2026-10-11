@@ -15141,6 +15141,33 @@
     if(!state.deptAllClients) list = list.filter(l=>isClientInScope(l.clientId));
     return list;
   }
+  // Lançamentos que o botão "Apagar" removeria (uma empresa, mês escolhido ou todos; saldos iniciais ficam).
+  function lancParaApagar(){
+    const emp = deptOneSelectedClient(); if(!emp) return null;
+    let l = state.lancamentosContabeis.filter(x=>x.clientId===emp && x.aberturaSaldo!==true);
+    if(state.lancMes) l = l.filter(x=>String(x.data||'').slice(0,7)===state.lancMes);
+    return {emp, lista:l};
+  }
+  function lancApagarBarHtml(){
+    const r = lancParaApagar();
+    if(!r) return `<div class="form-hint" style="margin:0 0 10px;">Para apagar lançamentos em lote, marque uma única empresa no seletor "Selecionar cliente" no topo.</div>`;
+    if(!r.lista.length) return '';
+    const txt = state.lancMes ? 'Apagar os '+r.lista.length+' lançamentos de '+lancMesNome(state.lancMes) : 'Apagar todos os '+r.lista.length+' lançamentos desta empresa';
+    return `<div style="margin:0 0 12px;"><button type="button" class="btn-sm danger" id="lancApagarLoteBtn">${escapeHtml(txt)}</button> <span class="form-hint" style="margin:0 0 0 6px;">Saldos iniciais não são apagados. Faça um backup antes.</span></div>`;
+  }
+  async function lancApagarLote(){
+    const r = lancParaApagar(); if(!r || !r.lista.length) return;
+    const quem = clientName(r.emp), onde = state.lancMes ? lancMesNome(state.lancMes) : 'TODOS os meses';
+    if(!confirm('Apagar '+r.lista.length+' lançamento(s) contábil(is) de "'+quem+'" — '+onde+'?\n\nEsta ação não pode ser desfeita. Os saldos iniciais não serão apagados.')) return;
+    if(!state.lancMes){
+      const t = prompt('Para confirmar, digite APAGAR:');
+      if(!t || t.trim().toUpperCase()!=='APAGAR') return;
+    }
+    for(const l of r.lista){ await Store.delete('lancamentoscontabeis:'+l.id, true); }
+    state.lancMes = '';
+    await loadLancamentosContabeis(); render();
+    alert(r.lista.length+' lançamento(s) apagado(s).');
+  }
   function lancMesesSeletorHtml(){
     const list = lancListaEscopo();
     const meses = Array.from(new Set(list.map(l=>String(l.data||'').slice(0,7)))).sort().reverse();
@@ -15193,7 +15220,7 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       ${notasContabilCardHtml()}
-      ${lancMesesSeletorHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
+      ${lancMesesSeletorHtml()}${lancApagarBarHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
   }
 
@@ -23088,6 +23115,8 @@
         if(m2){ m2.textContent = nfResumoContabil(r); m2.className = 'lookup-msg ' + (Object.keys(r.semConta).length || r.semPlano.length ? 'error' : 'success'); m2.style.display='block'; }
       }catch(e){ console.error(e); if(msg){ msg.textContent = 'Falha ao gerar: ' + ((e&&(e.code||e.message))||'erro'); msg.className='lookup-msg error'; msg.style.display='block'; } nfContabilizarBtn.disabled=false; nfContabilizarBtn.textContent='Gerar lançamentos das notas fiscais'; }
     };
+    const lancApagarLoteBtn = document.getElementById('lancApagarLoteBtn');
+    if(lancApagarLoteBtn) lancApagarLoteBtn.onclick = ()=>{ lancApagarLote(); };
     const lancMesSel = document.getElementById('lancMesSel');
     if(lancMesSel) lancMesSel.onchange = ()=>{ state.lancMes = lancMesSel.value; render(); };
     const novoLancContabilBtn = document.getElementById('novoLancContabilBtn');
