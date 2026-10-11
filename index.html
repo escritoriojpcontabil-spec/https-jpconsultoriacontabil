@@ -14927,6 +14927,46 @@
     el.innerHTML = 'Devedores: <b>'+fmtBRL(d)+'</b> · Credores: <b>'+fmtBRL(c)+'</b> · A diferença <b>'+fmtBRL(Math.abs(dif))+'</b> '+(dif>0?'vai a crédito':dif<0?'vai a débito':'(zerada)')+' na conta de contrapartida (Patrimônio Líquido).';
   }
 
+
+  // Campo de pesquisa para listas (select) longas: filtra as opções enquanto digita.
+  // Enter escolhe a primeira opção encontrada. Se a lista for recarregada, o filtro é limpo.
+  function semAcento(t){ return String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase(); }
+  function aplicarBuscaSelects(root){
+    (root||document).querySelectorAll('select').forEach(sel=>{
+      if(sel.dataset.busca==='ok' || sel.dataset.nobusca || sel.multiple) return;
+      if(sel.options.length < 12) return;
+      sel.dataset.busca = 'ok';
+      const inp = document.createElement('input');
+      inp.type = 'search'; inp.className = 'select-busca'; inp.autocomplete = 'off';
+      inp.placeholder = '🔍 Pesquisar (código ou nome)…';
+      inp.style.cssText = 'width:100%; box-sizing:border-box; margin-bottom:6px; padding:8px 10px; font-size:13px; border:1px solid var(--line, #d0d5dd); border-radius:8px;';
+      const info = document.createElement('div');
+      info.style.cssText = 'font-size:11px; color:var(--ink-soft,#667085); margin:-2px 0 6px; display:none;';
+      sel.parentNode.insertBefore(inp, sel); sel.parentNode.insertBefore(info, sel);
+      function filtrar(){
+        const termos = semAcento(inp.value).split(/\s+/).filter(Boolean);
+        let n = 0, primeira = null;
+        Array.from(sel.options).forEach(o=>{
+          const ok = !o.value ? true : termos.every(t=>semAcento(o.textContent).includes(t));
+          o.hidden = !ok; o.disabled = !ok && o.value!==sel.value ? true : false;
+          if(ok && o.value){ n++; if(!primeira) primeira = o; }
+        });
+        info.style.display = termos.length ? 'block' : 'none';
+        info.textContent = n + ' resultado(s)';
+        return primeira;
+      }
+      inp.addEventListener('input', ()=>{
+        const p = filtrar();
+        if(inp.value.trim() && p && (!sel.value || sel.selectedOptions[0].hidden)) sel.value = p.value;
+      });
+      inp.addEventListener('keydown', (e)=>{
+        if(e.key==='Enter'){ e.preventDefault(); const p = filtrar(); if(p){ sel.value = p.value; sel.dispatchEvent(new Event('change',{bubbles:true})); sel.focus(); } }
+      });
+      sel.addEventListener('change', ()=>{ if(inp.value){ /* mantém o filtro */ } });
+      new MutationObserver(()=>{ if(inp.value){ inp.value=''; } info.style.display='none'; Array.from(sel.options).forEach(o=>{ o.hidden=false; o.disabled=false; }); }).observe(sel, {childList:true});
+    });
+  }
+
   function lancContabilModalHtml(){
     const d = state.lancContabilModalData;
     if(!d) return '';
@@ -21892,12 +21932,14 @@
     if(novoLancContabilBtn) novoLancContabilBtn.onclick = ()=>{ state.lancContabilModalData = {}; state.modal='lancContabil'; render(); };
     const lcCancel = document.getElementById('lcCancel');
     if(lcCancel) lcCancel.onclick = ()=>{ state.modal=null; state.lancContabilModalData=null; render(); };
+    aplicarBuscaSelects(root);
     const lcClienteSelect = document.getElementById('lcCliente');
     if(lcClienteSelect){
       lcClienteSelect.onchange = (e)=>{
         const clienteId = e.target.value;
         document.getElementById('lcContaDebito').innerHTML = '<option value="">— Selecione —</option>' + contasAnaliticasOptionsHtml(null, clienteId);
         document.getElementById('lcContaCredito').innerHTML = '<option value="">— Selecione —</option>' + contasAnaliticasOptionsHtml(null, clienteId);
+        aplicarBuscaSelects(document.getElementById('lancContabilForm'));
         document.getElementById('lcHistoricoSelect').innerHTML = '<option value="">— Digitar manualmente —</option>' +
           state.historicos.filter(h=>h.clientId===clienteId).map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('');
         const hint = document.getElementById('lcEmpresaHint');
