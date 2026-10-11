@@ -15070,11 +15070,34 @@
     return c ? c.codigo + ' — ' + c.nome : '—';
   }
 
-  function lancamentosContabeisTableHtml(){
+  const MESES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  function lancMesNome(ym){ const p=String(ym||'').split('-'); return p.length>=2 && MESES_NOME[+p[1]-1] ? MESES_NOME[+p[1]-1]+' de '+p[0] : 'Sem data'; }
+  function lancListaEscopo(){
     let list = state.lancamentosContabeis.slice();
     if(!state.deptAllClients) list = list.filter(l=>isClientInScope(l.clientId));
+    return list;
+  }
+  function lancMesesSeletorHtml(){
+    const list = lancListaEscopo();
+    const meses = Array.from(new Set(list.map(l=>String(l.data||'').slice(0,7)))).sort().reverse();
+    if(!meses.length) return '';
+    const sel = state.lancMes||'';
+    return `<div style="display:flex; align-items:center; gap:8px; margin:0 0 12px; flex-wrap:wrap;">
+      <label style="font-weight:600;">Mês:</label>
+      <select id="lancMesSel" class="input" style="min-width:200px;">
+        <option value="">Todos os meses (agrupado)</option>
+        ${meses.map(m=>`<option value="${m}" ${m===sel?'selected':''}>${escapeHtml(lancMesNome(m))}</option>`).join('')}
+      </select>
+      <span class="form-hint" style="margin:0;">Cada lançamento aparece no mês da sua própria data.</span>
+    </div>`;
+  }
+  function lancamentosContabeisTableHtml(){
+    let list = lancListaEscopo();
     if(!list.length) return `<div class="empty">Nenhum lançamento contábil registrado ${!state.deptAllClients?'para os clientes selecionados':''}.</div>`;
-    return list.map(l=>`
+    if(state.lancMes) list = list.filter(l=>String(l.data||'').slice(0,7)===state.lancMes);
+    if(!list.length) return `<div class="empty">Nenhum lançamento em ${escapeHtml(lancMesNome(state.lancMes))}.</div>`;
+    list.sort((x,y)=>String(y.data||'').localeCompare(String(x.data||'')));
+    const rowHtml = l=>`
       <div class="lanc-row">
         <div>
           <div style="font-weight:700;">${l.data?fmtDate(l.data):'—'} — ${escapeHtml(clientName(l.clientId))} ${l.origemAutomatica ? '<span class="tag sit-outra">Automático</span>' : ''}</div>
@@ -15087,8 +15110,15 @@
           <button class="btn-sm" data-edit-lanc="${l.id}">Editar</button>
           <button class="btn-sm danger" data-del-lanc="${l.id}">Excluir</button>
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    const grupos = {}; const ordem = [];
+    list.forEach(l=>{ const m=String(l.data||'').slice(0,7); if(!grupos[m]){ grupos[m]=[]; ordem.push(m); } grupos[m].push(l); });
+    return ordem.map(m=>{
+      const g=grupos[m]; const tot=g.reduce((a,l)=>a+(Number(l.valor)||0),0);
+      return `<div class="lanc-mes-head" style="display:flex; justify-content:space-between; align-items:center; margin:18px 0 6px; padding:8px 12px; background:#eef2f7; border-left:4px solid #1f4e79; border-radius:4px; font-weight:700;">
+        <span>${escapeHtml(lancMesNome(m))} <span style="font-weight:400; opacity:.7;">· ${g.length} lançamento${g.length>1?'s':''}</span></span>
+        <span class="mono">${fmtBRL(tot)}</span></div>` + g.map(rowHtml).join('');
+    }).join('');
   }
 
   function lancamentosContabeisPanelHtml(){
@@ -15099,7 +15129,7 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       ${notasContabilCardHtml()}
-      <div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
+      ${lancMesesSeletorHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
   }
 
@@ -15893,7 +15923,7 @@
     const existentes = {}; state.lancamentosContabeis.forEach(x=>{ if(x.duplicadoDe===l.id) existentes[x.data] = true; });
     const novos = plano.filter(p=>!existentes[p.data] && p.valor>0).map(p=>({
       id: uid(), clientId:l.clientId, data:p.data, valor:p.valor, contaDebito:d.contaDebito, contaCredito:d.contaCredito,
-      historico: (d.historico||l.historico||'').replace(/\s+$/,'') + ' — parcela ' + p.i + '/' + p.n, duplicadoDe:l.id, parcela:p.i + '/' + p.n,
+      historico: (d.historico||l.historico||'').replace(/(\s+—\s+parcela\s+\d+\/\d+)+\s*$/,'').replace(/\s+$/,'') + ' — parcela ' + p.i + '/' + p.n, duplicadoDe:l.id, parcela:p.i + '/' + p.n,
     }));
     if(!novos.length){ alert(d.modo==='manual' ? 'Nada a criar: informe o valor de pelo menos um mês.' : 'Nada a criar: todas as datas já têm cópia deste lançamento.'); return; }
     state.modal = null; state.dupLancData = null; render();
@@ -22985,6 +23015,8 @@
         if(m2){ m2.textContent = nfResumoContabil(r); m2.className = 'lookup-msg ' + (Object.keys(r.semConta).length || r.semPlano.length ? 'error' : 'success'); m2.style.display='block'; }
       }catch(e){ console.error(e); if(msg){ msg.textContent = 'Falha ao gerar: ' + ((e&&(e.code||e.message))||'erro'); msg.className='lookup-msg error'; msg.style.display='block'; } nfContabilizarBtn.disabled=false; nfContabilizarBtn.textContent='Gerar lançamentos das notas fiscais'; }
     };
+    const lancMesSel = document.getElementById('lancMesSel');
+    if(lancMesSel) lancMesSel.onchange = ()=>{ state.lancMes = lancMesSel.value; render(); };
     const novoLancContabilBtn = document.getElementById('novoLancContabilBtn');
     if(novoLancContabilBtn) novoLancContabilBtn.onclick = ()=>{ state.lancContabilModalData = {}; state.modal='lancContabil'; render(); };
     const lcCancel = document.getElementById('lcCancel');
