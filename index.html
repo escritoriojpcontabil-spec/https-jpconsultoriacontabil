@@ -15633,6 +15633,188 @@
     pdfSalvar(doc, nomeArquivo('pesquisa-contabil', c));
   }
 
+
+  // ===== Trocar conta contábil: move lançamentos de uma conta para outra (ex.: "Clientes Diversos" → cliente) =====
+  function tcEstado(){
+    if(!state.tc) state.tc = { de:'', para:'', modo:'tudo', mes:null, ano:String(new Date().getFullYear()), q:'', novoNome:'', desmarcados:{}, ultima:null, msg:'' };
+    return state.tc;
+  }
+  function tcContas(clientId){
+    return state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica')
+      .sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}));
+  }
+  function tcLancamentos(clientId){
+    const e = tcEstado();
+    if(!e.de) return [];
+    let ini = '', fim = '9999-12-31';
+    if(e.modo==='mes'){ const ym = e.mes || todayStr().slice(0,7); ini = ym+'-01'; fim = fimDoMes(ini); }
+    else if(e.modo==='ano'){ ini = e.ano+'-01-01'; fim = e.ano+'-12-31'; }
+    const termos = semAcento(e.q).split(/\s+/).filter(Boolean);
+    const contas = {}; state.planoContas.filter(c=>c.clientId===clientId).forEach(c=>{ contas[c.id]=c; });
+    return state.lancamentosContabeis.filter(l=>{
+      if(l.clientId!==clientId || (l.contaDebito!==e.de && l.contaCredito!==e.de)) return false;
+      if(!l.data || l.data<ini || l.data>fim) return false;
+      if(termos.length){
+        const o = contas[l.contaDebito===e.de ? l.contaCredito : l.contaDebito];
+        const hay = semAcento([l.historico, o&&o.codigo, o&&o.nome, razaoNum(Number(l.valor)||0)].join(' '));
+        if(!termos.every(t=>hay.indexOf(t)>=0)) return false;
+      }
+      return true;
+    }).sort((a,b)=>(a.data||'').localeCompare(b.data||'') || String(a.id).localeCompare(String(b.id)));
+  }
+  function tcResultadoHtml(){
+    const clientId = state.contabilEmpresaAtiva;
+    const e = tcEstado();
+    if(!e.de) return `<div class="empty">Escolha a conta de origem (de onde os lançamentos serão tirados).</div>`;
+    const lista = tcLancamentos(clientId);
+    const nome = (id)=>{ const c = state.planoContas.find(x=>x.id===id); return c ? escapeHtml(c.codigo+' '+c.nome) : '—'; };
+    const marcados = lista.filter(l=>!e.desmarcados[l.id]);
+    const soma = Math.round(marcados.reduce((a,l)=>a+(Number(l.valor)||0),0)*100)/100;
+    const linhas = lista.map(l=>{
+      const lado = l.contaDebito===e.de ? 'D' : 'C';
+      const outro = lado==='D' ? l.contaCredito : l.contaDebito;
+      return `<tr>
+        <td><input type="checkbox" class="tc-chk" data-id="${l.id}" ${e.desmarcados[l.id]?'':'checked'}/></td>
+        <td>${fmtDate(l.data)}</td><td class="mono">${lado}</td><td>${nome(outro)}</td><td>${escapeHtml(l.historico||'')}</td>
+        <td style="text-align:right; white-space:nowrap;" class="mono">${razaoNum(Number(l.valor)||0)}</td></tr>`;
+    }).join('');
+    return `
+      ${e.msg ? `<div class="lookup-msg success" style="display:block; margin:10px 0;">${escapeHtml(e.msg)} ${e.ultima ? '<a href="#" id="tcDesfazer">Desfazer esta troca</a>' : ''}</div>` : ''}
+      <div class="form-hint" style="margin:14px 0 6px;"><b>${lista.length} lançamento(s)</b> na conta ${nome(e.de)} · <b id="tcSelCount">${marcados.length}</b> selecionado(s) · soma <b id="tcSelSoma">${fmtBRL(soma)}</b></div>
+      ${lista.length ? `<label style="display:flex; align-items:center; gap:8px; margin:0 0 8px;"><input type="checkbox" id="tcTodos" ${marcados.length===lista.length?'checked':''}/> Selecionar todos</label>
+      <div style="max-height:420px; overflow:auto;"><table><thead><tr><th></th><th>Data</th><th>D/C</th><th>Contrapartida</th><th>Histórico</th><th style="text-align:right">Valor</th></tr></thead><tbody>${linhas}</tbody></table></div>` : '<div class="empty">Nenhum lançamento encontrado nessa conta com os filtros atuais.</div>'}
+    `;
+  }
+  function tcPainelHtml(){
+    const empresa = state.contabilEmpresaAtiva;
+    const cab = `<div class="panel-head"><h3>Trocar conta contábil</h3></div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Passa lançamentos de uma conta para outra — por exemplo, tirar da conta <b>Clientes Diversos</b> e colocar na conta do <b>cliente</b> certo. Escolha a conta de origem, a conta de destino (ou crie uma nova), filtre por período ou texto, marque os lançamentos e confirme. Dá para desfazer logo em seguida.</div>`;
+    if(!empresa) return cab + deptSelecioneUmaEmpresaHtml('trocar contas');
+    const e = tcEstado();
+    if(!e.mes) e.mes = todayStr().slice(0,7);
+    const contas = tcContas(empresa);
+    const opts = (sel)=> contas.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('');
+    const anos = []; const ac = new Date().getFullYear(); for(let a=ac+1;a>=ac-8;a--) anos.push(String(a));
+    return cab + `
+      <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">Empresa selecionada: ${escapeHtml(clientName(empresa))}</div>
+      <div class="form-row">
+        <div class="field"><label>Conta de origem (sai daqui)</label><select id="tcDe"><option value="">— Selecione —</option>${opts(e.de)}</select></div>
+        <div class="field"><label>Conta de destino (vai para cá)</label><select id="tcPara"><option value="">— Selecione —</option><option value="__nova" ${e.para==='__nova'?'selected':''}>＋ Criar nova conta…</option>${opts(e.para)}</select></div>
+      </div>
+      <div class="form-row" id="tcNovaBox" style="${e.para==='__nova'?'':'display:none;'}">
+        <div class="field"><label>Nome da nova conta (ex.: nome do cliente) — será criada ao lado da conta de origem</label><input type="text" id="tcNovoNome" value="${escapeHtml(e.novoNome)}" placeholder="Ex.: MARIA SOUZA"/></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Período</label><select id="tcModo"><option value="tudo" ${e.modo==='tudo'?'selected':''}>Todo o período</option><option value="mes" ${e.modo==='mes'?'selected':''}>Mensal</option><option value="ano" ${e.modo==='ano'?'selected':''}>Anual</option></select></div>
+        <div class="field" id="tcMesBox" style="${e.modo==='mes'?'':'display:none;'}"><label>Mês</label><input type="month" id="tcMes" value="${e.mes}"/></div>
+        <div class="field" id="tcAnoBox" style="${e.modo==='ano'?'':'display:none;'}"><label>Ano</label><select id="tcAno">${anos.map(a=>`<option value="${a}" ${a===e.ano?'selected':''}>${a}</option>`).join('')}</select></div>
+        <div class="field"><label>Filtrar por texto ou valor (opcional)</label><input type="search" id="tcTexto" value="${escapeHtml(e.q)}" placeholder="Nome, histórico ou valor" autocomplete="off"/></div>
+      </div>
+      <div id="tcResultado">${tcResultadoHtml()}</div>
+      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <button type="button" class="btn-add" id="tcMoverBtn">Mover lançamentos selecionados</button>
+        <span id="tcErro" class="lookup-msg error" style="display:none;"></span>
+      </div>
+    `;
+  }
+  async function tcMover(){
+    const clientId = state.contabilEmpresaAtiva;
+    const e = tcEstado();
+    const erro = document.getElementById('tcErro');
+    const falha = (t)=>{ if(erro){ erro.textContent = t; erro.style.display='inline-block'; } };
+    if(erro) erro.style.display = 'none';
+    if(!e.de) return falha('Escolha a conta de origem.');
+    if(!e.para) return falha('Escolha a conta de destino.');
+    let destino = state.planoContas.find(c=>c.id===e.para);
+    if(e.para==='__nova'){
+      const nome = (e.novoNome||'').replace(/\s+/g,' ').trim();
+      if(nome.length<2) return falha('Digite o nome da nova conta.');
+      const origem = state.planoContas.find(c=>c.id===e.de);
+      const partes = String(origem.codigo).split('.'); partes.pop();
+      const pai = partes.join('.');
+      const todas = state.planoContas.filter(c=>c.clientId===clientId);
+      const igual = todas.find(c=>c.tipo==='Analítica' && semAcento(c.nome)===semAcento(nome) && String(c.codigo).startsWith(pai+'.'));
+      if(igual) destino = igual;
+      else {
+        let max = 0;
+        todas.forEach(c=>{ if(pai && String(c.codigo).startsWith(pai+'.')){ const r = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(r)) max = Math.max(max, parseInt(r,10)); } });
+        destino = { id: uid(), clientId, codigo: (pai ? pai+'.' : '') + String(max+1).padStart(4,'0'), nome: nome.slice(0,70), tipo:'Analítica', natureza: origem.natureza, contaSuperior: pai || null, origemAutomatica:true };
+        if(origem.modelo) destino.modelo = origem.modelo;
+        await Store.set('planocontas:'+destino.id, JSON.stringify(destino), true);
+        state.planoContas.push(destino);
+      }
+    }
+    if(!destino) return falha('Conta de destino não encontrada.');
+    if(destino.id===e.de) return falha('A conta de destino precisa ser diferente da origem.');
+    const lista = tcLancamentos(clientId).filter(l=>!e.desmarcados[l.id]);
+    if(!lista.length) return falha('Nenhum lançamento selecionado.');
+    const conflito = lista.filter(l=> (l.contaDebito===e.de ? l.contaCredito : l.contaDebito) === destino.id);
+    if(conflito.length) return falha(conflito.length + ' lançamento(s) ficariam com a mesma conta nos dois lados (a contrapartida já é a conta de destino). Desmarque-os.');
+    if(!confirm('Mover ' + lista.length + ' lançamento(s) de "' + (state.planoContas.find(c=>c.id===e.de)||{}).nome + '" para "' + destino.nome + '"?')) return;
+    const btn = document.getElementById('tcMoverBtn'); if(btn){ btn.disabled = true; btn.textContent = 'Movendo…'; }
+    const desfazer = [];
+    const novos = lista.map(l=>{
+      const n = Object.assign({}, l);
+      if(n.contaDebito===e.de){ n.contaDebito = destino.id; desfazer.push({ id:l.id, campo:'contaDebito', de:e.de, antesEdit: !!l.editadoManual }); }
+      else { n.contaCredito = destino.id; desfazer.push({ id:l.id, campo:'contaCredito', de:e.de, antesEdit: !!l.editadoManual }); }
+      if(n.origemNota) n.editadoManual = true; // a troca é manual: a geração automática das notas não volta atrás
+      return n;
+    });
+    try{
+      for(let i=0;i<novos.length;i+=15){ await Promise.all(novos.slice(i,i+15).map(l=>saveLancamentoContabilSilent(l))); }
+      await loadLancamentosContabeis();
+    }catch(err){ falha('Falha ao gravar: ' + ((err&&(err.code||err.message))||'erro')); if(btn){ btn.disabled=false; btn.textContent='Mover lançamentos selecionados'; } return; }
+    e.ultima = desfazer; e.para = ''; e.novoNome = ''; e.desmarcados = {};
+    e.msg = lista.length + ' lançamento(s) movido(s) para ' + destino.codigo + ' ' + destino.nome + '.';
+    render();
+  }
+  async function tcDesfazer(){
+    const e = tcEstado();
+    if(!e.ultima) return;
+    const lote = e.ultima;
+    for(let i=0;i<lote.length;i+=15){
+      await Promise.all(lote.slice(i,i+15).map(async u=>{
+        const l = state.lancamentosContabeis.find(x=>x.id===u.id);
+        if(!l) return;
+        const n = Object.assign({}, l); n[u.campo] = u.de;
+        if(n.origemNota && !u.antesEdit) delete n.editadoManual;
+        await saveLancamentoContabilSilent(n);
+      }));
+    }
+    await loadLancamentosContabeis();
+    e.ultima = null; e.msg = lote.length + ' lançamento(s) devolvido(s) à conta de origem.';
+    render();
+  }
+  function tcLigar(){
+    const e = tcEstado();
+    const atualizar = ()=>{ const r = document.getElementById('tcResultado'); if(r){ r.innerHTML = tcResultadoHtml(); tcLigarResultado(); } };
+    const por = (id, ev, fn)=>{ const el = document.getElementById(id); if(el) el[ev] = fn; };
+    let timer = null;
+    por('tcDe','onchange',(x)=>{ e.de = x.target.value; e.desmarcados = {}; e.msg = ''; e.ultima = null; atualizar(); });
+    por('tcPara','onchange',(x)=>{ e.para = x.target.value; document.getElementById('tcNovaBox').style.display = e.para==='__nova' ? '' : 'none'; });
+    por('tcNovoNome','oninput',(x)=>{ e.novoNome = x.target.value; });
+    por('tcModo','onchange',(x)=>{ e.modo = x.target.value; document.getElementById('tcMesBox').style.display = e.modo==='mes'?'':'none'; document.getElementById('tcAnoBox').style.display = e.modo==='ano'?'':'none'; e.desmarcados = {}; atualizar(); });
+    por('tcMes','onchange',(x)=>{ e.mes = x.target.value || e.mes; e.desmarcados = {}; atualizar(); });
+    por('tcAno','onchange',(x)=>{ e.ano = x.target.value; e.desmarcados = {}; atualizar(); });
+    por('tcTexto','oninput',(x)=>{ e.q = x.target.value; clearTimeout(timer); timer = setTimeout(()=>{ e.desmarcados = {}; atualizar(); }, 200); });
+    por('tcMoverBtn','onclick', tcMover);
+    tcLigarResultado();
+  }
+  function tcLigarResultado(){
+    const e = tcEstado();
+    const clientId = state.contabilEmpresaAtiva;
+    const resumo = ()=>{
+      const lista = tcLancamentos(clientId); const m = lista.filter(l=>!e.desmarcados[l.id]);
+      const c = document.getElementById('tcSelCount'), s = document.getElementById('tcSelSoma'), t = document.getElementById('tcTodos');
+      if(c) c.textContent = m.length; if(s) s.textContent = fmtBRL(m.reduce((a,l)=>a+(Number(l.valor)||0),0)); if(t) t.checked = m.length===lista.length;
+    };
+    document.querySelectorAll('.tc-chk').forEach(ch=>{ ch.onchange = ()=>{ if(ch.checked) delete e.desmarcados[ch.dataset.id]; else e.desmarcados[ch.dataset.id] = true; resumo(); }; });
+    const todos = document.getElementById('tcTodos');
+    if(todos) todos.onchange = ()=>{ e.desmarcados = {}; if(!todos.checked) tcLancamentos(clientId).forEach(l=>{ e.desmarcados[l.id] = true; }); document.querySelectorAll('.tc-chk').forEach(ch=>{ ch.checked = todos.checked; }); resumo(); };
+    const des = document.getElementById('tcDesfazer');
+    if(des) des.onclick = (ev)=>{ ev.preventDefault(); tcDesfazer(); };
+  }
+
   function lancContabilModalHtml(){
     const d = state.lancContabilModalData;
     if(!d) return '';
@@ -17749,6 +17931,7 @@
     else if(state.contabilTab==='lancamentos') tabContent = lancamentosContabeisPanelHtml();
     else if(state.contabilTab==='saldos') tabContent = saldosIniciaisPanelHtml();
     else if(state.contabilTab==='pesquisa') tabContent = pesquisaContabilPanelHtml();
+    else if(state.contabilTab==='trocar') tabContent = tcPainelHtml();
     else if(state.contabilTab==='ofx') tabContent = ofxImportPanelHtml();
     else if(state.contabilTab==='relatorios') tabContent = relatoriosContabeisPanelHtml();
     return `
@@ -17759,6 +17942,7 @@
           <button type="button" class="dp-tab-btn ${state.contabilTab==='historico'?'active':''}" data-contabil-tab="historico">Histórico Contábil</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='lancamentos'?'active':''}" data-contabil-tab="lancamentos">Lançamentos Contábeis</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='pesquisa'?'active':''}" data-contabil-tab="pesquisa">🔍 Pesquisar</button>
+          <button type="button" class="dp-tab-btn ${state.contabilTab==='trocar'?'active':''}" data-contabil-tab="trocar">⇄ Trocar conta</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='saldos'?'active':''}" data-contabil-tab="saldos">Saldos Iniciais</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='ofx'?'active':''}" data-contabil-tab="ofx">Importação OFX</button>
           <button type="button" class="dp-tab-btn ${state.contabilTab==='relatorios'?'active':''}" data-contabil-tab="relatorios">Balanço, Balancete e DRE</button>
@@ -22699,6 +22883,7 @@
     aplicarBuscaSelects(root);
     adicionarBotoesImprimir(root);
     if(document.getElementById('pqTexto')) pesqLigar();
+    if(document.getElementById('tcDe')) tcLigar();
     const lcClienteSelect = document.getElementById('lcCliente');
     if(lcClienteSelect){
       lcClienteSelect.onchange = (e)=>{
