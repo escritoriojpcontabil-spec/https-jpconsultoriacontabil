@@ -15256,11 +15256,40 @@
   }
   // Histórico + complemento (texto livre do usuário), usado na lista e nos relatórios.
   function lancHist(l){ const h = String(l.historico||''); const c = String(l.complemento||'').trim(); return c ? (h ? h + ' — ' + c : c) : h; }
+  // Busca nos lançamentos: valor (1300, 1.300,00), conta (código ou nome), histórico/complemento, empresa e data. Várias palavras = todas precisam aparecer.
+  function lancCombinaBusca(l, termos, contasPorId){
+    if(!termos.length) return true;
+    const d = contasPorId[l.contaDebito], c = contasPorId[l.contaCredito];
+    const v = Number(l.valor)||0;
+    const hay = semAcento([lancHist(l), d&&d.codigo, d&&d.nome, d&&d.pessoaDoc, c&&c.codigo, c&&c.nome, c&&c.pessoaDoc, clientName(l.clientId),
+      l.data, fmtDate(l.data), razaoNum(v), v.toFixed(2)].join(' '));
+    return termos.every(t=>{
+      const n = pesqNumero(t);
+      if(n!==null && Math.abs(n - v) < 0.005) return true;
+      const dg = t.replace(/\D/g,''); if(dg.length>=6 && ((d&&String(d.pessoaDoc||'').replace(/\D/g,'').includes(dg)) || (c&&String(c.pessoaDoc||'').replace(/\D/g,'').includes(dg)))) return true;
+      return hay.includes(t);
+    });
+  }
+  function lancTermosBusca(){ return semAcento(state.lancBusca||'').split(/\s+/).filter(Boolean); }
+  function lancBuscaBarHtml(){
+    return `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0 0 12px;">
+      <input type="search" id="lancBusca" value="${escapeHtml(state.lancBusca||'')}" autocomplete="off" placeholder="🔍 Buscar por valor, conta, fornecedor/cliente, histórico ou data…" style="flex:1; min-width:260px; padding:10px 12px; border:1px solid var(--line,#d0d5dd); border-radius:8px; font-size:14px;"/>
+      ${state.lancBusca ? '<button type="button" class="btn-sm" id="lancBuscaLimpar">Limpar busca</button>' : ''}
+    </div><div id="lancBuscaInfo" class="form-hint" style="margin:-6px 0 10px;"></div>`;
+  }
   function lancamentosContabeisTableHtml(){
     let list = lancListaEscopo();
     if(!list.length) return `<div class="empty">Nenhum lançamento contábil registrado ${!state.deptAllClients?'para os clientes selecionados':''}.</div>`;
     if(state.lancMes) list = list.filter(l=>String(l.data||'').slice(0,7)===state.lancMes);
     if(!list.length) return `<div class="empty">Nenhum lançamento em ${escapeHtml(lancMesNome(state.lancMes))}.</div>`;
+    const termos = lancTermosBusca();
+    if(termos.length){
+      const mapa = {}; state.planoContas.forEach(c=>{ mapa[c.id] = c; });
+      list = list.filter(l=>lancCombinaBusca(l, termos, mapa));
+      const tot = list.reduce((a,l)=>a+(Number(l.valor)||0),0);
+      state._lancBuscaInfo = list.length + ' lançamento(s) encontrado(s) · soma ' + fmtBRL(tot);
+      if(!list.length) return `<div class="empty">Nenhum lançamento encontrado para "${escapeHtml(state.lancBusca)}"${state.lancMes?' em '+escapeHtml(lancMesNome(state.lancMes)):''}.</div>`;
+    } else state._lancBuscaInfo = '';
     list.sort((x,y)=>String(y.data||'').localeCompare(String(x.data||'')));
     const rowHtml = l=>`
       <div class="lanc-row">
@@ -15294,7 +15323,7 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       ${notasContabilCardHtml()}
-      ${lancMesesSeletorHtml()}${lancApagarBarHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
+      ${lancMesesSeletorHtml()}${lancBuscaBarHtml()}${(state.lancBusca||'').trim() ? '' : lancApagarBarHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
   }
 
@@ -23292,6 +23321,16 @@
     };
     const lancApagarLoteBtn = document.getElementById('lancApagarLoteBtn');
     if(lancApagarLoteBtn) lancApagarLoteBtn.onclick = ()=>{ lancApagarLote(); };
+    const lancBuscaEl = document.getElementById('lancBusca');
+    if(lancBuscaEl){
+      const infoEl = document.getElementById('lancBuscaInfo'); if(infoEl) infoEl.textContent = state._lancBuscaInfo || '';
+      if(state.lancBuscaFoco){ state.lancBuscaFoco = false; lancBuscaEl.focus(); const n = lancBuscaEl.value.length; try{ lancBuscaEl.setSelectionRange(n,n); }catch(e){} }
+      let _t = null;
+      lancBuscaEl.oninput = ()=>{ clearTimeout(_t); _t = setTimeout(()=>{ state.lancBusca = lancBuscaEl.value; state.lancBuscaFoco = true; render(); }, 350); };
+      lancBuscaEl.onkeydown = (e)=>{ if(e.key==='Enter'){ clearTimeout(_t); state.lancBusca = lancBuscaEl.value; state.lancBuscaFoco = true; render(); } };
+    }
+    const lancBuscaLimpar = document.getElementById('lancBuscaLimpar');
+    if(lancBuscaLimpar) lancBuscaLimpar.onclick = ()=>{ state.lancBusca = ''; state.lancBuscaFoco = true; render(); };
     const lancMesSel = document.getElementById('lancMesSel');
     if(lancMesSel) lancMesSel.onchange = ()=>{ state.lancMes = lancMesSel.value; render(); };
     const novoLancContabilBtn = document.getElementById('novoLancContabilBtn');
