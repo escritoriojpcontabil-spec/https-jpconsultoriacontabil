@@ -14865,14 +14865,44 @@
 
   function contaLevel(codigo){ return (String(codigo||'').match(/\./g)||[]).length; }
 
+  // O plano não abre inteiro: o usuário busca (código, nome ou CNPJ/CPF), escolhe um grupo ou pede "Mostrar todas".
+  function planoBuscaBarHtml(){
+    const contas = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva);
+    const grupos = contas.filter(c=>!String(c.codigo).includes('.')).sort((x,y)=>String(x.codigo).localeCompare(String(y.codigo), undefined, {numeric:true}));
+    const ativo = state.planoGrupo||'';
+    return `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0 0 10px;">
+        <input type="search" id="planoBusca" value="${escapeHtml(state.planoBusca||'')}" autocomplete="off" placeholder="🔍 Buscar conta por código, nome ou CNPJ/CPF…" style="flex:1; min-width:260px; padding:10px 12px; border:1px solid var(--line,#d0d5dd); border-radius:8px; font-size:14px;"/>
+        ${(state.planoBusca||ativo||state.planoTodas) ? '<button type="button" class="btn-sm" id="planoLimparBtn">Fechar lista</button>' : ''}
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px;">
+        ${grupos.map(g=>{ const n = contas.filter(c=>c.tipo==='Analítica' && (c.codigo===g.codigo || String(c.codigo).startsWith(g.codigo+'.'))).length;
+          return `<button type="button" class="btn-sm" data-plano-grupo="${escapeHtml(g.codigo)}" style="${ativo===g.codigo?'background:#1f4e79;color:#fff;':''}">${escapeHtml(g.codigo)} · ${escapeHtml(nomeProprio(g.nome))} (${n})</button>`; }).join('')}
+        <button type="button" class="btn-sm" id="planoTodasBtn" style="${state.planoTodas?'background:#1f4e79;color:#fff;':''}">Mostrar todas (${contas.length})</button>
+      </div>`;
+  }
   function planoContasTableHtml(){
     const contas = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva);
     if(!contas.length) return `<div class="empty">Nenhuma conta cadastrada para esta empresa ainda.</div>`;
+    const termos = semAcento(state.planoBusca||'').split(/\s+/).filter(Boolean);
+    const grupo = state.planoGrupo||'';
+    if(!termos.length && !grupo && !state.planoTodas){
+      return `<div class="empty">Digite acima para buscar uma conta, ou escolha um grupo. O plano tem <b>${contas.length}</b> contas — não precisa abrir todas.</div>`;
+    }
+    let lista = contas.slice();
+    if(grupo) lista = lista.filter(c=>c.codigo===grupo || String(c.codigo).startsWith(grupo+'.'));
+    if(termos.length) lista = lista.filter(c=>{
+      const hay = semAcento([c.codigo, c.nome, c.tipo, c.natureza, c.pessoaDoc].join(' '));
+      const dg = (t)=>t.replace(/\D/g,'');
+      return termos.every(t=>hay.includes(t) || (dg(t).length>=6 && String(c.pessoaDoc||'').replace(/\D/g,'').includes(dg(t))));
+    });
+    lista.sort((x,y)=>String(x.codigo).localeCompare(String(y.codigo), undefined, {numeric:true}));
+    if(!lista.length) return `<div class="empty">Nenhuma conta encontrada${state.planoBusca?' para "'+escapeHtml(state.planoBusca)+'"':''}.</div>`;
     return `
+      <div class="form-hint" style="margin:0 0 8px;">${lista.length} conta(s) exibida(s)</div>
       <table>
         <thead><tr><th>Código</th><th>Conta</th><th>Tipo</th><th>Natureza</th><th></th></tr></thead>
         <tbody>
-          ${contas.map(c=>`
+          ${lista.map(c=>`
             <tr class="${c.tipo==='Sintética'?'conta-sintetica':''}">
               <td class="mono">${escapeHtml(c.codigo)}</td>
               <td class="conta-nivel-${Math.min(contaLevel(c.codigo),3)}">${escapeHtml(c.nome)}</td>
@@ -14994,7 +15024,7 @@
         </div>
         <button type="button" class="btn-calc" id="criarPlanoContasPadraoBtn">Criar plano de contas padrão (máscara antiga X.X.XX.XXX.XXXX)</button>
         <div class="form-hint" style="margin-top:8px;">Isso cria a estrutura básica (Ativo, Passivo, Patrimônio Líquido, Receitas, Custos, Despesas) já na máscara X.X.XX.XXX / X.X.XX.XXX.XXXX — depois é só editar/adicionar conforme a necessidade.</div>
-      ` : `${(()=>{ const n = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva && c.pessoaTipo && c.nome!==nomeProprio(c.nome)).length; return n ? `<div class="legis-note" style="margin-bottom:12px;">${n} conta(s) de clientes/fornecedores estão com o nome fora do padrão (ex.: tudo em maiúsculas). <button type="button" class="btn-add" id="padronizarNomesBtn" style="margin-left:8px;">Padronizar nomes (Primeira Letra Maiúscula)</button></div>` : ''; })()}${planoPrecisaConverter(state.contabilEmpresaAtiva) ? `<div class="legis-note" style="margin-bottom:12px;">Este plano usa a numeração antiga (Patrimônio Líquido = 3, Receitas = 4, Custos = 5, Despesas = 6). A numeração nova é: <b>Passivo e Patrimônio Líquido = 2</b> (PL em 2.03), <b>Receitas = 3</b>, Custos = 4 e Despesas = 5. Os lançamentos continuam nas mesmas contas; só os códigos mudam. <button type="button" class="btn-add" id="pmConverterNumBtn" style="margin-left:8px;">Converter para a numeração nova</button></div>` : ''}<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
+      ` : `${(()=>{ const n = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva && c.pessoaTipo && c.nome!==nomeProprio(c.nome)).length; return n ? `<div class="legis-note" style="margin-bottom:12px;">${n} conta(s) de clientes/fornecedores estão com o nome fora do padrão (ex.: tudo em maiúsculas). <button type="button" class="btn-add" id="padronizarNomesBtn" style="margin-left:8px;">Padronizar nomes (Primeira Letra Maiúscula)</button></div>` : ''; })()}${planoPrecisaConverter(state.contabilEmpresaAtiva) ? `<div class="legis-note" style="margin-bottom:12px;">Este plano usa a numeração antiga (Patrimônio Líquido = 3, Receitas = 4, Custos = 5, Despesas = 6). A numeração nova é: <b>Passivo e Patrimônio Líquido = 2</b> (PL em 2.03), <b>Receitas = 3</b>, Custos = 4 e Despesas = 5. Os lançamentos continuam nas mesmas contas; só os códigos mudam. <button type="button" class="btn-add" id="pmConverterNumBtn" style="margin-left:8px;">Converter para a numeração nova</button></div>` : ''}${planoBuscaBarHtml()}<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
 
       ${pmSecaoHtml()}
 
@@ -23072,6 +23102,21 @@
       };
     }
 
+    const planoBuscaEl = document.getElementById('planoBusca');
+    if(planoBuscaEl){
+      if(state.planoBuscaFoco){ state.planoBuscaFoco = false; planoBuscaEl.focus(); const n = planoBuscaEl.value.length; try{ planoBuscaEl.setSelectionRange(n,n); }catch(e){} }
+      let _pt = null;
+      const aplicar = ()=>{ state.planoBusca = planoBuscaEl.value; state.planoBuscaFoco = true; render(); };
+      planoBuscaEl.oninput = ()=>{ clearTimeout(_pt); _pt = setTimeout(aplicar, 300); };
+      planoBuscaEl.onkeydown = (e)=>{ if(e.key==='Enter'){ clearTimeout(_pt); aplicar(); } };
+    }
+    root.querySelectorAll('[data-plano-grupo]').forEach(el=>{
+      el.onclick = ()=>{ const g = el.getAttribute('data-plano-grupo'); state.planoGrupo = (state.planoGrupo===g) ? '' : g; state.planoTodas = false; render(); };
+    });
+    const planoTodasBtn = document.getElementById('planoTodasBtn');
+    if(planoTodasBtn) planoTodasBtn.onclick = ()=>{ state.planoTodas = !state.planoTodas; state.planoGrupo = ''; render(); };
+    const planoLimparBtn = document.getElementById('planoLimparBtn');
+    if(planoLimparBtn) planoLimparBtn.onclick = ()=>{ state.planoBusca = ''; state.planoGrupo = ''; state.planoTodas = false; render(); };
     const padronizarNomesBtn = document.getElementById('padronizarNomesBtn');
     if(padronizarNomesBtn) padronizarNomesBtn.onclick = async ()=>{
       const lista = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva && c.pessoaTipo && c.nome!==nomeProprio(c.nome));
