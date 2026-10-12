@@ -3387,7 +3387,7 @@
       const outra = state.planoContas.find(x=>x.id===(isDeb ? l.contaCredito : l.contaDebito));
       return {
         data: l.data, isDeb, valor: v, saldo,
-        historico: String(l.historico||'').replace(/\s*\(importado via OFX[^)]*\)\s*$/i,'').trim() || '—',
+        historico: lancHist(Object.assign({}, l, {historico: String(l.historico||'').replace(/\s*\(importado via OFX[^)]*\)\s*$/i,'').trim()})) || '—',
         contra: outra ? outra.codigo + ' ' + outra.nome.replace(/\s*\(Importação OFX\)/,'') : '—',
         pendente: !!(outra && (outra.papel==='classificar' || /Conta a Classificar/i.test(outra.nome))),
       };
@@ -3417,7 +3417,7 @@
     todos.forEach((l,i)=>{
       if(l.data < ini || l.data > fim) return;
       itens.push({ n:i+1, id:l.id, data:l.data, valor:Number(l.valor)||0, deb:nomeConta(l.contaDebito), cred:nomeConta(l.contaCredito),
-        historico:l.historico||'', pendente: /reclassificar contrapartida/i.test(l.historico||'') });
+        historico:lancHist(l), pendente: /reclassificar contrapartida/i.test(l.historico||'') });
     });
     const dias = [];
     itens.forEach(it=>{ let d = dias[dias.length-1]; if(!d || d.data!==it.data){ d = { data:it.data, itens:[], total:0 }; dias.push(d); } d.itens.push(it); d.total += it.valor; });
@@ -15254,6 +15254,8 @@
       <span class="form-hint" style="margin:0;">Cada lançamento aparece no mês da sua própria data.</span>
     </div>`;
   }
+  // Histórico + complemento (texto livre do usuário), usado na lista e nos relatórios.
+  function lancHist(l){ const h = String(l.historico||''); const c = String(l.complemento||'').trim(); return c ? (h ? h + ' — ' + c : c) : h; }
   function lancamentosContabeisTableHtml(){
     let list = lancListaEscopo();
     if(!list.length) return `<div class="empty">Nenhum lançamento contábil registrado ${!state.deptAllClients?'para os clientes selecionados':''}.</div>`;
@@ -15265,7 +15267,7 @@
         <div>
           <div style="font-weight:700;">${l.data?fmtDate(l.data):'—'} — ${escapeHtml(clientName(l.clientId))} ${l.origemAutomatica ? '<span class="tag sit-outra">Automático</span>' : ''}</div>
           <div class="lr-partidas">D: ${escapeHtml(contaNomeById(l.contaDebito))} · C: ${escapeHtml(contaNomeById(l.contaCredito))}</div>
-          <div class="lr-partidas">${escapeHtml(l.historico||'')}</div>
+          <div class="lr-partidas">${escapeHtml(l.historico||'')}${l.complemento ? ' <span style="color:#1f4e79;">— '+escapeHtml(l.complemento)+'</span>' : ''}</div>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
           <span class="mono" style="font-weight:700;">${fmtBRL(l.valor)}</span>
@@ -15679,13 +15681,13 @@
       if(vmin!=null && valor < vmin - 0.004) return;
       if(vmax!=null && valor > vmax + 0.004) return;
       if(termos.length){
-        const hay = semAcento([l.historico, d&&d.codigo, d&&d.nome, d&&d.pessoaDoc, c&&c.codigo, c&&c.nome, c&&c.pessoaDoc, razaoNum(valor), valor.toFixed(2)].join(' '));
+        const hay = semAcento([lancHist(l), d&&d.codigo, d&&d.nome, d&&d.pessoaDoc, c&&c.codigo, c&&c.nome, c&&c.pessoaDoc, razaoNum(valor), valor.toFixed(2)].join(' '));
         const docs = [d&&d.pessoaDoc, c&&c.pessoaDoc].filter(Boolean).join(' ');
         const okTexto = termos.every(t=>{ if(hay.indexOf(t)>=0) return true; const dg = t.replace(/\D/g,''); return dg.length>=8 && docs.indexOf(dg)>=0; });
         const okValor = valorBusca!=null && Math.abs(valor - valorBusca) < 0.005;
         if(!okTexto && !okValor) return;
       }
-      res.push({ id:l.id, data:l.data, valor, deb:d, cred:c, historico:l.historico||'' });
+      res.push({ id:l.id, data:l.data, valor, deb:d, cred:c, historico:lancHist(l) });
     });
     res.sort((a,b)=>a.data.localeCompare(b.data) || String(a.id).localeCompare(String(b.id)));
     const total = Math.round(res.reduce((a,b)=>a+b.valor,0)*100)/100;
@@ -15886,7 +15888,7 @@
       if(!l.data || l.data<ini || l.data>fim) return false;
       if(termos.length){
         const o = contas[l.contaDebito===e.de ? l.contaCredito : l.contaDebito];
-        const hay = semAcento([l.historico, o&&o.codigo, o&&o.nome, razaoNum(Number(l.valor)||0)].join(' '));
+        const hay = semAcento([lancHist(l), o&&o.codigo, o&&o.nome, razaoNum(Number(l.valor)||0)].join(' '));
         if(!termos.every(t=>hay.indexOf(t)>=0)) return false;
       }
       return true;
@@ -16122,7 +16124,7 @@
     const existentes = {}; state.lancamentosContabeis.forEach(x=>{ if(x.duplicadoDe===l.id) existentes[x.data] = true; });
     const novos = plano.filter(p=>!existentes[p.data] && p.valor>0).map(p=>({
       id: uid(), clientId:l.clientId, data:p.data, valor:p.valor, contaDebito:d.contaDebito, contaCredito:d.contaCredito,
-      historico: (d.historico||l.historico||'').replace(/(\s+—\s+parcela\s+\d+\/\d+)+\s*$/,'').replace(/\s+$/,'') + ' — parcela ' + p.i + '/' + p.n, duplicadoDe:l.id, parcela:p.i + '/' + p.n,
+      historico: (d.historico||l.historico||'').replace(/(\s+—\s+parcela\s+\d+\/\d+)+\s*$/,'').replace(/\s+$/,'') + ' — parcela ' + p.i + '/' + p.n, duplicadoDe:l.id, parcela:p.i + '/' + p.n, complemento: l.complemento || '',
     }));
     if(!novos.length){ alert(d.modo==='manual' ? 'Nada a criar: informe o valor de pelo menos um mês.' : 'Nada a criar: todas as datas já têm cópia deste lançamento.'); return; }
     state.modal = null; state.dupLancData = null; render();
@@ -16183,6 +16185,7 @@
               </select>
             </div>
             <div class="field"><label>Histórico (texto do lançamento)</label><input type="text" id="lcHistorico" value="${escapeHtml(d.historico||'')}" required/></div>
+            <div class="field"><label>Complemento do histórico (opcional)</label><textarea id="lcComplemento" rows="2" maxlength="400" placeholder="Ex.: NF 1234 ref. contrato de janeiro; pagamento antecipado…" style="width:100%;">${escapeHtml(d.complemento||'')}</textarea><div class="form-hint" style="margin:4px 0 0;">Aparece junto ao histórico na lista, no Razão, no Diário e na pesquisa.</div></div>
             ${(()=>{
               if(!d.id) return '';
               const bancos = contasBancoDaEmpresa(clienteId);
@@ -23311,6 +23314,7 @@
           valor: document.getElementById('lcValor').value,
           contaDebito, contaCredito,
           historico: document.getElementById('lcHistorico').value,
+          complemento: (document.getElementById('lcComplemento')||{value:''}).value.trim(),
         });
         state.modal=null; state.lancContabilModalData=null;
         render();
