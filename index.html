@@ -9417,9 +9417,73 @@
     if(bDeb === bCred) return null;
     return ofxSig(l.clientId, bDeb ? l.contaDebito : l.contaCredito, l.data, l.valor, bDeb, ofxMemoDoHistorico(l.historico));
   }
+  const OFX_BANCOS = {'001':'Banco do Brasil','033':'Santander','041':'Banrisul','070':'BRB','077':'Inter','104':'Caixa Econômica Federal','136':'Unicred','208':'BTG Pactual','212':'Original','237':'Bradesco','260':'Nubank','318':'BMG','323':'Mercado Pago','336':'C6 Bank','341':'Itaú','356':'Santander (Real)','389':'Mercantil','422':'Safra','655':'Votorantim','745':'Citibank','748':'Sicredi','756':'Sicoob'};
+  function ofxBancoCod(b){ const d = String(b||'').replace(/\D/g,'').replace(/^0+/,''); return d ? d.padStart(3,'0') : ''; }
+  function ofxBancoNome(b){ const c = ofxBancoCod(b); return OFX_BANCOS[c] || OFX_BANCOS[c.slice(-3)] || ('Banco ' + (c||'?')); }
+  function ofxContaNum(c){ return String(c||'').replace(/\s+/g,'').replace(/^0+(?=\d)/,''); }
+  // Conta do plano já vinculada ao banco/conta deste extrato (gravado na primeira importação).
+  function ofxContaVinculada(clientId, prev){
+    if(!prev || !prev.conta) return null;
+    return contasBancoDaEmpresa(clientId).find(b=>b.ofxConta && ofxContaNum(b.ofxConta)===ofxContaNum(prev.conta) && ofxBancoCod(b.ofxBanco)===ofxBancoCod(prev.banco)) || null;
+  }
   function ofxBancoSelecionado(clientId){
     const bancos = contasBancoDaEmpresa(clientId);
-    return bancos.find(b=>b.id===state.ofxContaBanco) || bancos[0] || null;
+    if(state.ofxContaBanco === '__novo__') return null;
+    return bancos.find(b=>b.id===state.ofxContaBanco) || ofxContaVinculada(clientId, state.ofxPreview) || bancos[0] || null;
+  }
+  // Cria a conta analítica do banco do extrato (ex.: "Itaú c/c 0874991870") dentro de "Bancos Conta Movimento".
+  async function ofxCriarContaBanco(clientId, prev){
+    const todas = state.planoContas.filter(c=>c.clientId===clientId);
+    const existentes = contasBancoDaEmpresa(clientId);
+    let paiCod = null, modelo = null, nat = 'Devedora';
+    if(existentes.length){ const partes = String(existentes[0].codigo).split('.'); partes.pop(); paiCod = partes.join('.'); modelo = existentes[0].modelo; nat = existentes[0].natureza||'Devedora'; }
+    else { const sint = todas.find(c=>c.tipo==='Sintética' && /^bancos?\b/i.test(c.nome||'')); if(sint){ paiCod = sint.codigo; modelo = sint.modelo; } }
+    if(!paiCod) return null;
+    let max = 0;
+    todas.forEach(c=>{ if(String(c.codigo).startsWith(paiCod+'.')){ const r = String(c.codigo).slice(paiCod.length+1); if(/^\d+$/.test(r)) max = Math.max(max, parseInt(r,10)); } });
+    const conta = { id: uid(), clientId, codigo: paiCod + '.' + String(max+1).padStart(4,'0'),
+      nome: (ofxBancoNome(prev.banco) + (prev.conta ? ' c/c ' + ofxContaNum(prev.conta) : '')).slice(0,70),
+      tipo:'Analítica', natureza: nat, contaSuperior: paiCod, ofxBanco: ofxBancoCod(prev.banco), ofxConta: ofxContaNum(prev.conta), origemAutomatica: true };
+    if(modelo) conta.modelo = modelo;
+    await Store.set('planocontas:'+conta.id, JSON.stringify(conta), true);
+    state.planoContas.push(conta);
+    return conta;
+  }
+  // Classificação automática da contrapartida de uma transação do extrato:
+  // 1) regra aprendida; 2) CNPJ/CPF no texto = cliente/fornecedor já cadastrado; 3) palavras-chave comuns (tarifas, rendimentos, Simples…).
+  const OFX_PADROES = [
+    {re:/TAR\/CUSTAS|TARIFA|TAR\.? /i, nomes:[/^tarifas? banc/i]},
+    {re:/REND(IMENTOS)?\b.*APLIC|RENDIMENTO/i, nomes:[/^rendimentos de aplica/i, /^receitas? financeiras/i], entrada:true},
+    {re:/SIMPLES NACIONAL|\bDAS\b/i, nomes:[/^simples nacional a recolher/i], saida:true},
+    {re:/\bIOF\b/i, nomes:[/^iof/i], saida:true},
+    {re:/NEOENERGIA|CELPE|ENERGISA|COELBA|CEMIG|\bENEL\b/i, nomes:[/^energia el[eé]trica/i], saida:true},
+    {re:/COMPESA|SABESP|COPASA|EMBASA|SANEPAR/i, nomes:[/^[aá]gua e esgoto/i], saida:true},
+    {re:/\bCLARO\b|\bVIVO\b|\bTIM\b|\bOI\b|\.NET\b|INTERNET|TELEFON/i, nomes:[/^telefone e internet/i], saida:true},
+    {re:/JP CONSULTORIA CONTABIL|HONORARIO/i, nomes:[/^honor[aá]rios cont[aá]beis/i], saida:true},
+  ];
+  function ofxDocsDoTexto(memo){
+    const out = []; const t = String(memo||'');
+    (t.match(/\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}/g)||[]).forEach(x=>out.push(x.replace(/\D/g,'')));
+    (t.match(/\d{3}\.?\d{3}\.?\d{3}-?\d{2}/g)||[]).forEach(x=>out.push(x.replace(/\D/g,'')));
+    return out;
+  }
+  function ofxContraDe(clientId, t){
+    const entrada = t.valor >= 0;
+    const regra = ofxAcharRegra(clientId, t.memo, entrada);
+    if(regra){ const c = state.planoContas.find(x=>x.id===regra.conta); if(c) return {conta:c, origem:'regra'}; }
+    const contas = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica');
+    const docs = ofxDocsDoTexto(t.memo);
+    if(docs.length){
+      const c = contas.find(x=>x.pessoaDoc && docs.includes(String(x.pessoaDoc).replace(/\D/g,'')));
+      if(c) return {conta:c, origem:'cadastro'};
+    }
+    const base = contas.filter(c=>!c.papel && !c.pessoaTipo && !c.ofxBanco);
+    for(const p of OFX_PADROES){
+      if(!p.re.test(String(t.memo||''))) continue;
+      if(p.entrada && !entrada) continue; if(p.saida && entrada) continue;
+      for(const re of p.nomes){ const c = base.find(x=>re.test(String(x.nome||''))); if(c) return {conta:c, origem:'palavra-chave'}; }
+    }
+    return null;
   }
   // Compara o extrato com o que já foi lançado: quais transações já existem e quais lançamentos estão a mais (repetidos).
   function ofxAnalisar(clientId, transacoes){
@@ -16118,10 +16182,15 @@
         </div>
         ${(()=>{
           const bancos = contasBancoDaEmpresa(empresa);
-          if(!bancos.length) return `<div class="form-hint" style="margin-top:10px;">Esta empresa ainda não tem conta de banco no plano de contas. Em Plano de Contas, crie uma conta analítica dentro do grupo "Bancos Conta Movimento" (ex.: Banco do Brasil).</div>`;
-          const sel = bancos.some(b=>b.id===state.ofxContaBanco) ? state.ofxContaBanco : bancos[0].id;
-          return `<div class="field" style="margin-top:12px;"><label>Conta bancária (no plano de contas) que receberá os lançamentos</label>
-            <select id="ofxContaBanco">${bancos.map(b=>`<option value="${b.id}" ${b.id===sel?'selected':''}>${escapeHtml(b.codigo)} — ${escapeHtml(b.nome)}</option>`).join('')}</select></div>`;
+          if(!bancos.length && !(prev && prev.transacoes && prev.transacoes.length)) return `<div class="form-hint" style="margin-top:10px;">Esta empresa ainda não tem conta de banco no plano de contas. Em Plano de Contas, crie uma conta analítica dentro do grupo "Bancos Conta Movimento" (ex.: Banco do Brasil).</div>`;
+          const vinc = ofxContaVinculada(empresa, prev);
+          const sel = state.ofxContaBanco==='__novo__' ? '__novo__' : (bancos.some(b=>b.id===state.ofxContaBanco) ? state.ofxContaBanco : (vinc ? vinc.id : (bancos[0] ? bancos[0].id : '__novo__')));
+          const temExtrato = prev && prev.transacoes && prev.transacoes.length;
+          const aviso = temExtrato ? (vinc ? `<div class="form-hint" style="margin:0 0 8px;">✓ Este extrato (${escapeHtml(ofxBancoNome(prev.banco))}, conta ${escapeHtml(ofxContaNum(prev.conta))}) já está vinculado à conta <b>${escapeHtml(vinc.nome)}</b>.</div>`
+            : `<div class="attach-box" style="border-color:#E0A030; margin:0 0 8px;">Este extrato é do <b>${escapeHtml(ofxBancoNome(prev.banco))}</b> (conta <b>${escapeHtml(ofxContaNum(prev.conta))}</b>), mas nenhuma conta do plano está vinculada a ele. Escolha abaixo <b>"Criar conta"</b> para o sistema criar a conta do banco, ou selecione uma já existente.</div>`) : '';
+          const novoOpt = temExtrato && !vinc ? `<option value="__novo__" ${sel==='__novo__'?'selected':''}>➕ Criar conta: ${escapeHtml(ofxBancoNome(prev.banco))}${prev.conta?' c/c '+escapeHtml(ofxContaNum(prev.conta)):''}</option>` : '';
+          return `<div class="field" style="margin-top:12px;"><label>Conta bancária (no plano de contas) que receberá os lançamentos</label>${aviso}
+            <select id="ofxContaBanco">${novoOpt}${bancos.map(b=>`<option value="${b.id}" ${b.id===sel?'selected':''}>${escapeHtml(b.codigo)} — ${escapeHtml(b.nome)}</option>`).join('')}</select></div>`;
         })()}
         ${(()=>{
           const regras = state.regrasOfx.filter(r=>r.clientId===empresa);
@@ -16143,7 +16212,7 @@
         <div class="form-hint" style="margin:10px 0 6px;">${prev.transacoes.length} transação(ões) encontrada(s)${prev.banco?' — Banco '+escapeHtml(prev.banco):''}${prev.conta?' — Conta '+escapeHtml(prev.conta):''}</div>
         <div class="cc-list" style="max-height:260px;">
           ${prev.transacoes.map((t,i)=>`
-            <div class="cc-row"><div class="cr-main"><div class="cr-title">${fmtDate(t.data)} — ${escapeHtml(t.memo)}${prev._an && prev._an.jaExiste[i] ? ' <span class="tag sit-outra">já lançado</span>' : ''}</div><div class="cr-meta">${t.tipo||'—'}${(()=>{ const r = state.contabilEmpresaAtiva ? ofxAcharRegra(state.contabilEmpresaAtiva, t.memo, t.valor>=0) : null; return r ? ' · → ' + escapeHtml(contaNomeById(r.conta)) : ' · → Conta a Classificar'; })()}</div></div><span class="tag ${t.valor<0?'sit-baixada':'sit-ativa'}">${fmtBRL(t.valor)}</span></div>
+            <div class="cc-row"><div class="cr-main"><div class="cr-title">${fmtDate(t.data)} — ${escapeHtml(t.memo)}${prev._an && prev._an.jaExiste[i] ? ' <span class="tag sit-outra">já lançado</span>' : ''}</div><div class="cr-meta">${t.tipo||'—'}${(()=>{ const r = state.contabilEmpresaAtiva ? ofxContraDe(state.contabilEmpresaAtiva, t) : null; return r ? ' · → ' + escapeHtml(r.conta.codigo + ' ' + r.conta.nome) : ' · → Conta a Classificar'; })()}</div></div><span class="tag ${t.valor<0?'sit-baixada':'sit-ativa'}">${fmtBRL(t.valor)}</span></div>
           `).join('')}
         </div>
         <button type="button" class="btn-add" id="ofxConfirmImportBtn" style="margin-top:14px;">Importar ${prev.transacoes.length - (prev._an ? prev._an.jaExiste.filter(Boolean).length : 0)} lançamento(s) novo(s) para a contabilidade</button>
@@ -23229,6 +23298,8 @@
         const result = parseOfx(text);
         if(!result.ok){ showMsg('Não foi possível encontrar transações neste arquivo OFX. Confirme se é um extrato bancário válido.', 'error'); return; }
         state.ofxPreview = result; state.ofxNomeArquivo = file.name; state.ofxRolar = true;
+        { const emp = state.contabilEmpresaAtiva; const v = emp ? ofxContaVinculada(emp, result) : null;
+          state.ofxContaBanco = v ? v.id : ((emp && result.conta) ? '__novo__' : ''); }
         showMsg(result.transacoes.length + ' transação(ões) encontrada(s). Confirme a importação abaixo.', 'success');
         render();
       };
@@ -23279,7 +23350,18 @@
         if(!clientId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
         const bancosOfx = contasBancoDaEmpresa(clientId);
         const selBanco = document.getElementById('ofxContaBanco');
-        const contaBanco = (selBanco && bancosOfx.find(b=>b.id===selBanco.value)) || bancosOfx[0];
+        let contaBanco = (selBanco && bancosOfx.find(b=>b.id===selBanco.value)) || null;
+        if(!contaBanco && selBanco && selBanco.value==='__novo__'){
+          contaBanco = await ofxCriarContaBanco(clientId, state.ofxPreview);
+          if(!contaBanco){ alert('Não consegui criar a conta do banco: o plano de contas desta empresa não tem o grupo "Bancos Conta Movimento". Crie a conta do banco manualmente em Plano de Contas.'); return; }
+          state.ofxContaBanco = contaBanco.id;
+        }
+        if(!contaBanco) contaBanco = ofxContaVinculada(clientId, state.ofxPreview) || bancosOfx[0];
+        // vincula a conta escolhida a este banco/conta do extrato, para reconhecer nas próximas importações
+        if(contaBanco && !contaBanco.ofxConta && state.ofxPreview && state.ofxPreview.conta){
+          contaBanco.ofxBanco = ofxBancoCod(state.ofxPreview.banco); contaBanco.ofxConta = ofxContaNum(state.ofxPreview.conta);
+          try{ await Store.set('planocontas:'+contaBanco.id, JSON.stringify(contaBanco), true); }catch(e){}
+        }
         const contaClassificar = state.planoContas.find(c=>c.clientId===clientId && c.tipo==='Analítica' && (c.papel==='classificar' || c.nome==='Conta a Classificar (Importação OFX)'));
         if(!contaBanco || !contaClassificar){ alert('Esta empresa ainda não tem plano de contas cadastrado (ou não tem as contas "Bancos Conta Movimento" e "Conta a Classificar"). Vá em Plano de Contas, selecione a empresa e crie o plano de contas padrão antes de importar o OFX.'); return; }
         const prev = state.ofxPreview;
@@ -23289,8 +23371,9 @@
         prev.transacoes.forEach((t, idxT)=>{
           if(analise.jaExiste[idxT]){ ignorados++; return; }
           const isEntrada = t.valor >= 0;
-          const regra = ofxAcharRegra(clientId, t.memo, isEntrada);
-          const contra = regra ? regra.conta : contaClassificar.id;
+          const auto = ofxContraDe(clientId, t);
+          const regra = !!auto;
+          const contra = auto ? auto.conta.id : contaClassificar.id;
           if(regra) classificados++;
           lote.push({
             clientId,
@@ -23322,7 +23405,7 @@
         await loadLancamentosContabeis();
         state.contabilTab = 'lancamentos';
         render();
-        alert((ignorados ? ignorados + ' transação(ões) já estavam lançadas e foram ignoradas. ' : '') + total + ' lançamento(s) novo(s) importado(s): ' + classificados + ' já classificado(s) pelas regras aprendidas e ' + (total-classificados) + ' em "Conta a Classificar". Para os que sobraram, use Editar, escolha a conta certa e marque "Lembrar nos próximos extratos".');
+        alert((ignorados ? ignorados + ' transação(ões) já estavam lançadas e foram ignoradas. ' : '') + total + ' lançamento(s) novo(s) importado(s): ' + classificados + ' já classificado(s) automaticamente (cadastro de clientes/fornecedores, regras e palavras-chave) e ' + (total-classificados) + ' em "Conta a Classificar". Para os que sobraram, use Editar, escolha a conta certa e marque "Lembrar nos próximos extratos".');
       };
     }
 
