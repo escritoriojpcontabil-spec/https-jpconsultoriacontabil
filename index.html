@@ -14994,7 +14994,7 @@
         </div>
         <button type="button" class="btn-calc" id="criarPlanoContasPadraoBtn">Criar plano de contas padrão (máscara antiga X.X.XX.XXX.XXXX)</button>
         <div class="form-hint" style="margin-top:8px;">Isso cria a estrutura básica (Ativo, Passivo, Patrimônio Líquido, Receitas, Custos, Despesas) já na máscara X.X.XX.XXX / X.X.XX.XXX.XXXX — depois é só editar/adicionar conforme a necessidade.</div>
-      ` : `${planoPrecisaConverter(state.contabilEmpresaAtiva) ? `<div class="legis-note" style="margin-bottom:12px;">Este plano usa a numeração antiga (Patrimônio Líquido = 3, Receitas = 4, Custos = 5, Despesas = 6). A numeração nova é: <b>Passivo e Patrimônio Líquido = 2</b> (PL em 2.03), <b>Receitas = 3</b>, Custos = 4 e Despesas = 5. Os lançamentos continuam nas mesmas contas; só os códigos mudam. <button type="button" class="btn-add" id="pmConverterNumBtn" style="margin-left:8px;">Converter para a numeração nova</button></div>` : ''}<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
+      ` : `${(()=>{ const n = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva && c.pessoaTipo && c.nome!==nomeProprio(c.nome)).length; return n ? `<div class="legis-note" style="margin-bottom:12px;">${n} conta(s) de clientes/fornecedores estão com o nome fora do padrão (ex.: tudo em maiúsculas). <button type="button" class="btn-add" id="padronizarNomesBtn" style="margin-left:8px;">Padronizar nomes (Primeira Letra Maiúscula)</button></div>` : ''; })()}${planoPrecisaConverter(state.contabilEmpresaAtiva) ? `<div class="legis-note" style="margin-bottom:12px;">Este plano usa a numeração antiga (Patrimônio Líquido = 3, Receitas = 4, Custos = 5, Despesas = 6). A numeração nova é: <b>Passivo e Patrimônio Líquido = 2</b> (PL em 2.03), <b>Receitas = 3</b>, Custos = 4 e Despesas = 5. Os lançamentos continuam nas mesmas contas; só os códigos mudam. <button type="button" class="btn-add" id="pmConverterNumBtn" style="margin-left:8px;">Converter para a numeração nova</button></div>` : ''}<div id="planoContasContainer">${planoContasTableHtml()}</div>`}
 
       ${pmSecaoHtml()}
 
@@ -15464,6 +15464,28 @@
 
   // Conta individual por cliente/fornecedor: criada sozinha no Plano de Contas, ao lado da conta genérica
   // ("Clientes (Contas a Receber)" ou "Fornecedores Nacionais"), com código sequencial (ex.: 1.01.04.0002).
+  // "MULTILABOR COMERCIO DE PRODUTOS LTDA" -> "Multilabor Comercio de Produtos Ltda" (relatórios mais organizados).
+  const PT_MINUSC = new Set(['de','da','do','das','dos','e','em','a','o','as','os','para','por','com','na','no','nas','nos','ao','aos']);
+  const PT_SIGLAS = {me:'ME', epp:'EPP', mei:'MEI', sa:'S/A', cnpj:'CNPJ', cpf:'CPF', pj:'PJ', pf:'PF', ii:'II', iii:'III', iv:'IV', ti:'TI', uti:'UTI', cdl:'CDL', sus:'SUS'};
+  function nomeDecodificar(t){
+    let x = String(t||'');
+    for(let k=0;k<3 && /&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);/i.test(x);k++){
+      x = x.replace(/&amp;/gi,'&').replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').replace(/&quot;/gi,'"').replace(/&apos;|&#39;/gi,"'")
+           .replace(/&#(\d+);/g,(m,n)=>String.fromCharCode(+n)).replace(/&#x([0-9a-f]+);/gi,(m,n)=>String.fromCharCode(parseInt(n,16)));
+    }
+    return x;
+  }
+  function nomeProprio(txt){
+    let i = 0;
+    return nomeDecodificar(txt).replace(/\s+/g,' ').trim().replace(/[\p{L}\p{N}]+/gu, (w, off, full)=>{
+      const baixo = w.toLowerCase(); const primeira = (i++===0);
+      if(w.length===1 && (full.charAt(off-1)==='.' || full.charAt(off+1)==='.')) return w.toUpperCase(); // siglas: J.M.A.V., S.A.
+      if(/\d/.test(w) && /\p{L}/u.test(w)) return w.toUpperCase();
+      if(PT_SIGLAS[baixo]) return PT_SIGLAS[baixo];
+      if(!primeira && PT_MINUSC.has(baixo)) return baixo;
+      return baixo.charAt(0).toUpperCase() + baixo.slice(1);
+    });
+  }
   function nfPessoaDaNota(n){
     const entrada = n.tipoOperacao==='Entrada';
     const nome = String((entrada ? n.emitNome : n.destNome) || '').replace(/\s+/g,' ').trim();
@@ -15471,7 +15493,7 @@
     if(!nome && !doc) return null;
     const chave = doc.length>=11 ? doc : semAcento(nome).replace(/[^a-z0-9]+/g,' ').trim();
     if(!chave) return null;
-    return { tipo: entrada ? 'fornecedor' : 'cliente', nome: nome || ('Documento ' + doc), doc, chave };
+    return { tipo: entrada ? 'fornecedor' : 'cliente', nome: nome ? nomeProprio(nome) : ('Documento ' + doc), doc, chave };
   }
   async function nfContaDaPessoa(clientId, n, generica){
     const p = nfPessoaDaNota(n);
@@ -15515,9 +15537,9 @@
   function nfHistoricoContabil(n){
     const num = (n.numero||'S/N') + (n.serie ? '/' + n.serie : '');
     const tipo = (n.tipo||'Nota fiscal').replace(/\s*\(.*\)/,'');
-    if(n.tipoOperacao==='Entrada') return 'Compra conf. ' + tipo + ' nº ' + num + (n.emitNome ? ' — ' + n.emitNome : '');
-    if(n.tipoOperacao==='Serviços') return 'Prestação de serviços conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + n.destNome : '');
-    return 'Venda conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + n.destNome : '');
+    if(n.tipoOperacao==='Entrada') return 'Compra conf. ' + tipo + ' nº ' + num + (n.emitNome ? ' — ' + nomeProprio(n.emitNome) : '');
+    if(n.tipoOperacao==='Serviços') return 'Prestação de serviços conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + nomeProprio(n.destNome) : '');
+    return 'Venda conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + nomeProprio(n.destNome) : '');
   }
   async function contabilizarNotas(clientIds, opts){
     opts = opts || {};
@@ -22970,6 +22992,16 @@
       };
     }
 
+    const padronizarNomesBtn = document.getElementById('padronizarNomesBtn');
+    if(padronizarNomesBtn) padronizarNomesBtn.onclick = async ()=>{
+      const lista = state.planoContas.filter(c=>c.clientId===state.contabilEmpresaAtiva && c.pessoaTipo && c.nome!==nomeProprio(c.nome));
+      if(!confirm('Padronizar o nome de '+lista.length+' conta(s) de clientes/fornecedores?')) return;
+      padronizarNomesBtn.disabled = true; padronizarNomesBtn.textContent = 'Padronizando…';
+      for(let i=0;i<lista.length;i+=15){
+        await Promise.all(lista.slice(i,i+15).map(c=>{ c.nome = nomeProprio(c.nome); return Store.set('planocontas:'+c.id, JSON.stringify(c), true); }));
+      }
+      render();
+    };
     const pmConverterNumBtn = document.getElementById('pmConverterNumBtn');
     if(pmConverterNumBtn) pmConverterNumBtn.onclick = async ()=>{
       const emp = state.contabilEmpresaAtiva;
