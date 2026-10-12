@@ -15550,12 +15550,13 @@
           origemAutomatica:true, origemNota:nid };
         const ex = existentes[nid];
         if(!ex){ escrever.push(novo); res.criados++; continue; }
+        if(opts.apenasNovos){ res.jaLancadas = (res.jaLancadas||0)+1; continue; }
         if(ex.editadoManual){ res.mantidosManual++; continue; }
         if(ex.data!==novo.data || Number(ex.valor)!==novo.valor || ex.contaDebito!==novo.contaDebito || ex.contaCredito!==novo.contaCredito || ex.historico!==novo.historico){
           escrever.push(Object.assign({}, ex, novo)); res.atualizados++;
         }
       }
-      Object.keys(existentes).forEach(nid=>{
+      if(!opts.apenasNovos) Object.keys(existentes).forEach(nid=>{
         if(vivas[nid]) return;
         const ex = existentes[nid];
         if(ex.editadoManual){ res.mantidosManual++; return; }
@@ -15576,7 +15577,8 @@
     if(res.atualizados) p.push(res.atualizados + ' atualizado(s)');
     if(res.removidos) p.push(res.removidos + ' removido(s) (nota cancelada/excluída)');
     if(res.mantidosManual) p.push(res.mantidosManual + ' editado(s) à mão mantido(s)');
-    if(!p.length) p.push('nenhuma alteração — tudo já estava lançado');
+    if(res.jaLancadas) p.push(res.jaLancadas + ' nota(s) já estavam lançadas e foram mantidas');
+    if(!res.criados && !res.atualizados && !res.removidos && !res.contasCriadas) p.unshift('nada novo para lançar — tudo já estava lançado');
     let txt = p.join(' · ');
     const falt = Object.keys(res.semConta).map(cid=>clientName(cid) + ': falta conta ' + res.semConta[cid].join(', '));
     if(falt.length) txt += ' — ATENÇÃO, notas sem lançar: ' + falt.join('; ');
@@ -15586,16 +15588,28 @@
   function notasContabilCardHtml(){
     const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? state.clients.map(c=>c.id) : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
     const notas = state.notasFiscais.filter(n=>ids.includes(n.clientId) && n.status!=='Cancelada' && n.dataEmissao && Number(n.valor)>0);
-    const lancadas = new Set(state.lancamentosContabeis.filter(l=>l.origemNota).map(l=>l.origemNota));
+    const lancadas = new Set(state.lancamentosContabeis.filter(l=>l.origemNota && ids.includes(l.clientId)).map(l=>l.origemNota));
     const pend = notas.filter(n=>!lancadas.has(n.id)).length;
+    const vivasIds = new Set(notas.map(n=>n.id));
+    const sobras = state.lancamentosContabeis.filter(l=>l.origemNota && ids.includes(l.clientId) && !vivasIds.has(l.origemNota) && !l.editadoManual).length;
+    const meses = {};
+    notas.forEach(n=>{ const m = String(n.dataEmissao).slice(0,7); const o = meses[m] = meses[m] || {t:0, l:0}; o.t++; if(lancadas.has(n.id)) o.l++; });
+    const linhasMes = Object.keys(meses).sort().reverse().map(m=>{ const o = meses[m]; const ok = o.l===o.t;
+      return `<div style="display:flex; justify-content:space-between; gap:12px; padding:4px 0; border-bottom:1px solid #e6eaf0; font-size:13px;"><span>${escapeHtml(lancMesNome(m))}</span><span style="${ok?'color:#2E7D32;':'color:#B26A00;font-weight:700;'}">${ok ? '✓ '+o.t+' de '+o.t+' notas já lançadas' : o.l+' de '+o.t+' lançadas — faltam '+(o.t-o.l)}</span></div>`; }).join('');
+    const acao = pend===0 && notas.length
+      ? `<div style="padding:10px 12px; background:#E8F5E9; border-left:4px solid #2E7D32; border-radius:4px;">✓ <b>Todas as ${notas.length} notas fiscais já foram lançadas na contabilidade.</b> Não é preciso (nem possível) gerar de novo — assim não há risco de duplicar.</div>`
+      : `<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <button type="button" class="btn-add" id="nfContabilizarBtn">${pend && pend<notas.length ? (pend===1 ? 'Lançar só a 1 nota que falta' : 'Lançar só as '+pend+' notas que faltam') : 'Gerar lançamentos das notas fiscais'}</button>
+          <span class="form-hint" style="margin:0;">${notas.length} nota(s) no escopo · <b>${pend}</b> ainda sem lançamento</span>
+        </div>`;
+    const sinc = sobras ? `<div style="margin-top:10px;"><button type="button" class="btn-sm danger" id="nfSincronizarBtn">Remover ${sobras} lançamento(s) de notas canceladas/excluídas</button></div>` : '';
     return `
       <div class="attach-box" style="margin:0 0 14px;">
         <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Lançamento automático das notas fiscais</label>
-        <div class="form-hint" style="margin:0 0 10px;">Cada nota fiscal vira um lançamento contábil: <b>venda</b> (D Cliente / C Receita de Vendas), <b>serviço prestado</b> (D Cliente / C Receita de Serviços) e <b>compra</b> (D Estoque ou Despesa / C Fornecedor). O sistema também <b>cria sozinho a conta de cada cliente e de cada fornecedor</b> no Plano de Contas (pelo CNPJ/CPF ou nome da nota), ao lado da conta genérica, e lança nela. Acontece sozinho ao importar ou cadastrar a nota; use o botão para lançar as notas que já estavam cadastradas. Notas canceladas ou excluídas retiram o lançamento, e o que você editar à mão é preservado.</div>
-        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-          <button type="button" class="btn-add" id="nfContabilizarBtn">Gerar lançamentos das notas fiscais</button>
-          <span class="form-hint" style="margin:0;">${notas.length} nota(s) no escopo · <b>${pend}</b> ainda sem lançamento</span>
-        </div>
+        <div class="form-hint" style="margin:0 0 10px;">Cada nota fiscal vira um lançamento contábil: <b>venda</b> (D Cliente / C Receita de Vendas), <b>serviço prestado</b> (D Cliente / C Receita de Serviços) e <b>compra</b> (D Estoque ou Despesa / C Fornecedor). O sistema só lança o que <b>ainda não foi lançado</b>; notas já lançadas são mantidas e não duplicam.</div>
+        ${acao}
+        ${linhasMes ? `<div style="margin-top:10px; max-height:150px; overflow:auto;">${linhasMes}</div>` : ''}
+        ${sinc}
         <div id="nfContabilMsg" class="lookup-msg" style="display:none; margin-top:10px;"></div>
       </div>`;
   }
@@ -23191,11 +23205,23 @@
       nfContabilizarBtn.disabled = true; nfContabilizarBtn.textContent = 'Gerando…';
       try{
         const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? null : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
-        const r = await contabilizarNotas(ids, {silent:true});
+        const r = await contabilizarNotas(ids, {silent:true, apenasNovos:true});
         render();
         const m2 = document.getElementById('nfContabilMsg');
         if(m2){ m2.textContent = nfResumoContabil(r); m2.className = 'lookup-msg ' + (Object.keys(r.semConta).length || r.semPlano.length ? 'error' : 'success'); m2.style.display='block'; }
       }catch(e){ console.error(e); if(msg){ msg.textContent = 'Falha ao gerar: ' + ((e&&(e.code||e.message))||'erro'); msg.className='lookup-msg error'; msg.style.display='block'; } nfContabilizarBtn.disabled=false; nfContabilizarBtn.textContent='Gerar lançamentos das notas fiscais'; }
+    };
+    const nfSincronizarBtn = document.getElementById('nfSincronizarBtn');
+    if(nfSincronizarBtn) nfSincronizarBtn.onclick = async ()=>{
+      if(!confirm('Remover os lançamentos de notas fiscais que foram canceladas ou excluídas?')) return;
+      nfSincronizarBtn.disabled = true; nfSincronizarBtn.textContent = 'Removendo…';
+      try{
+        const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? null : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
+        const r = await contabilizarNotas(ids, {silent:true});
+        render();
+        const m2 = document.getElementById('nfContabilMsg');
+        if(m2){ m2.textContent = nfResumoContabil(r); m2.className = 'lookup-msg success'; m2.style.display='block'; }
+      }catch(e){ console.error(e); alert('Falha: ' + ((e&&(e.code||e.message))||'erro')); nfSincronizarBtn.disabled = false; }
     };
     const lancApagarLoteBtn = document.getElementById('lancApagarLoteBtn');
     if(lancApagarLoteBtn) lancApagarLoteBtn.onclick = ()=>{ lancApagarLote(); };
