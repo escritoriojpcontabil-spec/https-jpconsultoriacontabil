@@ -10118,7 +10118,7 @@
     if(spedDigits(cfg.contabCep).length!==8 && spedDigits(cfg.cep).length!==8) erros.push('Informe o CEP (da empresa e/ou do contabilista).');
     if(spedDigits(cfg.contabMun || cfg.codMun).length!==7) erros.push('Código IBGE do município do contabilista inválido.');
     if(cl.regimeTributario==='Simples Nacional') avisos.push('Empresa optante do Simples Nacional normalmente é dispensada da EFD ICMS/IPI (salvo exigência da SEFAZ). Confirme a obrigatoriedade.');
-    if(mes==='02') avisos.push('Fevereiro: o Bloco H (inventário) costuma ser obrigatório nesse mês — este sistema o gera SEM movimento. Confirme com a SEFAZ antes de transmitir.');
+    if(mes==='02') avisos.push('Fevereiro: o Bloco H (inventário) é obrigatório nesse mês. O sistema gerou H001 com movimento e o inventário de 31/12/'+(Number(ano)-1)+' (H005) com valor ZERO e sem itens (H010). Se a empresa TINHA estoque em 31/12, o inventário precisa ser informado item a item — este gerador não cobre isso: faça o Bloco H no PVA antes de transmitir.');
     if(cfg.indAtiv==='0') avisos.push('Estabelecimento industrial: o Bloco K (produção/estoque) pode ser exigido — gerado SEM movimento.');
 
     const naoCreditoCfops = String(cfg.cfopsSemCredito===undefined?SPED_CFOP_SEM_CREDITO:cfg.cfopsSemCredito).split(/[ ,;]+/).filter(Boolean);
@@ -10284,7 +10284,12 @@
     linhasPorBloco['D'] = [spedLinha(['D001','1']), null];
     linhasPorBloco['E'] = [...E, null];
     linhasPorBloco['G'] = [spedLinha(['G001','1']), null];
-    linhasPorBloco['H'] = [spedLinha(['H001','1']), null];
+    if(mes==='02'){
+      // Fevereiro: H001 IND_MOV=0 e H005 obrigatório (inventário de 31/12 do ano anterior; MOT_INV 01 = final do período). Estoque zero: sem H010.
+      linhasPorBloco['H'] = [spedLinha(['H001','0']), spedLinha(['H005', '3112'+(Number(ano)-1), '0,00', '01']), null];
+    } else {
+      linhasPorBloco['H'] = [spedLinha(['H001','1']), null];
+    }
     linhasPorBloco['K'] = [spedLinha(['K001','1']), null];
     linhasPorBloco['1'] = [spedLinha(['1001','0']), spedLinha(['1010','N','N','N','N','N','N','N','N','N','N','N','N','N']), null];
 
