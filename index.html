@@ -10401,14 +10401,31 @@
     return _spedParseCache.get(key);
   }
   // Lê entradas (saldo credor anterior / deduções) digitadas na tela, com fallback para o que já está salvo.
+  // competência anterior (aaaa-mm)
+  function spedCompAnterior(comp){
+    let a = Number(comp.slice(0,4)), m = Number(comp.slice(5,7)) - 1; if(m<1){ m = 12; a--; }
+    return a+'-'+String(m).padStart(2,'0');
+  }
+  // saldo credor a transportar do mês anterior (null = não há geração do mês anterior)
+  function spedSaldoAnteriorAuto(clientId, comp){
+    const ant = spedGeracaoDe(clientId, spedCompAnterior(comp));
+    if(!ant || !ant.apuracao) return null;
+    const v = Number(ant.apuracao.saldoCredorTransportar);
+    return isNaN(v) ? null : Math.round(v*100)/100;
+  }
   function spedEntradas(clientId, comp){
     const g = spedGeracaoDe(clientId, comp) || {};
     const t = (state.spedInputs||{})[clientId+'_'+comp] || {};
     const num = (v)=>{ const n = parseFloat(String(v===undefined||v===null?'':v).replace(',','.')); return isNaN(n)?0:n; };
+    const auto = spedSaldoAnteriorAuto(clientId, comp);
+    let saldo, saldoTxt, origem = '';
+    if(t.saldo!==undefined){ saldo = num(t.saldo); saldoTxt = t.saldo; }
+    else if(g.saldoManual){ saldo = num(g.saldoCredorAnterior); saldoTxt = g.saldoCredorAnterior||''; }
+    else if(auto!==null){ saldo = auto; saldoTxt = String(auto).replace('.',','); origem = spedCompAnterior(comp); }
+    else { saldo = num(g.saldoCredorAnterior); saldoTxt = g.saldoCredorAnterior||''; }
     return {
-      saldo: t.saldo!==undefined ? num(t.saldo) : num(g.saldoCredorAnterior),
+      saldo, saldoTxt, auto, origem,
       ded: t.ded!==undefined ? num(t.ded) : num(g.deducoes),
-      saldoTxt: t.saldo!==undefined ? t.saldo : (g.saldoCredorAnterior||''),
       dedTxt: t.ded!==undefined ? t.ded : (g.deducoes||''),
       retif: t.retif!==undefined ? !!t.retif : !!g.retificadora,
     };
@@ -11118,7 +11135,7 @@
       ${!cfgOk ? `<div class="empty" style="margin-bottom:10px;">Antes de gerar, preencha a configuração (IE, município IBGE, contabilista e dados de recolhimento).</div>` : ''}
       <div class="form-row" style="grid-template-columns:repeat(4,1fr);">
         <div class="field"><label>Competência</label><input type="month" id="spedCompetencia" value="${comp}"/></div>
-        <div class="field"><label>Saldo credor anterior (R$)</label><input type="text" id="spedSaldo" value="${escapeHtml(String(ent.saldoTxt))}" placeholder="0,00"/></div>
+        <div class="field"><label>Saldo credor anterior (R$)</label><input type="text" id="spedSaldo" value="${escapeHtml(String(ent.saldoTxt))}" placeholder="0,00"/>${ent.origem?`<div class="form-hint">Trazido automaticamente do saldo credor a transportar de ${spedCompLabel(ent.origem)}. Pode ser alterado.</div>`:''}</div>
         <div class="field"><label>Deduções do ICMS (R$)</label><input type="text" id="spedDed" value="${escapeHtml(String(ent.dedTxt))}" placeholder="0,00"/></div>
         <div class="field"><label>Finalidade</label><select id="spedRetif"><option value="0" ${!ent.retif?'selected':''}>Original</option><option value="1" ${ent.retif?'selected':''}>Substituto (retificação)</option></select></div>
       </div>
@@ -21678,7 +21695,7 @@
         status: ant.status && ant.status!=='Arquivo gerado' ? ant.status : 'Arquivo gerado',
         recibo: ant.recibo||'', dataTransmissao: ant.dataTransmissao||'',
         geradoEm: new Date().toISOString(), linhas: r.linhas, codVer: r.codVer,
-        saldoCredorAnterior: ent.saldo, deducoes: ent.ded, retificadora: ent.retif,
+        saldoCredorAnterior: ent.saldo, saldoManual: (ent.auto!==null && Math.abs(ent.saldo-ent.auto)>0.004) || (ent.auto===null && Math.abs(ent.saldo)>0.004), deducoes: ent.ded, retificadora: ent.retif,
         apuracao: r.apuracao,
       }));
       state.spedInputs[spedEmp+'_'+comp] = undefined; delete state.spedInputs[spedEmp+'_'+comp];
