@@ -10249,13 +10249,14 @@
       });
       if(Math.abs(round2(vlOprTotal) - p.vNF) > 0.05) avisos.push('NF '+p.nNF+': soma das operações dos itens ('+spedNum(vlOprTotal)+') difere do valor da nota ('+spedNum(p.vNF)+') — o PVA pode apontar inconsistência no C190.');
       if(d.indOper==='1'){ resumo.saidas++; resumo.vSaidas += p.vNF; } else { resumo.entradas++; resumo.vEntradas += p.vNF; }
-      const indPgto = p.indPag==='0' ? '0' : (p.indPag==='1' ? '1' : '9');
+      const indPgto = p.indPag==='0' ? '0' : (p.indPag==='1' ? '1' : '2'); // 9 não é mais válido no layout atual
       C.push(spedLinha([
         'C100', d.indOper, d.indEmit, cod, '55', '00', spedTxt(p.serie,3), spedTxt(p.nNF,9), p.chave, spedDt(p.dtEmi), spedDt(p.dtSai||p.dtEmi),
         spedNum(p.vNF), indPgto, spedNum(p.vDesc), '0,00', spedNum(p.vProd), p.modFrete||'9', spedNum(p.vFrete), spedNum(p.vSeg), spedNum(p.vOutro),
         spedNum(p.vBC), spedNum(p.vICMS), spedNum(p.vBCST), spedNum(p.vST), spedNum(p.vIPI), spedNum(p.vPIS), spedNum(p.vCOFINS), '0,00', '0,00'
       ]));
-      linhasC170.forEach(l=>C.push(l));
+      // NF-e de emissão própria: só C100 e C190 (C170 só com filhos C176/C177/C180/C181)
+      if(d.indEmit!=='0') linhasC170.forEach(l=>C.push(l));
       Array.from(c190.values()).sort((a,b)=> (a.cst+a.cfop+a.aliq).localeCompare(b.cst+b.cfop+b.aliq)).forEach(g=>{
         C.push(spedLinha(['C190', g.cst, g.cfop, spedNum(g.aliq), spedNum(round2(g.opr)), spedNum(round2(g.bc)), spedNum(round2(g.icms)), spedNum(round2(g.bcst)), spedNum(round2(g.st)), spedNum(round2(g.red)), spedNum(round2(g.ipi)), '']));
       });
