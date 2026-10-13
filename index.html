@@ -15086,7 +15086,7 @@
     return `
       <div class="panel-head">
         <h3>Plano de Contas</h3>
-        ${empresa ? `<button type="button" class="btn-add" id="novaContaBtn">+ Nova conta</button>` : ''}
+        ${empresa ? `<span style="display:inline-flex; gap:8px; flex-wrap:wrap;"><button type="button" class="btn-add" id="novoGrupoBtn" title="Cria um grupo (conta sintética) para organizar as contas">+ Novo grupo</button><button type="button" class="btn-add" id="novaContaBtn">+ Nova conta</button></span>` : ''}
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Cada empresa tem seu próprio plano de contas, histórico e lançamentos, totalmente separados dos demais clientes.</div>
       ${empresaContabilSelectorHtml()}
@@ -15168,8 +15168,9 @@
     `;
   }
 
-  function contaSinteticaOptionsHtml(selected, excludeId){
-    const sinteticas = state.planoContas.filter(c=>c.tipo==='Sintética' && c.id!==excludeId && c.clientId===state.contabilEmpresaAtiva).sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
+  function contaSinteticaOptionsHtml(selected, excludeId, soParaGrupo){
+    // para criar um GRUPO na máscara nova, só cabem sob contas de até 2 níveis (1 / 1.01); o 3º nível já é o das analíticas
+    const sinteticas = state.planoContas.filter(c=>c.tipo==='Sintética' && c.id!==excludeId && c.clientId===state.contabilEmpresaAtiva && (!soParaGrupo || !planoMascaraNova(state.contabilEmpresaAtiva) || c.codigo.split('.').length<=2)).sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
     return `<option value="">— Nenhuma (conta de 1º nível) —</option>` +
       sinteticas.map(c=>`<option value="${escapeHtml(c.codigo)}" ${c.codigo===selected?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('');
   }
@@ -15204,12 +15205,12 @@
     return `
       <div class="modal-bg" id="modalBg">
         <div class="modal">
-          <h3>${d.id ? 'Editar conta contábil' : 'Nova conta contábil'}</h3>
+          <h3>${d.id ? (d.tipo==='Sintética' ? 'Editar grupo' : 'Editar conta contábil') : (d.novoGrupo ? 'Novo grupo (conta sintética)' : 'Nova conta contábil')}</h3>
           <form id="contaForm">
             <div class="field"><label>Conta superior (sintética)</label>
-              <select id="ctContaSuperior">${contaSinteticaOptionsHtml(d.contaSuperior, d.id)}</select>
+              <select id="ctContaSuperior">${contaSinteticaOptionsHtml(d.contaSuperior, d.id, !!d.novoGrupo)}</select>
             </div>
-            <div class="form-hint" style="margin:-8px 0 12px;">Escolha a conta superior para o código ser sugerido automaticamente, seguindo a máscara dela. Deixe em branco para uma conta de 1º nível.</div>
+            <div class="form-hint" style="margin:-8px 0 12px;">${d.novoGrupo ? 'Grupo novo: escolha onde ele fica (ex.: 2.01 — Passivo Circulante) e o código seguinte é sugerido. Depois crie as contas dentro dele com "+ Conta". ' : ''}Escolha a conta superior para o código ser sugerido automaticamente, seguindo a máscara dela. Deixe em branco para uma conta de 1º nível.</div>
             <div class="form-row">
               <div class="field"><label>Código</label><input type="text" id="ctCodigo" placeholder="Ex: 1.1.6" value="${escapeHtml(d.codigo||'')}"/></div>
               <div class="field"><label>Tipo</label>
@@ -23304,6 +23305,8 @@
     }
 
     // Plano de Contas
+    const novoGrupoBtn = document.getElementById('novoGrupoBtn');
+    if(novoGrupoBtn) novoGrupoBtn.onclick = ()=>{ state.contaModalData = { clientId: state.contabilEmpresaAtiva, tipo:'Sintética', novoGrupo:true }; state.modal='conta'; render(); };
     const novaContaBtn = document.getElementById('novaContaBtn');
     if(novaContaBtn) novaContaBtn.onclick = ()=>{ state.contaModalData = { clientId: state.contabilEmpresaAtiva }; state.modal='conta'; render(); };
     const ctCancel = document.getElementById('ctCancel');
@@ -23317,7 +23320,7 @@
           codigoInput.value = suggestNextCodigo(parentCodigo);
           const parentConta = state.planoContas.find(c=>c.codigo===parentCodigo && c.clientId===state.contabilEmpresaAtiva);
           if(parentConta) document.getElementById('ctNatureza').value = parentConta.natureza;
-          if(parentConta && planoMascaraNova(state.contabilEmpresaAtiva)) document.getElementById('ctTipo').value = parentCodigo.split('.').length>=3 ? 'Analítica' : 'Sintética';
+          if(parentConta && planoMascaraNova(state.contabilEmpresaAtiva) && !(state.contaModalData && state.contaModalData.novoGrupo)) document.getElementById('ctTipo').value = parentCodigo.split('.').length>=3 ? 'Analítica' : 'Sintética';
         } else {
           codigoInput.value = '';
         }
@@ -23574,10 +23577,9 @@
       const cli = ()=> document.getElementById('lcCliente').value;
       const fechar = ()=>{ box.style.display='none'; box.innerHTML=''; };
       const estilo = 'border:1.5px solid var(--accent,#1B3A5C); border-radius:10px; padding:12px; margin:0 0 14px; background:rgba(27,58,92,.05);';
-      document.querySelectorAll('[data-lc-nova-conta]').forEach(btn=>{
-        btn.onclick = ()=>{
+      const abrirConta = (alvo, preSup)=>{
+        {
           const clientId = cli(); if(!clientId){ alert('Escolha a empresa primeiro.'); return; }
-          const alvo = btn.getAttribute('data-lc-nova-conta');
           const sint = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Sintética').sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
           if(!sint.length){ alert('Esta empresa ainda não tem plano de contas — cadastre em Plano de Contas antes.'); return; }
           box.style.cssText = estilo + 'display:block;';
@@ -23586,11 +23588,34 @@
             <div class="form-row"><div class="field"><label>Código</label><input type="text" id="qcCodigo"/></div>
               <div class="field"><label>Natureza</label><select id="qcNat" data-nobusca="1"><option>Devedora</option><option>Credora</option></select></div></div>
             <div class="field"><label>Nome da conta</label><input type="text" id="qcNome"/></div>
-            <div style="display:flex; gap:8px; justify-content:flex-end;"><button type="button" class="btn-sm" id="qcCancel">Cancelar</button><button type="button" class="btn-add" id="qcSalvar">Criar conta</button></div>`;
+            <div style="display:flex; gap:8px; justify-content:space-between; flex-wrap:wrap;"><button type="button" class="btn-detail" id="qcNovoGrupo">+ Novo grupo</button><span style="display:flex; gap:8px;"><button type="button" class="btn-sm" id="qcCancel">Cancelar</button><button type="button" class="btn-add" id="qcSalvar">Criar conta</button></span></div>`;
           document.getElementById('qcSup').onchange = (e)=>{
             const cod = e.target.value; if(!cod) return;
             document.getElementById('qcCodigo').value = suggestNextCodigo(cod, clientId);
             const pai = state.planoContas.find(c=>c.codigo===cod && c.clientId===clientId); if(pai) document.getElementById('qcNat').value = pai.natureza || 'Devedora';
+          };
+          document.getElementById('qcNovoGrupo').onclick = ()=>{
+            const pais = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Sintética' && (!planoMascaraNova(clientId) || c.codigo.split('.').length<=2)).sort((x,y)=>(x.codigo||'').localeCompare(y.codigo||'', undefined, {numeric:true}));
+            box.innerHTML = `<div style="font-weight:700; margin-bottom:8px;">Novo grupo do plano de contas</div>
+              <div class="field"><label>Onde fica o grupo (conta superior)</label><select id="qgSup" data-nobusca="1"><option value="">— Escolha —</option>${pais.map(c=>`<option value="${escapeHtml(c.codigo)}">${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}</select></div>
+              <div class="form-row"><div class="field"><label>Código</label><input type="text" id="qgCodigo"/></div>
+                <div class="field"><label>Natureza</label><select id="qgNat" data-nobusca="1"><option>Devedora</option><option>Credora</option></select></div></div>
+              <div class="field"><label>Nome do grupo</label><input type="text" id="qgNome"/></div>
+              <div style="display:flex; gap:8px; justify-content:flex-end;"><button type="button" class="btn-sm" id="qgCancel">Voltar</button><button type="button" class="btn-add" id="qgSalvar">Criar grupo</button></div>`;
+            document.getElementById('qgSup').onchange = (e)=>{ const cod = e.target.value; if(!cod) return; document.getElementById('qgCodigo').value = suggestNextCodigo(cod, clientId); const pai = state.planoContas.find(c=>c.codigo===cod && c.clientId===clientId); if(pai) document.getElementById('qgNat').value = pai.natureza || 'Devedora'; };
+            document.getElementById('qgCancel').onclick = ()=> abrirConta(alvo);
+            document.getElementById('qgSalvar').onclick = async ()=>{
+              const sup = document.getElementById('qgSup').value, codigo = document.getElementById('qgCodigo').value.trim(), nome = document.getElementById('qgNome').value.trim();
+              if(!sup){ alert('Escolha onde o grupo fica.'); return; }
+              if(!codigo || !nome){ alert('Informe o código e o nome do grupo.'); return; }
+              if(state.planoContas.some(c=>c.clientId===clientId && c.codigo===codigo)){ alert('Já existe uma conta com o código '+codigo+' nesta empresa.'); return; }
+              const g = { id: uid(), clientId, codigo, nome, tipo:'Sintética', natureza: document.getElementById('qgNat').value, contaSuperior: sup };
+              try{ await Store.set('planocontas:'+g.id, JSON.stringify(g), true); }
+              catch(e){ alert('Não foi possível criar o grupo: '+((e&&e.message)||'erro')); return; }
+              state.planoContas.push(g);
+              abrirConta(alvo, g.codigo);
+            };
+            document.getElementById('qgNome').focus();
           };
           document.getElementById('qcCancel').onclick = fechar;
           document.getElementById('qcSalvar').onclick = async ()=>{
@@ -23610,9 +23635,10 @@
             const sel = document.getElementById(alvo); sel.value = c.id; sel.dispatchEvent(new Event('change',{bubbles:true}));
             fechar();
           };
-          document.getElementById('qcSup').focus();
-        };
-      });
+          if(preSup) { document.getElementById('qcSup').value = preSup; document.getElementById('qcSup').onchange({target:document.getElementById('qcSup')}); document.getElementById('qcNome').focus(); } else document.getElementById('qcSup').focus();
+        }
+      };
+      document.querySelectorAll('[data-lc-nova-conta]').forEach(btn=>{ btn.onclick = ()=> abrirConta(btn.getAttribute('data-lc-nova-conta')); });
       const nh = document.getElementById('lcNovoHist');
       if(nh) nh.onclick = ()=>{
         const clientId = cli(); if(!clientId){ alert('Escolha a empresa primeiro.'); return; }
