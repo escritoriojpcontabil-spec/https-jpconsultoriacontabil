@@ -10226,7 +10226,7 @@
       const linhasC170 = [];
       let vlOprTotal = 0;
       p.itens.forEach((it, idx)=>{
-        const codItem = codItemDe(p, it);
+        const codItem = d.indEmit==='0' ? '' : codItemDe(p, it); // NF própria não leva C170, então o item não entra no 0200
         const vlItem = round2(it.vProd);
         const vlOpr = round2(it.vProd - it.vDesc + it.vFrete + it.vSeg + it.vOutro + it.vIPI + it.vICMSST);
         const sem = (d.indOper==='0' && semCred.has(it.cfop));
