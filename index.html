@@ -10021,6 +10021,13 @@
   function spedFloat(el, tag){ const v = parseFloat(spedTagIn(el, tag)); return isNaN(v)?0:v; }
 
   // Lê um XML de NF-e (modelo 55) e devolve a estrutura usada na escrituração.
+  // CSOSN (Simples Nacional, 3 dígitos) -> CST ICMS de 2 dígitos aceito no EFD (CST_ICMS = origem + 2 dígitos)
+  function spedCsosnParaCst(c){
+    c = String(c||'');
+    if(c.length===2) return c;
+    const m = {'101':'90','102':'41','103':'41','201':'90','202':'90','203':'90','300':'41','400':'41','500':'60','900':'90'};
+    return m[c] || '90';
+  }
   function spedParseNfe(xmlText){
     let doc;
     try{ doc = new DOMParser().parseFromString(xmlText, 'application/xml'); }catch(e){ return {ok:false, motivo:'XML ilegível'}; }
@@ -10068,7 +10075,7 @@
         cfop: spedTagIn(prod,'CFOP'), uCom: spedTagIn(prod,'uCom'), qCom: spedFloat(prod,'qCom'),
         vProd: spedFloat(prod,'vProd'), vDesc: spedFloat(prod,'vDesc'), vFrete: spedFloat(prod,'vFrete'),
         vSeg: spedFloat(prod,'vSeg'), vOutro: spedFloat(prod,'vOutro'),
-        cstIcms: orig + (cst || csosn), ehCsosn: !!csosn,
+        cstIcms: orig + (cst || spedCsosnParaCst(csosn)), ehCsosn: !!csosn, csosnOrig: csosn,
         vBC: spedFloat(icms,'vBC'), pICMS: spedFloat(icms,'pICMS'), vICMS: spedFloat(icms,'vICMS'),
         vBCST: spedFloat(icms,'vBCST'), pICMSST: spedFloat(icms,'pICMSST'), vICMSST: spedFloat(icms,'vICMSST'),
         pRedBC: spedFloat(icms,'pRedBC'),
@@ -10172,6 +10179,8 @@
     const C = []; // linhas do bloco C
     let totDeb = 0, totCred = 0; const resumo = {saidas:0, entradas:0, canceladas:0, vSaidas:0, vEntradas:0, debito:0, credito:0, itensSemCfop:0};
     const nfsSemCredito = [];
+    { const nCs = docsU.filter(d=>(d.p.itens||[]).some(it=>it.ehCsosn)).length;
+      if(nCs) avisos.push(nCs+' nota(s) de fornecedor do Simples Nacional (CSOSN): o EFD só aceita CST de 2 dígitos, então o sistema converteu o CSOSN em CST (101/201/202/203/900→90, 102/103/300/400→41, 500→60) com a origem da mercadoria. Confira se está de acordo com o tratamento fiscal da empresa.'); }
     for(const d of docsU){
       const p = d.p;
       const cancel = p.cancelada || (d.nf && d.nf.status==='Cancelada');
