@@ -10179,6 +10179,11 @@
     const C = []; // linhas do bloco C
     let totDeb = 0, totCred = 0; const resumo = {saidas:0, entradas:0, canceladas:0, vSaidas:0, vEntradas:0, debito:0, credito:0, itensSemCfop:0};
     const nfsSemCredito = [];
+    // CFOP de ENTRADA precisa começar com 1, 2 ou 3 (a nota do fornecedor traz o CFOP dele, de saída: 5/6/7)
+    { let nCf = 0;
+      for(const d of docsU){ if(d.indOper!=='0') continue;
+        for(const it of (d.p.itens||[])){ const c = String(it.cfop||''); const m = {'5':'1','6':'2','7':'3'}[c.charAt(0)]; if(m){ it.cfop = m + c.slice(1); nCf++; } } }
+      if(nCf) avisos.push(nCf+' item(ns) de notas de ENTRADA vieram com CFOP de saída do fornecedor (5/6/7); o sistema converteu para o CFOP de entrada correspondente (5xxx→1xxx, 6xxx→2xxx, 7xxx→3xxx). Confira se o CFOP de entrada fica correto para a operação (ex.: 5101→1101, 5102→1102, 5405→1403).'); }
     { const nCs = docsU.filter(d=>(d.p.itens||[]).some(it=>it.ehCsosn)).length;
       if(nCs) avisos.push(nCs+' nota(s) de fornecedor do Simples Nacional (CSOSN): o EFD só aceita CST de 2 dígitos, então o sistema converteu o CSOSN em CST (101/201/202/203/900→90, 102/103/300/400→41, 500→60) com a origem da mercadoria. Confira se está de acordo com o tratamento fiscal da empresa.'); }
     for(const d of docsU){
