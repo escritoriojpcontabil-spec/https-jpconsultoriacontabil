@@ -3168,6 +3168,16 @@
     doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
     if(d.fecha){ doc.setTextColor(30,130,80); doc.text('Conferência: débitos = créditos (partidas dobradas fecham).', X.conta, y); }
     else { doc.setTextColor(190,50,50); doc.text('ATENÇÃO: débitos e créditos não conferem (diferença de R$ ' + razaoNum(Math.abs(d.totDeb-d.totCred)) + ') — revise os lançamentos.', X.conta, y); }
+    y += 5;
+    if(y + 18 > LIM){ novaPagina(); doc.setFontSize(7.5); }
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(20,25,30);
+    doc.text('(+) Receitas líquidas do período', X.conta, y); doc.text(razaoNum(d.res.receitas), X.cred, y, {align:'right'}); y += 4.5;
+    doc.text('(-) Custos e despesas do período', X.conta, y); doc.text(razaoNum(d.res.custosDespesas), X.deb, y, {align:'right'}); y += 4.5;
+    doc.setFont('helvetica','bold'); doc.setFontSize(9);
+    if(d.res.resultado<-0.004) doc.setTextColor(190,50,50); else doc.setTextColor(30,130,80);
+    doc.text(d.res.rotulo + ' DO PERÍODO (receitas - custos - despesas)', X.conta, y);
+    doc.text(razaoNum(Math.abs(d.res.resultado)) + (d.res.resultado>0.004?' C':(d.res.resultado<-0.004?' D':'')), X.atual||X.cred, y, {align:'right'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
     y += 4;
     doc.setTextColor(100,110,120); doc.setFontSize(7);
     doc.text('D = saldo devedor · C = saldo credor. Contas em destaque são sintéticas (totais dos grupos).', X.conta, y);
@@ -8182,7 +8192,10 @@
     const analiticas = todas.filter(l=>l.conta.tipo==='Analítica');
     const totDeb = analiticas.reduce((a,l)=>a+l.debitosPeriodo,0);
     const totCred = analiticas.reduce((a,l)=>a+l.creditosPeriodo,0);
-    return { linhas, totDeb, totCred, ocultas: todas.length - linhas.length, fecha: Math.abs(totDeb-totCred) < 0.01 };
+    const re = calcResultadoExercicio(clientId, state.relDataInicio||null, state.relDataFim);
+    const resultado = Math.round(re.resultado*100)/100;
+    const resumoRes = { receitas: re.receitaLiquida, custosDespesas: re.custos + re.totalDespesas, resultado, rotulo: resultado>0.004 ? 'LUCRO' : (resultado<-0.004 ? 'PREJUÍZO' : 'RESULTADO ZERADO') };
+    return { linhas, totDeb, totCred, ocultas: todas.length - linhas.length, fecha: Math.abs(totDeb-totCred) < 0.01, res: resumoRes };
   }
   function dataAnterior(dataStr){
     const d = new Date(dataStr + 'T00:00:00');
@@ -16471,6 +16484,9 @@
               <td style="text-align:right; white-space:nowrap;" class="mono">${razaoSaldoDC(l.saldoAtual, nat)}</td>
             </tr>`; }).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--ink-soft);">Nenhuma conta com movimento ou saldo no período.</td></tr>'}
           <tr class="conta-sintetica"><td colspan="3">Totais do período</td><td style="text-align:right" class="mono">${razaoNum(d.totDeb)}</td><td style="text-align:right" class="mono">${razaoNum(d.totCred)}</td><td></td></tr>
+          <tr style="font-weight:700;"><td colspan="3">(+) Receitas líquidas do período</td><td></td><td style="text-align:right" class="mono">${razaoNum(d.res.receitas)}</td><td></td></tr>
+          <tr style="font-weight:700;"><td colspan="3">(−) Custos e despesas do período</td><td style="text-align:right" class="mono">${razaoNum(d.res.custosDespesas)}</td><td></td><td></td></tr>
+          <tr style="font-weight:800; border-top:2px solid var(--ink-soft); color:${d.res.resultado<-0.004?'#C0392B':'#1E8449'};"><td colspan="5">${d.res.rotulo} DO PERÍODO (receitas − custos − despesas)</td><td style="text-align:right; white-space:nowrap;" class="mono">${razaoNum(Math.abs(d.res.resultado))}${d.res.resultado>0.004?' C':(d.res.resultado<-0.004?' D':'')}</td></tr>
         </tbody>
       </table>
       <div class="legis-note" style="${d.fecha?'':'color:#C0392B;'}">${d.fecha ? '✓ Débitos e créditos do período conferem (partidas dobradas fecham).' : 'ATENÇÃO: débitos e créditos não conferem (diferença de R$ ' + razaoNum(Math.abs(d.totDeb-d.totCred)) + ') — revise os lançamentos.'} D = saldo devedor · C = saldo credor. Balancete de Verificação — Art. 1.184 do Código Civil e Art. 178 da Lei 6.404/76 (aplicável subsidiariamente).</div>
