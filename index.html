@@ -15176,10 +15176,11 @@
 
   // Sugere o próximo código disponível dentro da máscara de uma conta sintética (conta superior).
   // Ex: se a sintética é "1.1" e já existem "1.1.1" e "1.1.2", sugere "1.1.3".
-  function suggestNextCodigo(contaSuperiorCodigo){
+  function suggestNextCodigo(contaSuperiorCodigo, clientIdOpt){
     if(!contaSuperiorCodigo) return '';
+    const CID = clientIdOpt || state.contabilEmpresaAtiva;
     const prefix = contaSuperiorCodigo + '.';
-    const filhas = state.planoContas.filter(c => c.clientId===state.contabilEmpresaAtiva && c.codigo && c.codigo.startsWith(prefix) && c.codigo.slice(prefix.length).indexOf('.') === -1);
+    const filhas = state.planoContas.filter(c => c.clientId===CID && c.codigo && c.codigo.startsWith(prefix) && c.codigo.slice(prefix.length).indexOf('.') === -1);
     let maxN = 0;
     filhas.forEach(c=>{
       const lastSeg = c.codigo.slice(prefix.length);
@@ -15188,7 +15189,7 @@
     });
     const next = maxN + 1;
     // Máscara 1.01.01.0001: 2 dígitos nos níveis 2 e 3, 4 dígitos na conta analítica.
-    if(planoMascaraNova(state.contabilEmpresaAtiva)){
+    if(planoMascaraNova(CID)){
       const nivelPai = contaSuperiorCodigo.split('.').length;
       return contaSuperiorCodigo + '.' + String(next).padStart(nivelPai>=3 ? 4 : 2, '0');
     }
@@ -15298,7 +15299,7 @@
   // ===== Código reduzido: número curto (1, 2, 3…) de cada conta analítica, para digitar nos lançamentos =====
   function contaRotulo(c){ return (c.reduzido ? '['+c.reduzido+'] ' : '') + c.codigo + ' — ' + c.nome; }
   function contaOptHtml(c, selected){
-    return `<option value="${c.id}" ${c.reduzido?`data-red="${escapeHtml(String(c.reduzido))}"`:''} ${c.id===selected?'selected':''}>${escapeHtml(contaRotulo(c))}</option>`;
+    return `<option value="${c.id}" ${c.reduzido?`data-red="${escapeHtml(String(c.reduzido))}"`:''} ${c.id===selected?'selected':''}>${escapeHtml((c.reduzido?'['+c.reduzido+'] ':'')+c.nome+' — '+c.codigo)}</option>`; // nome primeiro: o select estreito corta o final
   }
   function proximoReduzido(clientId, extra){
     let max = 0;
@@ -15645,12 +15646,12 @@
       // mostra por extenso a conta escolhida (o select estreito corta o nome)
       const atual = document.createElement('div');
       atual.className = 'select-atual';
-      atual.style.cssText = 'font-size:12px; margin:5px 0 0; padding:5px 8px; border-radius:6px; background:rgba(30,132,73,.09); color:var(--ink,#1c2733); word-break:break-word; display:none;';
+      atual.style.cssText = 'font-size:13px; font-weight:600; margin:5px 0 0; padding:6px 9px; border-radius:6px; background:rgba(30,132,73,.12); color:var(--ink,#1c2733); word-break:break-word; display:none;';
       sel.parentNode.insertBefore(atual, sel.nextSibling);
       function mostrarAtual(){
         const o = sel.selectedOptions && sel.selectedOptions[0];
-        if(o && o.value){ atual.textContent = 'Conta escolhida: ' + o.textContent; atual.style.display = 'block'; }
-        else { atual.style.display = 'none'; }
+        if(o && o.value){ atual.textContent = 'Conta escolhida: ' + o.textContent; atual.style.display = 'block'; inp.placeholder = o.textContent; inp.title = o.textContent; sel.title = o.textContent; }
+        else { atual.style.display = 'none'; inp.placeholder = '🔍 Pesquisar (código, reduzido ou nome)…'; sel.title = ''; }
       }
       sel.addEventListener('change', mostrarAtual);
       mostrarAtual();
@@ -16417,10 +16418,11 @@
               <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0" id="lcValor" value="${d.valor!==undefined && d.valor!=='' ? escapeHtml(String(d.valor)) : ''}" required/></div>
             </div>
             <div class="form-row">
-              <div class="field"><label>Conta Débito</label><select id="lcContaDebito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml(d.contaDebito||null, clienteId)}</select></div>
-              <div class="field"><label>Conta Crédito</label><select id="lcContaCredito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml(d.contaCredito||null, clienteId)}</select></div>
+              <div class="field"><label style="display:flex; justify-content:space-between; align-items:center; gap:6px;">Conta Débito <button type="button" class="btn-detail" data-lc-nova-conta="lcContaDebito" style="text-transform:none; font-size:11px; padding:2px 8px;">+ Nova conta</button></label><select id="lcContaDebito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml(d.contaDebito||null, clienteId)}</select></div>
+              <div class="field"><label style="display:flex; justify-content:space-between; align-items:center; gap:6px;">Conta Crédito <button type="button" class="btn-detail" data-lc-nova-conta="lcContaCredito" style="text-transform:none; font-size:11px; padding:2px 8px;">+ Nova conta</button></label><select id="lcContaCredito" required><option value="">— Selecione —</option>${contasAnaliticasOptionsHtml(d.contaCredito||null, clienteId)}</select></div>
             </div>
-            <div class="field"><label>Histórico padrão</label>
+            <div id="lcQuick" style="display:none;"></div>
+            <div class="field"><label style="display:flex; justify-content:space-between; align-items:center; gap:6px;">Histórico padrão <button type="button" class="btn-detail" id="lcNovoHist" style="text-transform:none; font-size:11px; padding:2px 8px;">+ Novo histórico</button></label>
               <select id="lcHistoricoSelect">
                 <option value="">— Digitar manualmente —</option>
                 ${state.historicos.filter(h=>h.clientId===clienteId).map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('')}
@@ -23566,6 +23568,77 @@
         if(hint) hint.textContent = clienteId && !state.planoContas.some(c=>c.clientId===clienteId) ? 'Esta empresa ainda não tem plano de contas — cadastre em Plano de Contas antes de lançar.' : '';
       };
     }
+    // ---- Criar conta / histórico sem sair do lançamento ----
+    (function(){
+      const box = document.getElementById('lcQuick'); if(!box) return;
+      const cli = ()=> document.getElementById('lcCliente').value;
+      const fechar = ()=>{ box.style.display='none'; box.innerHTML=''; };
+      const estilo = 'border:1.5px solid var(--accent,#1B3A5C); border-radius:10px; padding:12px; margin:0 0 14px; background:rgba(27,58,92,.05);';
+      document.querySelectorAll('[data-lc-nova-conta]').forEach(btn=>{
+        btn.onclick = ()=>{
+          const clientId = cli(); if(!clientId){ alert('Escolha a empresa primeiro.'); return; }
+          const alvo = btn.getAttribute('data-lc-nova-conta');
+          const sint = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Sintética').sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
+          if(!sint.length){ alert('Esta empresa ainda não tem plano de contas — cadastre em Plano de Contas antes.'); return; }
+          box.style.cssText = estilo + 'display:block;';
+          box.innerHTML = `<div style="font-weight:700; margin-bottom:8px;">Nova conta do plano de contas <span style="font-weight:400; font-size:12px;">(será usada em ${alvo==='lcContaDebito'?'Conta Débito':'Conta Crédito'})</span></div>
+            <div class="field"><label>Conta superior (grupo)</label><select id="qcSup" data-nobusca="1"><option value="">— Escolha o grupo —</option>${sint.map(c=>`<option value="${escapeHtml(c.codigo)}">${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}</select></div>
+            <div class="form-row"><div class="field"><label>Código</label><input type="text" id="qcCodigo"/></div>
+              <div class="field"><label>Natureza</label><select id="qcNat" data-nobusca="1"><option>Devedora</option><option>Credora</option></select></div></div>
+            <div class="field"><label>Nome da conta</label><input type="text" id="qcNome"/></div>
+            <div style="display:flex; gap:8px; justify-content:flex-end;"><button type="button" class="btn-sm" id="qcCancel">Cancelar</button><button type="button" class="btn-add" id="qcSalvar">Criar conta</button></div>`;
+          document.getElementById('qcSup').onchange = (e)=>{
+            const cod = e.target.value; if(!cod) return;
+            document.getElementById('qcCodigo').value = suggestNextCodigo(cod, clientId);
+            const pai = state.planoContas.find(c=>c.codigo===cod && c.clientId===clientId); if(pai) document.getElementById('qcNat').value = pai.natureza || 'Devedora';
+          };
+          document.getElementById('qcCancel').onclick = fechar;
+          document.getElementById('qcSalvar').onclick = async ()=>{
+            const sup = document.getElementById('qcSup').value, codigo = document.getElementById('qcCodigo').value.trim(), nome = document.getElementById('qcNome').value.trim();
+            if(!sup){ alert('Escolha o grupo (conta superior).'); return; }
+            if(!codigo || !nome){ alert('Informe o código e o nome da conta.'); return; }
+            if(state.planoContas.some(c=>c.clientId===clientId && c.codigo===codigo)){ alert('Já existe uma conta com o código '+codigo+' nesta empresa.'); return; }
+            const b = document.getElementById('qcSalvar'); b.disabled = true; b.textContent = 'Criando…';
+            const c = { id: uid(), clientId, codigo, nome, tipo:'Analítica', natureza: document.getElementById('qcNat').value, contaSuperior: sup, reduzido: String(proximoReduzido(clientId)) };
+            try{ await Store.set('planocontas:'+c.id, JSON.stringify(c), true); }
+            catch(e){ alert('Não foi possível criar a conta: '+((e&&e.message)||'erro')); b.disabled=false; b.textContent='Criar conta'; return; }
+            state.planoContas.push(c);
+            ['lcContaDebito','lcContaCredito'].forEach(id=>{
+              const sel = document.getElementById(id); if(!sel) return;
+              sel.insertAdjacentHTML('beforeend', contaOptHtml(c, ''));
+            });
+            const sel = document.getElementById(alvo); sel.value = c.id; sel.dispatchEvent(new Event('change',{bubbles:true}));
+            fechar();
+          };
+          document.getElementById('qcSup').focus();
+        };
+      });
+      const nh = document.getElementById('lcNovoHist');
+      if(nh) nh.onclick = ()=>{
+        const clientId = cli(); if(!clientId){ alert('Escolha a empresa primeiro.'); return; }
+        box.style.cssText = estilo + 'display:block;';
+        box.innerHTML = `<div style="font-weight:700; margin-bottom:8px;">Novo histórico padrão</div>
+          <div class="form-row"><div class="field"><label>Código</label><input type="text" id="qhCodigo" value="${escapeHtml(String(proximoCodigoHistorico(clientId)))}"/></div></div>
+          <div class="field"><label>Descrição</label><input type="text" id="qhDesc" value="${escapeHtml(document.getElementById('lcHistorico').value||'')}"/></div>
+          <div style="display:flex; gap:8px; justify-content:flex-end;"><button type="button" class="btn-sm" id="qhCancel">Cancelar</button><button type="button" class="btn-add" id="qhSalvar">Criar histórico</button></div>`;
+        document.getElementById('qhCancel').onclick = fechar;
+        document.getElementById('qhSalvar').onclick = async ()=>{
+          const cod = document.getElementById('qhCodigo').value.trim(), desc = document.getElementById('qhDesc').value.trim();
+          if(!cod || !desc){ alert('Informe o código e a descrição.'); return; }
+          if(state.historicos.some(x=>x.clientId===clientId && String(x.codigo).trim()===cod)){ alert('Já existe um histórico com o código '+cod+' nesta empresa.'); return; }
+          const b = document.getElementById('qhSalvar'); b.disabled = true;
+          const h = { id: uid(), clientId, codigo: cod, descricao: desc };
+          try{ await Store.set('historicos:'+h.id, JSON.stringify(h), true); }
+          catch(e){ alert('Não foi possível criar o histórico: '+((e&&e.message)||'erro')); b.disabled=false; return; }
+          state.historicos.push(h);
+          const hs = document.getElementById('lcHistoricoSelect');
+          hs.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`);
+          hs.value = h.descricao; document.getElementById('lcHistorico').value = h.descricao;
+          fechar();
+        };
+        document.getElementById('qhDesc').focus();
+      };
+    })();
     const lcHistoricoSelect = document.getElementById('lcHistoricoSelect');
     if(lcHistoricoSelect){
       lcHistoricoSelect.onchange = (e)=>{
