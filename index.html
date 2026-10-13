@@ -14972,10 +14972,11 @@
     return `
       <div class="form-hint" style="margin:0 0 8px;">${lista.length} conta(s) exibida(s)</div>
       <table>
-        <thead><tr><th>Código</th><th>Conta</th><th>Tipo</th><th>Natureza</th><th></th></tr></thead>
+        <thead><tr><th>Red.</th><th>Código</th><th>Conta</th><th>Tipo</th><th>Natureza</th><th></th></tr></thead>
         <tbody>
           ${lista.map(c=>`
             <tr class="${c.tipo==='Sintética'?'conta-sintetica':''}">
+              <td class="mono" style="color:var(--accent,#1B3A5C); font-weight:700;">${c.tipo==='Analítica' ? escapeHtml(String(c.reduzido||'')) : ''}</td>
               <td class="mono">${escapeHtml(c.codigo)}</td>
               <td class="conta-nivel-${Math.min(contaLevel(c.codigo),3)}">${escapeHtml(c.nome)}</td>
               <td>${escapeHtml(c.tipo)}</td>
@@ -15218,6 +15219,8 @@
               </div>
             </div>
             <div class="field"><label>Nome da conta</label><input type="text" id="ctNome" value="${escapeHtml(d.nome||'')}" required/></div>
+            <div class="field"><label>Código reduzido (só contas analíticas)</label><input type="text" id="ctReduzido" inputmode="numeric" placeholder="${d.id ? '' : 'Vazio = o sistema gera o próximo'}" value="${escapeHtml(String(d.reduzido||''))}"/>
+              <div class="form-hint" style="margin-top:4px;">Número curto para digitar nos lançamentos (ex.: 12). Não pode repetir na mesma empresa.</div></div>
             <div class="field"><label>Natureza</label>
               <select id="ctNatureza">
                 <option value="Devedora" ${d.natureza==='Devedora'?'selected':''}>Devedora</option>
@@ -15292,14 +15295,50 @@
     `;
   }
 
+  // ===== Código reduzido: número curto (1, 2, 3…) de cada conta analítica, para digitar nos lançamentos =====
+  function contaRotulo(c){ return (c.reduzido ? '['+c.reduzido+'] ' : '') + c.codigo + ' — ' + c.nome; }
+  function contaOptHtml(c, selected){
+    return `<option value="${c.id}" ${c.reduzido?`data-red="${escapeHtml(String(c.reduzido))}"`:''} ${c.id===selected?'selected':''}>${escapeHtml(contaRotulo(c))}</option>`;
+  }
+  function proximoReduzido(clientId, extra){
+    let max = 0;
+    state.planoContas.forEach(c=>{ if(c.clientId===clientId){ const n = parseInt(c.reduzido,10); if(n>max) max = n; } });
+    (extra||[]).forEach(n=>{ if(n>max) max = n; });
+    return max + 1;
+  }
+  let _redBusy = false; const _redTentou = {};
+  // Dá código reduzido às contas analíticas que ainda não têm (ordem do código); roda em segundo plano.
+  async function garantirReduzidos(clientId){
+    if(_redBusy || !clientId) return;
+    const faltam = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica' && !c.reduzido)
+      .sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
+    if(!faltam.length) return;
+    if(_redTentou[clientId]===faltam.length) return; // já tentou com esta quantidade (evita repetir se falhar)
+    _redTentou[clientId] = faltam.length;
+    _redBusy = true;
+    try{
+      let n = proximoReduzido(clientId);
+      const alvo = faltam.map(c=>Object.assign({}, c, {reduzido: String(n++)}));
+      for(let i=0;i<alvo.length;i+=25){
+        await Promise.all(alvo.slice(i,i+25).map(c=>Store.set('planocontas:'+c.id, JSON.stringify(c), true)));
+      }
+      await loadPlanoContas();
+      render();
+    }catch(e){ console.warn('reduzidos', e); }
+    finally{ _redBusy = false; }
+  }
+  async function reduzidosTodas(){
+    const ids = Array.from(new Set(state.planoContas.filter(c=>c.tipo==='Analítica' && !c.reduzido).map(c=>c.clientId)));
+    for(const id of ids){ await garantirReduzidos(id); }
+  }
   function contasAnaliticasOptionsHtml(selected, clientId){
     const analiticas = state.planoContas.filter(c=>c.tipo==='Analítica' && c.clientId===clientId);
     if(!analiticas.length) return `<option value="">— Nenhuma conta cadastrada para esta empresa —</option>`;
-    return analiticas.map(c=>`<option value="${c.id}" ${c.id===selected?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('');
+    return analiticas.map(c=>contaOptHtml(c, selected)).join('');
   }
   function contaNomeById(id){
     const c = state.planoContas.find(x=>x.id===id);
-    return c ? c.codigo + ' — ' + c.nome : '—';
+    return c ? contaRotulo(c) : '—';
   }
 
   const MESES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -15507,7 +15546,7 @@
         <div class="field"><label>Data do saldo (dia anterior ao 1º lançamento)</label><input type="date" id="siData" value="${dataAb}"/></div>
         <div class="field"><label>Contrapartida (Patrimônio Líquido)</label>
           <select id="siContra">${pl.length? '' : '<option value="">— Crie uma conta analítica no Patrimônio Líquido —</option>'}
-            ${pl.map(c=>`<option value="${c.id}" ${c.id===cpPadrao?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}
+            ${pl.map(c=>contaOptHtml(c, cpPadrao)).join('')}
           </select></div>
       </div>
       <div class="attach-box" style="margin:10px 0 12px;">
@@ -15515,7 +15554,7 @@
         <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
           <div style="flex:1; min-width:260px;"><select id="siAddConta" ${disponiveis.length?'':'disabled'}>
             <option value="">${disponiveis.length ? '— Escolha a conta (digite para pesquisar) —' : '— Todas as contas já estão na lista —'}</option>
-            ${disponiveis.map(c=>`<option value="${c.id}">${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}
+            ${disponiveis.map(c=>contaOptHtml(c, '')).join('')}
           </select></div>
           <button type="button" class="btn-add" id="siAddBtn">+ Adicionar</button>
         </div>
@@ -15603,27 +15642,51 @@
       const info = document.createElement('div');
       info.style.cssText = 'font-size:11px; color:var(--ink-soft,#667085); margin:-2px 0 6px; display:none;';
       sel.parentNode.insertBefore(inp, sel); sel.parentNode.insertBefore(info, sel);
+      // mostra por extenso a conta escolhida (o select estreito corta o nome)
+      const atual = document.createElement('div');
+      atual.className = 'select-atual';
+      atual.style.cssText = 'font-size:12px; margin:5px 0 0; padding:5px 8px; border-radius:6px; background:rgba(30,132,73,.09); color:var(--ink,#1c2733); word-break:break-word; display:none;';
+      sel.parentNode.insertBefore(atual, sel.nextSibling);
+      function mostrarAtual(){
+        const o = sel.selectedOptions && sel.selectedOptions[0];
+        if(o && o.value){ atual.textContent = 'Conta escolhida: ' + o.textContent; atual.style.display = 'block'; }
+        else { atual.style.display = 'none'; }
+      }
+      sel.addEventListener('change', mostrarAtual);
+      mostrarAtual();
       function filtrar(){
         const termos = semAcento(inp.value).split(/\s+/).filter(Boolean);
+        const opts = Array.from(sel.options);
+        // número puro que é o código reduzido de uma conta: mostra só ela
+        if(termos.length===1 && /^\d+$/.test(termos[0]) && opts.some(o=>o.dataset.red===termos[0])){
+          let n0 = 0, p0 = null;
+          opts.forEach(o=>{ const ok = !o.value || o.dataset.red===termos[0]; o.hidden = !ok; o.disabled = !ok && o.value!==sel.value; if(ok && o.value){ n0++; if(!p0) p0 = o; } });
+          info.style.display = 'block'; info.textContent = 'Código reduzido ' + termos[0];
+          return p0;
+        }
+        const casa = (o, modo)=> !o.value ? true : (modo==='todas' ? termos.every(t=>semAcento(o.textContent).includes(t)) : termos.some(t=>semAcento(o.textContent).includes(t)));
+        let modo = 'todas';
+        if(termos.length>1 && !opts.some(o=>o.value && casa(o,'todas'))) modo = 'alguma';
         let n = 0, primeira = null;
-        Array.from(sel.options).forEach(o=>{
-          const ok = !o.value ? true : termos.every(t=>semAcento(o.textContent).includes(t));
+        opts.forEach(o=>{
+          const ok = casa(o, modo);
           o.hidden = !ok; o.disabled = !ok && o.value!==sel.value ? true : false;
           if(ok && o.value){ n++; if(!primeira) primeira = o; }
         });
         info.style.display = termos.length ? 'block' : 'none';
-        info.textContent = n + ' resultado(s)';
+        info.textContent = modo==='alguma' ? ('Nenhuma conta tem todas as palavras — mostrando '+n+' que têm alguma delas') : (n + ' resultado(s)' + (n===0 ? ' — essa conta talvez não exista no plano; crie em Plano de Contas' : ''));
         return primeira;
       }
       inp.addEventListener('input', ()=>{
         const p = filtrar();
-        if(inp.value.trim() && p && (!sel.value || sel.selectedOptions[0].hidden)) sel.value = p.value;
+        if(inp.value.trim() && p && (!sel.value || sel.selectedOptions[0].hidden || (/^\d+$/.test(inp.value.trim()) && p.dataset.red===inp.value.trim()))) sel.value = p.value;
+        mostrarAtual();
       });
       inp.addEventListener('keydown', (e)=>{
-        if(e.key==='Enter'){ e.preventDefault(); const p = filtrar(); if(p){ sel.value = p.value; sel.dispatchEvent(new Event('change',{bubbles:true})); sel.focus(); } }
+        if(e.key==='Enter'){ e.preventDefault(); const p = filtrar(); if(p){ sel.value = p.value; sel.dispatchEvent(new Event('change',{bubbles:true})); mostrarAtual(); sel.focus(); } }
       });
       sel.addEventListener('change', ()=>{ if(inp.value){ /* mantém o filtro */ } });
-      new MutationObserver(()=>{ if(inp.value){ inp.value=''; } info.style.display='none'; Array.from(sel.options).forEach(o=>{ o.hidden=false; o.disabled=false; }); }).observe(sel, {childList:true});
+      new MutationObserver(()=>{ if(inp.value){ inp.value=''; } info.style.display='none'; mostrarAtual(); Array.from(sel.options).forEach(o=>{ o.hidden=false; o.disabled=false; }); }).observe(sel, {childList:true});
     });
   }
 
@@ -16104,7 +16167,7 @@
     const e = tcEstado();
     if(!e.mes) e.mes = todayStr().slice(0,7);
     const contas = tcContas(empresa);
-    const opts = (sel)=> contas.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('');
+    const opts = (sel)=> contas.map(c=>contaOptHtml(c, sel)).join('');
     const anos = []; const ac = new Date().getFullYear(); for(let a=ac+1;a>=ac-8;a--) anos.push(String(a));
     return cab + `
       <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">Empresa selecionada: ${escapeHtml(clientName(empresa))}</div>
@@ -16544,7 +16607,7 @@
         <label>Conta</label>
         <select id="razaoContaSelect">
           <optgroup label="Grupos — razão de todas as contas do grupo">${razaoGrupos(clientId).map(g=>`<option value="grp:${g.id}">▸ GRUPO ${escapeHtml(g.codigo)} — ${escapeHtml(g.nome)}</option>`).join('')}</optgroup>
-          <optgroup label="Contas individuais">${contasAnaliticas.map(c=>`<option value="${c.id}">${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</option>`).join('')}</optgroup>
+          <optgroup label="Contas individuais">${contasAnaliticas.map(c=>contaOptHtml(c, '')).join('')}</optgroup>
         </select>
       </div>
       <div id="razaoResultContainer"></div>
@@ -23269,8 +23332,15 @@
         if(!codigo){ alert('Informe o código da conta (ou escolha uma conta superior para ele ser sugerido automaticamente).'); return; }
         const duplicada = state.planoContas.some(c=>c.codigo===codigo && c.clientId===clientId && c.id!==editingId);
         if(duplicada){ alert('Já existe uma conta com o código ' + codigo + ' nesta empresa.'); return; }
+        const tipoSel = document.getElementById('ctTipo').value;
+        let reduzido = (document.getElementById('ctReduzido').value||'').replace(/\D/g,'');
+        if(tipoSel!=='Analítica') reduzido = '';
+        else if(reduzido && state.planoContas.some(x=>x.clientId===clientId && x.id!==editingId && String(x.reduzido||'')===String(parseInt(reduzido,10)))){ alert('O código reduzido '+parseInt(reduzido,10)+' já é de outra conta desta empresa.'); return; }
+        else if(!reduzido) reduzido = String(proximoReduzido(clientId));
+        else reduzido = String(parseInt(reduzido,10));
         const c = {
           id: editingId || undefined,
+          reduzido,
           clientId,
           codigo,
           nome: document.getElementById('ctNome').value,
@@ -23479,6 +23549,7 @@
     const lcCancel = document.getElementById('lcCancel');
     if(lcCancel) lcCancel.onclick = ()=>{ state.modal=null; state.lancContabilModalData=null; render(); };
     aplicarBuscaSelects(root);
+    if(state.view==='depto-contabil') setTimeout(reduzidosTodas, 400);
     adicionarBotoesImprimir(root);
     if(document.getElementById('pqTexto')) pesqLigar();
     if(document.getElementById('tcDe')) tcLigar();
