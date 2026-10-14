@@ -11401,6 +11401,33 @@
     return doc;
   }
 
+  // Lê o texto do recibo oficial do PVA (PDF ou .rec) e extrai nº do recibo, data e hora da transmissão.
+  // O nº do recibo é um hash em pares hexadecimais separados por ponto, terminado por "-dígito"
+  // (ex.: 6E.4F.14.03.19.0C.39.0A.B4.DA.2E.64.38.50.C6.89.B8.89.8E.AF-6). Tolera quebras de linha/espaços
+  // que a extração de PDF costuma inserir no meio do número.
+  function spedParseReciboTexto(texto){
+    const t = String(texto||'').replace(/ /g,' ');
+    const out = {recibo:'', data:'', hora:''};
+    const mR = t.match(/(?:[0-9A-F]\s*[0-9A-F]\s*\.\s*){19}[0-9A-F]\s*[0-9A-F]\s*-\s*\d/i);
+    if(mR) out.recibo = mR[0].replace(/\s+/g,'').toUpperCase();
+    const cands = [];
+    let m; const re1 = /(\d{2})\/(\d{2})\/(\d{4})(?:\s*(?:às|as|-|,|\s)\s*(?:hora:?\s*)?(\d{2}):(\d{2})(?::\d{2})?)?/gi;
+    while((m = re1.exec(t))){ cands.push({i:m.index, data:m[3]+'-'+m[2]+'-'+m[1], hora:(m[4]?m[4]+':'+m[5]:'')}); }
+    const re2 = /(\d{4})-(\d{2})-(\d{2})[T\s]+(\d{2}):(\d{2})/g;
+    while((m = re2.exec(t))){ cands.push({i:m.index, data:m[1]+'-'+m[2]+'-'+m[3], hora:m[4]+':'+m[5]}); }
+    const kw = /transmiss|entrega|recebi|recep|recibo/i;
+    const ok = (c)=>{ const [y,mo,d] = c.data.split('-').map(Number); return y>=2000 && y<=2100 && mo>=1 && mo<=12 && d>=1 && d<=31; };
+    const validos = cands.filter(ok);
+    let esc = validos.find(c=> c.hora && kw.test(t.slice(Math.max(0,c.i-90), c.i)))
+           || validos.find(c=> kw.test(t.slice(Math.max(0,c.i-90), c.i)))
+           || validos.find(c=> c.hora) || validos[0];
+    if(esc){
+      out.data = esc.data; out.hora = esc.hora;
+      if(!out.hora){ const mh = t.match(/hora[^0-9]{0,20}(\d{2}):(\d{2})/i); if(mh) out.hora = mh[1]+':'+mh[2]; }
+    }
+    return out;
+  }
+
   function spedPanelHtml(empresa){
     if(!empresa) return '';
     const comp = state.spedCompetencia || spedCompetenciaPadrao();
@@ -22123,6 +22150,30 @@
       });
       if(arq){ n.reciboArqNome = arq.nome; n.reciboArqBase64 = arq.base64; n.reciboArqMime = arq.mime; }
       return n;
+    };
+    // Ao anexar o recibo oficial do PVA, lê o arquivo e preenche (e salva) nº do recibo, data e hora da transmissão.
+    const spedReciboArqIn = document.getElementById('spedReciboArq');
+    if(spedReciboArqIn) spedReciboArqIn.onchange = async ()=>{
+      const f = spedReciboArqIn.files[0]; if(!f) return;
+      let txt = '';
+      try{
+        if(/\.pdf$/i.test(f.name) || f.type==='application/pdf') txt = await extractPdfText(f);
+        else txt = await f.text();
+      }catch(e){}
+      const r = spedParseReciboTexto(txt);
+      if(!r.recibo){
+        alert('Não consegui ler o número do recibo neste arquivo (PDF escaneado como imagem ou formato diferente). O arquivo será anexado normalmente — preencha o número, a data e a hora manualmente e clique em "Salvar acompanhamento".');
+        return;
+      }
+      const set = (id,v)=>{ const el = document.getElementById(id); if(el && v) el.value = v; };
+      set('spedRecibo', r.recibo); set('spedDtTransm', r.data); set('spedHoraTransm', r.hora); set('spedStatus', 'Transmitido');
+      const comp = state.spedCompetencia || spedCompetenciaPadrao();
+      const g = spedGeracaoDe(spedEmp, comp); if(!g) return;
+      const n = await spedColetarAcomp(g); if(!n) return;
+      if(await spedSalvarGeracao(n)){
+        render();
+        alert('Recibo lido e salvo automaticamente:\n\nNº do recibo: ' + r.recibo + '\nData: ' + (r.data? r.data.split('-').reverse().join('/') : '—') + '\nHora: ' + (r.hora||'— (confira e preencha)') + '\n\nConfira os dados antes de gerar o comprovante.');
+      }
     };
     const spedSalvarAcomp = document.getElementById('spedSalvarAcomp');
     if(spedSalvarAcomp) spedSalvarAcomp.onclick = async ()=>{
