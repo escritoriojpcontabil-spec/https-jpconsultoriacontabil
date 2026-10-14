@@ -11460,8 +11460,14 @@
         </div>` : ''}
       ${hist.length ? `
         <table style="margin-top:12px;">
-          <thead><tr><th>Competência</th><th>Situação</th><th>Recibo</th><th>ICMS a recolher</th></tr></thead>
-          <tbody>${hist.map(x=>`<tr><td>${spedCompLabel(x.competencia)}</td><td>${escapeHtml(x.status||'—')}</td><td>${escapeHtml(x.recibo||'—')}</td><td>${fmtBRL((x.apuracao||{}).recolher||0)}</td></tr>`).join('')}</tbody>
+          <thead><tr><th>Competência</th><th>Situação</th><th>Recibo</th><th>ICMS a recolher</th><th>Comprovante de entrega</th></tr></thead>
+          <tbody>${hist.map(x=>{
+            const pronto = x.status==='Transmitido' && x.recibo && x.dataTransmissao;
+            const acoes = pronto
+              ? `<button type="button" class="btn-sm" data-sped-comp-gerar="${escapeHtml(x.competencia)}">Gerar PDF</button> <button type="button" class="btn-sm" data-sped-comp-imprimir="${escapeHtml(x.competencia)}">🖨 Imprimir</button>`
+              : `<span style="font-size:12px;color:var(--ink-soft);">Informe recibo e data (Abrir)</span>`;
+            return `<tr><td>${spedCompLabel(x.competencia)}</td><td>${escapeHtml(x.status||'—')}</td><td>${escapeHtml(x.recibo||'—')}</td><td>${fmtBRL((x.apuracao||{}).recolher||0)}</td><td style="white-space:nowrap;">${acoes} <button type="button" class="btn-sm" data-sped-abrir="${escapeHtml(x.competencia)}">Abrir</button></td></tr>`;
+          }).join('')}</tbody>
         </table>` : ''}
       <details style="margin-top:14px;">
         <summary style="cursor:pointer; font-weight:600;">Como transmitir com o certificado digital (passo a passo)</summary>
@@ -22149,6 +22155,25 @@
       g.comprovanteBase64 = b64; g.comprovanteEm = new Date().toISOString();
       if(await spedSalvarGeracao(g)) render();
     };
+
+    // Comprovantes de entrega de qualquer competência já transmitida (histórico)
+    const spedComprovanteDe = async (comp, imprimir)=>{
+      const g = spedGeracaoDe(spedEmp, comp); if(!g) return;
+      if(g.status!=='Transmitido' || !g.recibo || !g.dataTransmissao){ alert('Abra a competência, marque a situação como "Transmitido" e informe o recibo e a data da transmissão.'); return; }
+      const cl = state.clients.find(c=>c.id===spedEmp) || {};
+      const doc = spedMontarComprovantePdf(g, cl, comp);
+      const b64 = doc.output('datauristring').split(',')[1];
+      const nome = 'comprovante-entrega-sped-fiscal-' + comp + '.pdf';
+      if(imprimir) await imprimirRelatorio(()=> pdfSalvar(doc, nome)); else pdfSalvar(doc, nome);
+      g.comprovanteBase64 = b64; g.comprovanteEm = new Date().toISOString();
+      await spedSalvarGeracao(g);
+    };
+    root.querySelectorAll('[data-sped-comp-gerar]').forEach(b=> b.onclick = ()=> spedComprovanteDe(b.getAttribute('data-sped-comp-gerar'), false));
+    root.querySelectorAll('[data-sped-comp-imprimir]').forEach(b=> b.onclick = ()=> spedComprovanteDe(b.getAttribute('data-sped-comp-imprimir'), true));
+    root.querySelectorAll('[data-sped-abrir]').forEach(b=> b.onclick = ()=>{
+      state.spedCompetencia = b.getAttribute('data-sped-abrir'); render();
+      setTimeout(()=>{ const el=document.getElementById('spedStatus'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); }, 60);
+    });
 
     // ===== Declaração de Faturamento =====
     const novaDeclaracaoBtn = document.getElementById('novaDeclaracaoBtn');
