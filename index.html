@@ -3105,6 +3105,269 @@
     pdfSalvar(doc, 'faturamento-mensal-' + (cliente?cliente.name:'todos-clientes').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
+  // ===== Termos de abertura/encerramento dos livros contábeis e Notas Explicativas =====
+  function numExtenso(n){
+    n = Math.floor(Number(n)||0); if(n===0) return 'zero';
+    const u=['','um','dois','três','quatro','cinco','seis','sete','oito','nove','dez','onze','doze','treze','quatorze','quinze','dezesseis','dezessete','dezoito','dezenove'];
+    const d=['','','vinte','trinta','quarenta','cinquenta','sessenta','setenta','oitenta','noventa'];
+    const c=['','cento','duzentos','trezentos','quatrocentos','quinhentos','seiscentos','setecentos','oitocentos','novecentos'];
+    const ate999 = (x)=>{ if(x===100) return 'cem'; const r=[]; const ce=Math.floor(x/100), re=x%100; if(ce) r.push(c[ce]); if(re){ if(re<20) r.push(u[re]); else { const di=Math.floor(re/10), un=re%10; r.push(d[di]+(un?' e '+u[un]:'')); } } return r.join(' e '); };
+    if(n<1000) return ate999(n);
+    const mil=Math.floor(n/1000), resto=n%1000;
+    let s = (mil===1 ? 'mil' : ate999(mil)+' mil');
+    if(resto) s += ((resto<100 || resto%100===0) ? ' e ' : ' ') + ate999(resto);
+    return s;
+  }
+  async function loadLivroCfgs(){
+    state.livroCfgs = [];
+    try{
+      const k = await Store.list('livrocfg:', true);
+      if(k && k.keys){ for(const key of k.keys){ try{ const r = await Store.get(key, true); if(r) state.livroCfgs.push(JSON.parse(r.value)); }catch(e){} } }
+    }catch(e){}
+  }
+  async function livroCfgSalvar(cfg){
+    try{ await Store.set('livrocfg:'+cfg.id, JSON.stringify(cfg), true); }
+    catch(e){ alert('Não foi possível salvar os dados dos livros.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido')); return false; }
+    await loadLivroCfgs(); return true;
+  }
+  const LIVRO_PADRAO = {
+    eventosSub: 'Não houve, entre a data de encerramento do período e a data de emissão destas demonstrações contábeis, eventos subsequentes relevantes que exijam ajuste ou divulgação.',
+    partesRel: 'As transações com partes relacionadas limitam-se à remuneração (pró-labore) dos sócios-administradores e à distribuição de lucros, quando houver, sem condições diferentes das usuais de mercado.',
+  };
+  function livroCfgDe(clientId){
+    const c = state.clients.find(x=>x.id===clientId) || {};
+    const salvo = (state.livroCfgs||[]).find(x=>x.id===clientId) || {};
+    let sped = {}; try{ sped = (typeof spedCfgDe==='function' && spedCfgDe(clientId)) || {}; }catch(e){}
+    const base = {
+      id: clientId, nire:'', juntaNum:'', juntaData:'', cidade: c.city||c.cidade||'', uf: c.uf||'', endereco: c.address||'', objeto: c.mainActivity||'',
+      regime: c.regimeTributario||'', porte:'', dataConstituicao: c.dataAbertura||'',
+      capitalSocial: (c.capitalSocial!==undefined && c.capitalSocial!=='') ? c.capitalSocial : '',
+      repNome:'', repCpf:'', repCargo:'Sócio-Administrador',
+      contNome: sped.contabNome||'', contCrc: sped.contabCrc||'', contCpf: sped.contabCpf||'',
+      numDiario:'1', numRazao:'1', estoqueCriterio:'', eventosSub:'', partesRel:'', notasExtras:'',
+    };
+    Object.keys(salvo).forEach(k=>{ if(salvo[k]!==undefined && salvo[k]!=='') base[k] = salvo[k]; });
+    return base;
+  }
+  function dataExtensoPt(d){
+    const M = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+    d = d || new Date(); return d.getDate() + ' de ' + M[d.getMonth()] + ' de ' + d.getFullYear();
+  }
+  const LIVROS_INFO = {
+    diario: { nome:'Livro Diário', finalidade:'à escrituração dos fatos contábeis em ordem cronológica de dia, mês e ano, pelo método das partidas dobradas' },
+    razao:  { nome:'Livro Razão', finalidade:'à escrituração analítica, por conta contábil, dos fatos registrados no Livro Diário' },
+  };
+  // Desenha UM termo (abertura ou encerramento) na página atual.
+  function pdfTermoPagina(doc, tipo, o){
+    const cfg = o.cfg, c = o.c || {}, info = LIVROS_INFO[o.tipoLivro];
+    const pageW = doc.internal.pageSize.getWidth();
+    const num = o.tipoLivro==='diario' ? cfg.numDiario : cfg.numRazao;
+    const nomeEmp = c.name || '—';
+    const periodo = (o.ini ? fmtDate(o.ini) : 'início das operações') + ' a ' + fmtDate(o.fim);
+    doc.setDrawColor(27,58,92); doc.setLineWidth(0.6); doc.rect(12, 14, pageW-24, 268);
+    doc.setTextColor(20,25,30); doc.setFont('helvetica','bold'); doc.setFontSize(17);
+    doc.text(tipo==='abertura' ? 'TERMO DE ABERTURA' : 'TERMO DE ENCERRAMENTO', pageW/2, 36, {align:'center'});
+    doc.setFontSize(12); doc.text(info.nome.toUpperCase() + ' Nº ' + num, pageW/2, 45, {align:'center'});
+    doc.setLineWidth(0.3); doc.line(30, 49, pageW-30, 49);
+    let y = 60;
+    const campos = [
+      ['Empresa', nomeEmp], ['CNPJ/CPF', c.doc || '—'], ['NIRE', cfg.nire || '—'],
+      ['Sede', cfg.endereco || '—'], ['Livro', info.nome + ' nº ' + num], ['Período escriturado', periodo], ['Nº de folhas', o.folhas + ' (' + numExtenso(o.folhas) + ')'],
+    ];
+    campos.forEach(([k,v])=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(k + ':', 20, y);
+      doc.setFont('helvetica','normal'); const ls = doc.splitTextToSize(String(v), pageW-72);
+      doc.text(ls, 56, y); y += Math.max(6.5, ls.length*5 + 1.5);
+    });
+    y += 6;
+    const txt = tipo==='abertura'
+      ? 'O presente livro, de número ' + num + ', destinado ' + info.finalidade + ', contém ' + o.folhas + ' (' + numExtenso(o.folhas) + ') folhas, numeradas eletronicamente de 1 a ' + o.folhas + ', e servirá de ' + info.nome + ' da empresa ' + nomeEmp + (c.doc?', inscrita no CNPJ/CPF sob o nº '+c.doc:'') + (cfg.nire?', NIRE '+cfg.nire:'') + ', com sede em ' + (cfg.endereco||'endereço não informado') + ', relativo ao período de ' + periodo + '.'
+      : 'O presente livro, de número ' + num + ', destinado ' + info.finalidade + ', referente ao período de ' + periodo + ', contém ' + o.folhas + ' (' + numExtenso(o.folhas) + ') folhas, numeradas eletronicamente de 1 a ' + o.folhas + ', e encerra-se nesta data, tendo sido escriturado em idioma e moeda corrente nacionais, com observância das normas contábeis e da legislação vigente.';
+    doc.setFont('helvetica','normal'); doc.setFontSize(10.5);
+    const par = doc.splitTextToSize(txt, pageW-48);
+    doc.text(par, 24, y); y += par.length*5.6 + 8;
+    if(cfg.juntaNum || cfg.juntaData){
+      doc.setFontSize(9.5);
+      doc.text('Registro/autenticação na Junta Comercial: nº ' + (cfg.juntaNum||'____________') + (cfg.juntaData ? ', em ' + fmtDate(cfg.juntaData) : ''), 24, y); y += 8;
+    } else if(tipo==='abertura'){
+      doc.setFontSize(9.5);
+      doc.text('Registro/autenticação na Junta Comercial: nº ____________________ em ____ / ____ / ________', 24, y); y += 8;
+    }
+    y += 6; doc.setFontSize(10.5);
+    doc.text((cfg.cidade ? cfg.cidade + (cfg.uf?'/'+cfg.uf:'') : '____________________') + ', ' + dataExtensoPt(new Date()) + '.', 24, y);
+    // assinaturas
+    const ys = 218;
+    doc.setLineWidth(0.3); doc.setDrawColor(60,70,80);
+    doc.line(24, ys, 94, ys); doc.line(116, ys, 186, ys);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9);
+    doc.text(doc.splitTextToSize(cfg.repNome || 'Representante legal', 70), 24, ys+5);
+    doc.text(doc.splitTextToSize(cfg.contNome || 'Contador responsável', 70), 116, ys+5);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    doc.text((cfg.repCargo||'Representante legal') + (cfg.repCpf ? ' — CPF ' + cfg.repCpf : ''), 24, ys+10);
+    doc.text('Contador' + (cfg.contCrc ? ' — CRC ' + cfg.contCrc : '') + (cfg.contCpf ? ' — CPF ' + cfg.contCpf : ''), 116, ys+10);
+    doc.setFontSize(7.5); doc.setTextColor(100,110,120);
+    const rod = doc.splitTextToSize('Termo elaborado conforme a ITG 2000 (R1) — Escrituração Contábil — e os arts. 1.179 a 1.184 do Código Civil (Lei 10.406/2002). Assinado pelo titular ou representante legal e pelo contador regularmente habilitado.', pageW-48);
+    doc.text(rod, 24, 270);
+    doc.setTextColor(20,25,30); doc.setDrawColor(27,58,92);
+  }
+  // Reserva a 1ª página para o Termo de Abertura (preenchido no fim, quando já se sabe o nº de folhas) e acrescenta o Termo de Encerramento.
+  function pdfLivroTermos(doc, o){
+    const cfg = livroCfgDe(o.clientId);
+    doc.addPage();
+    const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 2;
+    const base = { cfg, c:o.c, tipoLivro:o.tipoLivro, ini:o.ini, fim:o.fim, folhas: total };
+    pdfTermoPagina(doc, 'encerramento', base);
+    if(doc.setPage) doc.setPage(1);
+    pdfTermoPagina(doc, 'abertura', base);
+  }
+
+  // ----- Notas explicativas -----
+  function notasGruposBalanco(clientId, dataRef){
+    const contas = state.planoContas.filter(c=>c.clientId===clientId);
+    const analit = contas.filter(c=>c.tipo==='Analítica' && contaEhBalanco(clientId, c.codigo) && !contaEhPL(clientId, c.codigo));
+    const grupos = new Map();
+    analit.forEach(a=>{
+      const seg = String(a.codigo).split('.'); seg.pop(); const pai = seg.join('.');
+      if(!grupos.has(pai)) grupos.set(pai, []);
+      grupos.get(pai).push(a);
+    });
+    const out = [];
+    Array.from(grupos.keys()).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true})).forEach(cod=>{
+      const sint = contas.find(c=>c.codigo===cod);
+      const natGrupo = (sint && sint.natureza) || grupos.get(cod)[0].natureza || 'Devedora';
+      const itens = grupos.get(cod).map(a=>{
+        const s = saldoConta(a, clientId, null, dataRef);
+        return { nome: a.nome, valor: (a.natureza===natGrupo ? 1 : -1) * s };
+      }).filter(i=>Math.abs(i.valor)>0.004).sort((x,y)=>Math.abs(y.valor)-Math.abs(x.valor));
+      if(!itens.length) return;
+      const total = itens.reduce((s,i)=>s+i.valor,0);
+      const mostrar = itens.slice(0,10); const resto = itens.slice(10);
+      if(resto.length) mostrar.push({ nome:'Demais contas ('+resto.length+')', valor: resto.reduce((s,i)=>s+i.valor,0) });
+      out.push({ codigo:cod, nome: sint ? sint.nome : cod, itens: mostrar, total, ativo: /^1(\.|$)/.test(cod) });
+    });
+    return out;
+  }
+  function notasTextoRegime(regime){
+    if(regime==='Simples Nacional') return 'A Empresa é optante pelo Simples Nacional (Lei Complementar nº 123/2006), regime que reúne em guia única (DAS) o recolhimento de IRPJ, CSLL, PIS, COFINS, IPI, ICMS, ISS e Contribuição Previdenciária Patronal (CPP), apurados sobre a receita bruta mediante as alíquotas progressivas previstas nos anexos da lei.';
+    if(regime==='Lucro Presumido') return 'A Empresa é tributada pelo Lucro Presumido: IRPJ e CSLL são apurados trimestralmente sobre a base de cálculo presumida da receita bruta, conforme percentuais previstos na legislação (Lei 9.249/1995), e PIS e COFINS pelo regime cumulativo, salvo as hipóteses legais em contrário.';
+    if(regime==='Lucro Real') return 'A Empresa é tributada pelo Lucro Real: IRPJ e CSLL são apurados sobre o lucro contábil ajustado pelas adições, exclusões e compensações previstas na legislação, e PIS e COFINS pelo regime não cumulativo (Leis 10.637/2002 e 10.833/2003), salvo as hipóteses legais em contrário.';
+    return 'A Empresa apura seus tributos conforme o regime tributário adotado em seu cadastro, observada a legislação federal, estadual e municipal aplicável.';
+  }
+  // Desenha as Notas Explicativas em páginas novas do documento.
+  function pdfNotasExplicativas(doc, o){
+    const c = o.c || {}, cfg = livroCfgDe(o.clientId), clientId = o.clientId;
+    const pageW = doc.internal.pageSize.getWidth(), LIM = 262;
+    const regime = cfg.regime || c.regimeTributario || '';
+    const mePP = cfg.porte ? (cfg.porte==='ME' || cfg.porte==='EPP') : (regime==='Simples Nacional');
+    const normaPme = mePP ? 'ITG 1000 — Modelo Contábil para Microempresa e Empresa de Pequeno Porte (aprovada pela Resolução CFC nº 1.418/2012)' : 'NBC TG 1000 (R1) — Contabilidade para Pequenas e Médias Empresas';
+    const dataRef = o.dataRef, ini = o.ini || null;
+    let y = 0, nn = 0;
+    function pagina(){
+      doc.addPage();
+      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text('JP CONSULTORIA CONTÁBIL — Notas Explicativas', 12, 7);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+      doc.text(doc.splitTextToSize(c.name||'', 186)[0] + ' — ' + (c.doc||''), 12, 13);
+      doc.setTextColor(20,25,30); y = 28;
+    }
+    function garantir(h){ if(y + h > LIM) pagina(); }
+    function titulo(t){ garantir(16); doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(27,58,92); doc.text(t, 14, y); doc.setTextColor(20,25,30); y += 6; }
+    function para(t){
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.8);
+      const ls = doc.splitTextToSize(String(t), pageW-28);
+      ls.forEach(l=>{ garantir(5); doc.text(l, 14, y); y += 4.4; });
+      y += 1.6;
+    }
+    function tabela(itens, total, rotuloTotal){
+      doc.setFontSize(8.3);
+      itens.forEach((it,i)=>{
+        garantir(5);
+        if(i%2===0){ doc.setFillColor(246,248,251); doc.rect(14, y-3.4, pageW-28, 4.8, 'F'); }
+        doc.setFont('helvetica','normal');
+        doc.text(doc.splitTextToSize(it.nome, 130)[0], 17, y);
+        doc.text(demNum(it.valor), pageW-16, y, {align:'right'});
+        y += 4.8;
+      });
+      garantir(7);
+      doc.setDrawColor(27,58,92); doc.setLineWidth(0.25); doc.line(14, y-3.2, pageW-14, y-3.2);
+      doc.setFont('helvetica','bold'); doc.text(rotuloTotal||'Total', 17, y); doc.text(demNum(total), pageW-16, y, {align:'right'});
+      y += 8;
+    }
+    pagina();
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text('NOTAS EXPLICATIVAS ÀS DEMONSTRAÇÕES CONTÁBEIS', pageW/2, y, {align:'center'}); y += 6;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    doc.text('Em ' + fmtDate(dataRef) + (ini ? ' (período de ' + fmtDate(ini) + ' a ' + fmtDate(dataRef) + ')' : '') + ' — valores expressos em reais (R$)', pageW/2, y, {align:'center'}); y += 9;
+
+    titulo('Nota ' + (++nn) + ' — Contexto operacional');
+    para((c.name||'A Empresa') + (c.doc?', inscrita no CNPJ/CPF sob o nº '+c.doc:'') + (cfg.nire?' (NIRE '+cfg.nire+')':'') + (cfg.dataConstituicao?', constituída em '+fmtDate(cfg.dataConstituicao):'') + ', com sede em ' + (cfg.endereco||'endereço não informado') + (cfg.cidade?' — '+cfg.cidade+(cfg.uf?'/'+cfg.uf:''):'') + '.');
+    if(cfg.objeto) para('Atividade principal: ' + cfg.objeto + '.');
+    if(cfg.capitalSocial!=='' && cfg.capitalSocial!==undefined && !isNaN(Number(cfg.capitalSocial))) para('Capital social registrado: ' + fmtBRL(Number(cfg.capitalSocial)) + '.');
+
+    titulo('Nota ' + (++nn) + ' — Base de elaboração e apresentação das demonstrações contábeis');
+    para('As demonstrações contábeis foram elaboradas e estão apresentadas de acordo com as práticas contábeis adotadas no Brasil, em conformidade com a Lei nº 6.404/1976 (art. 176, § 4º, que determina que as demonstrações sejam complementadas por notas explicativas), com o Código Civil (arts. 1.179 a 1.184), com a ITG 2000 (R1) — Escrituração Contábil — e com a ' + normaPme + ', observada, no que couber, a NBC TG 26 (R5) — Apresentação das Demonstrações Contábeis.');
+    para('As demonstrações contábeis compreendem o Balanço Patrimonial e a Demonstração do Resultado do Exercício, escrituradas em idioma e moeda corrente nacionais (real), pelo regime de competência. As notas explicativas são parte integrante das demonstrações contábeis.');
+
+    titulo('Nota ' + (++nn) + ' — Principais práticas contábeis');
+    para('a) Apuração do resultado: receitas, custos e despesas são reconhecidos pelo regime de competência, independentemente do momento do recebimento ou do pagamento.');
+    para('b) Caixa e equivalentes de caixa: compreendem numerário em caixa e depósitos bancários à vista, registrados pelo valor original.');
+    para('c) Contas a receber: registradas pelo valor nominal dos títulos, deduzidas, quando aplicável, de perdas estimadas para créditos de liquidação duvidosa.');
+    para('d) Estoques: avaliados ao custo de aquisição' + (cfg.estoqueCriterio ? ' (critério: ' + cfg.estoqueCriterio + ')' : '') + ', que não excede o valor realizável líquido.');
+    para('e) Imobilizado: registrado ao custo de aquisição, deduzido da depreciação acumulada, calculada pelo método linear com base na vida útil estimada dos bens.');
+    para('f) Fornecedores e demais obrigações: reconhecidos pelos valores conhecidos ou calculáveis, acrescidos, quando aplicável, dos encargos e das variações monetárias incorridos até a data das demonstrações.');
+    para('g) Provisões e contingências: reconhecidas quando houver obrigação presente, resultante de evento passado, com saída de recursos provável e valor estimável com segurança. Contingências possíveis são apenas divulgadas.');
+    para('h) Uso de estimativas: a elaboração das demonstrações exige estimativas e premissas da Administração; os resultados efetivos podem diferir das estimativas.');
+
+    // composição dos saldos
+    const grupos = notasGruposBalanco(clientId, dataRef);
+    grupos.forEach(g=>{
+      titulo('Nota ' + (++nn) + ' — ' + g.nome + (g.ativo ? ' (Ativo)' : ' (Passivo)'));
+      tabela(g.itens, g.total, 'Total — ' + g.nome);
+    });
+
+    // patrimônio líquido
+    const plContas = state.planoContas.filter(a=>a.clientId===clientId && a.tipo==='Analítica' && contaEhPL(clientId, a.codigo));
+    const plItens = plContas.map(a=>({ nome:a.nome, valor: (a.natureza==='Credora'?1:-1) * saldoConta(a, clientId, null, dataRef) })).filter(i=>Math.abs(i.valor)>0.004);
+    const re = calcResultadoExercicio(clientId, ini, dataRef);
+    const resItens = plItens.slice();
+    if(Math.abs(re.resultado)>0.004) resItens.push({ nome:'Resultado do exercício (' + (re.resultado>=0?'lucro':'prejuízo') + ') ainda não apurado/fechado', valor: re.resultado });
+    titulo('Nota ' + (++nn) + ' — Patrimônio líquido');
+    if(resItens.length) tabela(resItens, resItens.reduce((s,i)=>s+i.valor,0), 'Total do patrimônio líquido');
+    else para('Não há saldos no patrimônio líquido na data-base.');
+    para('O capital social está representado por quotas/ações subscritas pelos sócios/acionistas conforme o ato constitutivo e suas alterações. O resultado do exercício é transferido para o patrimônio líquido por ocasião do encerramento do exercício social.');
+
+    // resultado
+    titulo('Nota ' + (++nn) + ' — Resultado do período');
+    tabela([
+      { nome:'Receita bruta', valor: re.receitaBruta }, { nome:'(-) Deduções da receita', valor: -re.deducoes },
+      { nome:'(-) Custos', valor: -re.custos }, { nome:'(-) Despesas operacionais', valor: -re.totalDespesas },
+    ], re.resultado, 'Resultado do período (' + (re.resultado>=0?'lucro':'prejuízo') + ')');
+
+    titulo('Nota ' + (++nn) + ' — Tributação');
+    para(notasTextoRegime(regime));
+    titulo('Nota ' + (++nn) + ' — Partes relacionadas e remuneração da Administração');
+    para(cfg.partesRel || LIVRO_PADRAO.partesRel);
+    titulo('Nota ' + (++nn) + ' — Eventos subsequentes');
+    para(cfg.eventosSub || LIVRO_PADRAO.eventosSub);
+    if(cfg.notasExtras && String(cfg.notasExtras).trim()){
+      titulo('Nota ' + (++nn) + ' — Informações adicionais');
+      String(cfg.notasExtras).split(/\n+/).forEach(p=>{ if(p.trim()) para(p.trim()); });
+    }
+    // assinaturas
+    garantir(40); y += 10;
+    doc.setLineWidth(0.3); doc.setDrawColor(60,70,80);
+    doc.line(20, y, 92, y); doc.line(112, y, 188, y);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text(doc.splitTextToSize(cfg.repNome || 'Representante legal', 72), 20, y+5);
+    doc.text(doc.splitTextToSize(cfg.contNome || 'Contador responsável', 76), 112, y+5);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    doc.text((cfg.repCargo||'Representante legal') + (cfg.repCpf ? ' — CPF ' + cfg.repCpf : ''), 20, y+10);
+    doc.text('Contador' + (cfg.contCrc ? ' — CRC ' + cfg.contCrc : '') + (cfg.contCpf ? ' — CPF ' + cfg.contCpf : ''), 112, y+10);
+    doc.setFontSize(7.2); doc.setTextColor(100,110,120);
+    doc.text(doc.splitTextToSize('Notas explicativas geradas a partir dos Lançamentos Contábeis, conforme art. 176, § 4º, da Lei 6.404/1976, NBC TG 1000 (R1) / ITG 1000 e NBC TG 26 (R5). Os textos devem ser revisados pelo contador responsável antes da emissão.', pageW-28), 14, y+20);
+    doc.setTextColor(20,25,30);
+  }
+
   function gerarPdfBalancete(){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const clientId = state.contabilEmpresaAtiva;
@@ -3339,6 +3602,7 @@
       doc.setTextColor(20,25,30);
     }
     pdfFooterDisclaimer(doc, opts.disclaimer);
+    if(opts.notas && state.relNotas!==false){ try{ pdfNotasExplicativas(doc, { c, clientId: state.contabilEmpresaAtiva, dataRef: state.relDataFim, ini: state.relDataInicio||null }); }catch(e){ console.warn('notas', e); } }
     try{
       const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
       for(let i=1;i<=total;i++){
@@ -3361,7 +3625,7 @@
       notaFinal: d.fecha ? { ok:true, texto:'Balanço fechado: Ativo = Passivo + Patrimônio Líquido.' }
         : { ok:false, texto:'ATENÇÃO: Ativo (' + razaoNum(d.b.totalAtivo) + ') diferente de Passivo + PL (' + razaoNum(d.b.totalPassivoMaisPL) + '). Revise os lançamentos.' },
       disclaimer:'Balanço Patrimonial gerado automaticamente a partir dos Lançamentos Contábeis, conforme Art. 178 a 182 da Lei 6.404/76. Valores entre parênteses são negativos.',
-      arquivo: nomeArquivo('balanco-patrimonial', c)
+      arquivo: nomeArquivo('balanco-patrimonial', c), notas:true
     });
   }
   function gerarPdfDre(){
@@ -3376,7 +3640,7 @@
       linhas:d.linhas, mostrarPct:true,
       notaFinal:{ ok: d.r.resultado>=0, texto:'Margem bruta: ' + m(d.margemBruta) + '   |   Margem líquida: ' + m(d.margemLiquida) + '   |   ' + (d.r.resultado>=0 ? 'Resultado positivo (lucro) no período.' : 'Resultado negativo (prejuízo) no período.') },
       disclaimer:'DRE gerada automaticamente a partir dos Lançamentos Contábeis, conforme Art. 187 da Lei 6.404/76 (regime de competência). Valores entre parênteses são negativos.',
-      arquivo: nomeArquivo('dre', c)
+      arquivo: nomeArquivo('dre', c), notas:true
     });
   }
 
@@ -3464,6 +3728,7 @@
     const d = diarioDados(clientId);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
+    doc.addPage(); // página 1 reservada para o Termo de Abertura (preenchido ao final)
     const pageW = doc.internal.pageSize.getWidth();
     const LIM = 232;
     let y = pdfHeader(doc, 'Livro Diário', c ? c.name : '—', c ? c.logo : '');
@@ -3531,6 +3796,7 @@
     doc.text('Lançamentos em partidas dobradas, em ordem cronológica. O número de ordem é fixo para cada lançamento.', X.conta, y);
     doc.setTextColor(20,25,30);
     pdfFooterDisclaimer(doc, 'Livro Diário gerado automaticamente a partir dos Lançamentos Contábeis — Arts. 1.180 a 1.184 do Código Civil. Para fins de escrituração formal, o livro deve ser autenticado conforme a legislação (SPED Contábil/Junta Comercial).');
+    pdfLivroTermos(doc, { tipoLivro:'diario', c, clientId, ini: state.relDataInicio||null, fim: state.relDataFim });
     try{
       const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
       for(let i=1;i<=total;i++){
@@ -3552,6 +3818,7 @@
     const g = dg.grupo;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
+    doc.addPage(); // página 1 reservada para o Termo de Abertura (preenchido ao final)
     const pageW = doc.internal.pageSize.getWidth();
     const LIM = 232;
     let y = pdfHeader(doc, 'Livro Razão — Grupo ' + g.codigo + ' ' + g.nome, c ? c.name : '—', c ? c.logo : '');
@@ -3649,6 +3916,7 @@
     doc.text('D = saldo devedor · C = saldo credor. Contrapartida em laranja = ainda em "Conta a Classificar".', X.data, y);
     doc.setTextColor(20,25,30);
     pdfFooterDisclaimer(doc, 'Livro Razão do grupo gerado automaticamente a partir dos Lançamentos Contábeis — Art. 1.184 do Código Civil.');
+    pdfLivroTermos(doc, { tipoLivro:'razao', c, clientId, ini: state.relDataInicio||null, fim: state.relDataFim });
     try{
       const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
       for(let i=1;i<=total;i++){
@@ -3669,6 +3937,7 @@
     const conta = dados.conta;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
+    doc.addPage(); // página 1 reservada para o Termo de Abertura (preenchido ao final)
     const pageW = doc.internal.pageSize.getWidth();
     const LIM = 232; // acima da caixa de observação do rodapé
     let y = pdfHeader(doc, 'Livro Razão — ' + conta.codigo + ' ' + conta.nome, c ? c.name : '—', c ? c.logo : '');
@@ -3747,6 +4016,7 @@
 
     pdfFooterDisclaimer(doc, 'Livro Razão gerado automaticamente a partir dos Lançamentos Contábeis — Art. 1.184 do Código Civil.');
     // numeração de páginas
+    pdfLivroTermos(doc, { tipoLivro:'razao', c, clientId, ini: state.relDataInicio||null, fim: state.relDataFim });
     try{
       const total = doc.getNumberOfPages ? doc.getNumberOfPages() : (doc.internal.getNumberOfPages ? doc.internal.getNumberOfPages() : 1);
       for(let i=1;i<=total;i++){
@@ -12209,6 +12479,7 @@
     await loadTiposImpostoCustom();
     await loadObrigacoesAcessorias();
     await loadSpedFiscal();
+    await loadLivroCfgs();
     await loadDeclaracoesFaturamento();
     await loadRelatoriosFiscais();
     await loadFuncionarios();
@@ -15199,6 +15470,45 @@
     return contaSuperiorCodigo + '.' + (digits > 1 ? String(next).padStart(digits, '0') : String(next));
   }
 
+  function livroCfgModalHtml(){
+    const d = state.livroCfgModalData; if(!d) return '';
+    const f = (id, label, val, extra)=> `<div class="field"><label>${label}</label><input type="text" id="lc_${id}" value="${escapeHtml(String(val===undefined||val===null?'':val))}" ${extra||''}/></div>`;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:720px;">
+          <h3>Dados dos livros e notas explicativas</h3>
+          <div class="form-hint" style="margin:-6px 0 12px;">Usados no <b>Termo de Abertura e de Encerramento</b> do Livro Diário e do Livro Razão e nas <b>Notas Explicativas</b> do Balanço e da DRE. Campos em branco saem como linha para preencher à mão.</div>
+          <form id="livroCfgForm">
+            <div class="form-row">${f('nire','NIRE (Junta Comercial)',d.nire)}${f('juntaNum','Nº do registro/autenticação do livro',d.juntaNum)}<div class="field"><label>Data do registro</label><input type="date" id="lc_juntaData" value="${escapeHtml(d.juntaData||'')}"/></div></div>
+            <div class="form-row">${f('numDiario','Nº do Livro Diário',d.numDiario)}${f('numRazao','Nº do Livro Razão',d.numRazao)}</div>
+            ${f('endereco','Sede (endereço completo)',d.endereco)}
+            <div class="form-row">${f('cidade','Cidade (local da assinatura)',d.cidade)}${f('uf','UF',d.uf)}</div>
+            ${f('objeto','Atividade principal / objeto social',d.objeto)}
+            <div class="form-row">
+              <div class="field"><label>Regime tributário</label><select id="lc_regime" data-nobusca="1">${['','Simples Nacional','Lucro Presumido','Lucro Real'].map(r=>`<option value="${r}" ${d.regime===r?'selected':''}>${r||'— conforme o cadastro —'}</option>`).join('')}</select></div>
+              <div class="field"><label>Porte</label><select id="lc_porte" data-nobusca="1">${[['','— automático —'],['ME','Microempresa (ME)'],['EPP','Empresa de Pequeno Porte (EPP)'],['Demais','Demais empresas']].map(r=>`<option value="${r[0]}" ${d.porte===r[0]?'selected':''}>${r[1]}</option>`).join('')}</select></div>
+            </div>
+            <div class="form-row"><div class="field"><label>Data de constituição</label><input type="date" id="lc_dataConstituicao" value="${escapeHtml(d.dataConstituicao||'')}"/></div>${f('capitalSocial','Capital social (R$, só números)',d.capitalSocial)}</div>
+            <div style="font-weight:700; margin:8px 0 6px;">Representante legal (assina os termos e as notas)</div>
+            <div class="form-row">${f('repNome','Nome',d.repNome)}${f('repCpf','CPF',d.repCpf)}${f('repCargo','Cargo',d.repCargo)}</div>
+            <div style="font-weight:700; margin:8px 0 6px;">Contador responsável</div>
+            <div class="form-row">${f('contNome','Nome',d.contNome)}${f('contCrc','CRC (ex.: PE-012345/O-0)',d.contCrc)}${f('contCpf','CPF',d.contCpf)}</div>
+            <div style="font-weight:700; margin:8px 0 6px;">Textos das notas explicativas (opcional)</div>
+            ${f('estoqueCriterio','Critério de avaliação dos estoques (ex.: custo médio ponderado)',d.estoqueCriterio)}
+            <div class="field"><label>Partes relacionadas e remuneração da Administração</label><textarea id="lc_partesRel" rows="2" placeholder="${escapeHtml(LIVRO_PADRAO.partesRel)}" style="width:100%;">${escapeHtml(d.partesRel||'')}</textarea></div>
+            <div class="field"><label>Eventos subsequentes</label><textarea id="lc_eventosSub" rows="2" placeholder="${escapeHtml(LIVRO_PADRAO.eventosSub)}" style="width:100%;">${escapeHtml(d.eventosSub||'')}</textarea></div>
+            <div class="field"><label>Informações adicionais (uma nota extra — um parágrafo por linha)</label><textarea id="lc_notasExtras" rows="3" style="width:100%;">${escapeHtml(d.notasExtras||'')}</textarea></div>
+            <div class="form-hint">Em branco nas caixas acima, o sistema usa o texto padrão (em cinza). Os textos padrão devem ser revisados pelo contador antes da emissão.</div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="lcfgCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
   function contaModalHtml(){
     const d = state.contaModalData;
     if(!d) return '';
@@ -16581,7 +16891,8 @@
       <div class="form-hint" style="margin:0 0 8px;">Posição em <b>${fmtDate(state.relDataFim)}</b> · valores em R$ (entre parênteses = negativo)</div>
       ${demTabelaHtml(d.linhas, false)}
       <div class="legis-note" style="${d.fecha?'':'color:#C0392B;'}">${d.fecha ? '✓ Balanço fechado: Ativo = Passivo + Patrimônio Líquido.' : '⚠ Atenção: Ativo (' + fmtBRL(d.b.totalAtivo) + ') diferente de Passivo + PL (' + fmtBRL(d.b.totalPassivoMaisPL) + ') — revise os lançamentos, algo está em desacordo com as partidas dobradas.'} Estrutura conforme Art. 178 a 182 da Lei 6.404/76.</div>
-      <button type="button" class="btn-detail" id="pdfBalancoBtn" style="margin-top:12px;">Baixar PDF</button>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:12px 0 0;"><input type="checkbox" id="relNotasChk" ${state.relNotas!==false?'checked':''}/> Incluir as <b>notas explicativas</b> no PDF (Lei 6.404/76, art. 176, § 4º; NBC TG 1000 / ITG 1000)</label>
+      <button type="button" class="btn-detail" id="pdfBalancoBtn" style="margin-top:8px;">Baixar PDF</button>
     `;
   }
 
@@ -16596,7 +16907,8 @@
       <div class="form-hint" style="margin:0 0 8px;">Período: <b>${ini?fmtDate(ini):'início'}</b> a <b>${fmtDate(state.relDataFim)}</b> · valores em R$ (entre parênteses = negativo) · % sobre a receita bruta</div>
       ${demTabelaHtml(d.linhas, true)}
       <div class="legis-note">Margem bruta: <b>${m(d.margemBruta)}</b> · Margem líquida: <b>${m(d.margemLiquida)}</b>. Demonstração do Resultado do Exercício (DRE) — estrutura conforme Art. 187 da Lei 6.404/76. Regime de competência: as receitas e despesas entram pela data do lançamento contábil, independentemente do efetivo recebimento/pagamento.</div>
-      <button type="button" class="btn-detail" id="pdfDreBtn" style="margin-top:12px;">Baixar PDF</button>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:12px 0 0;"><input type="checkbox" id="relNotasChk" ${state.relNotas!==false?'checked':''}/> Incluir as <b>notas explicativas</b> no PDF</label>
+      <button type="button" class="btn-detail" id="pdfDreBtn" style="margin-top:8px;">Baixar PDF</button>
     `;
   }
 
@@ -16698,7 +17010,7 @@
     else if(state.contabilRelSubTab==='razao') content = razaoContentHtml();
     else if(state.contabilRelSubTab==='diario') content = diarioContentHtml();
     return `
-      <div class="panel-head"><h3>Balanço, Balancete e DRE</h3></div>
+      <div class="panel-head"><h3>Balanço, Balancete e DRE</h3>${state.contabilEmpresaAtiva ? `<button type="button" class="btn-detail" id="livroCfgBtn" title="Dados usados nos termos de abertura/encerramento dos livros e nas notas explicativas">📘 Dados dos livros e notas explicativas</button>` : ''}</div>
       <div class="form-hint" style="margin:-4px 0 14px;">Relatórios de apoio contábil calculados automaticamente a partir dos Lançamentos Contábeis desta empresa, conforme a Lei 6.404/76 (estrutura das demonstrações financeiras) e o Código Civil (escrituração — Art. 1.179 a 1.195).</div>
       ${empresaContabilSelectorHtml()}
       ${periodoSeletorHtml()}
@@ -19896,6 +20208,7 @@
       ${state.modal==='monoRegra' ? monoRegraModalHtml() : ''}
       ${state.modal==='tabelaFolha' ? tabelaFolhaModalHtml() : ''}
       ${state.modal==='conta' ? contaModalHtml() : ''}
+      ${state.modal==='livrocfg' ? livroCfgModalHtml() : ''}
       ${state.modal==='planoModelo' ? pmModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='dupLanc' ? dupModalHtml() : ''}
@@ -22135,6 +22448,21 @@
     if(pdfDiarioBtn) pdfDiarioBtn.onclick = ()=> gerarPdfDiario();
     const pdfBalanceteBtn = document.getElementById('pdfBalanceteBtn');
     if(pdfBalanceteBtn) pdfBalanceteBtn.onclick = ()=> gerarPdfBalancete();
+    const livroCfgBtn = document.getElementById('livroCfgBtn');
+    if(livroCfgBtn) livroCfgBtn.onclick = ()=>{ state.livroCfgModalData = livroCfgDe(state.contabilEmpresaAtiva); state.modal='livrocfg'; render(); };
+    const lcfgCancel = document.getElementById('lcfgCancel');
+    if(lcfgCancel) lcfgCancel.onclick = ()=>{ state.modal=null; state.livroCfgModalData=null; render(); };
+    const livroCfgForm = document.getElementById('livroCfgForm');
+    if(livroCfgForm) livroCfgForm.onsubmit = async (e)=>{
+      e.preventDefault();
+      const g = (id)=> (document.getElementById('lc_'+id)||{}).value || '';
+      const cfg = { id: state.livroCfgModalData.id };
+      ['nire','juntaNum','juntaData','numDiario','numRazao','endereco','cidade','uf','objeto','regime','porte','dataConstituicao','capitalSocial','repNome','repCpf','repCargo','contNome','contCrc','contCpf','estoqueCriterio','partesRel','eventosSub','notasExtras'].forEach(k=>{ cfg[k] = String(g(k)).trim(); });
+      cfg.capitalSocial = cfg.capitalSocial.replace(/[^\d,.-]/g,'').replace(/\.(?=\d{3}(\D|$))/g,'').replace(',','.');
+      if(await livroCfgSalvar(cfg)){ state.modal=null; state.livroCfgModalData=null; render(); }
+    };
+    const relNotasChk = document.getElementById('relNotasChk');
+    if(relNotasChk) relNotasChk.onchange = (e)=>{ state.relNotas = e.target.checked; };
     const pdfBalancoBtn = document.getElementById('pdfBalancoBtn');
     if(pdfBalancoBtn) pdfBalancoBtn.onclick = ()=> gerarPdfBalanco();
     const pdfDreBtn = document.getElementById('pdfDreBtn');
