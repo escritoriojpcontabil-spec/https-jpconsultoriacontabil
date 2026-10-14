@@ -1865,7 +1865,7 @@
         doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
         doc.text('Competência ' + comp.periodo + ' — ' + fmtBRL(comp.total) + (comp.totalMulta>0 ? ' (multa: '+fmtBRL(comp.totalMulta)+')' : ''), 14, y); y += 6;
         doc.setFontSize(8.5);
-        doc.setFillColor(240,242,245);
+        doc.setFillColor(240,240,240);
         doc.rect(14, y-4, 182, 5.5, 'F');
         doc.setFont('helvetica','bold');
         doc.text('Imposto', 16, y); doc.text('Vencimento', 108, y); doc.text('Multa', 150, y); doc.text('Valor', 196, y, {align:'right'});
@@ -1906,9 +1906,9 @@
     let y = 20;
 
     // Header
-    doc.setFillColor(27, 58, 92); // navy
+    doc.setFillColor(226,228,231); // navy
     doc.rect(0, 0, pageW, 26, 'F');
-    doc.setTextColor(255,255,255);
+    doc.setTextColor(35,40,45);
     doc.setFont('helvetica','bold');
     doc.setFontSize(14);
     doc.text('JP CONSULTORIA CONTÁBIL', 14, 13);
@@ -2240,7 +2240,7 @@
     let y = 20;
     try{ doc.addImage(LOGO, 'JPEG', pageW/2-14, y, 28, 28); }catch(e){}
     y += 33;
-    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(27,58,92);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(70,75,80);
     doc.text('JP CONSULTORIA CONTÁBIL', pageW/2, y, {align:'center'}); y += 8;
     doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(20,25,30);
     doc.text('Jailson Pereira', pageW/2, y, {align:'center'}); y += 5;
@@ -2288,7 +2288,7 @@
 
     let y = 18;
     try{ doc.addImage(LOGO, 'JPEG', 14, y, 20, 20); }catch(e){}
-    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(27,58,92);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(70,75,80);
     doc.text('JP CONSULTORIA CONTÁBIL', 40, y+8);
     doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90,105,120);
     doc.text('Jailson Pereira — CRC-PE 019219-O/8', 40, y+14);
@@ -2348,7 +2348,7 @@
     let y = 20;
     try{ doc.addImage(LOGO, 'JPEG', pageW/2-14, y, 28, 28); }catch(e){}
     y += 33;
-    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(27,58,92);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(70,75,80);
     doc.text('JP CONSULTORIA CONTÁBIL', pageW/2, y, {align:'center'}); y += 8;
     doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(20,25,30);
     doc.text('Jailson Pereira', pageW/2, y, {align:'center'}); y += 5;
@@ -2415,7 +2415,7 @@
 
     inscricoes.forEach(i=>{
       if(y > 260){ doc.addPage(); y = 20; }
-      doc.setFillColor(240,242,245); doc.rect(14, y-5, pageW-28, 8, 'F');
+      doc.setFillColor(240,240,240); doc.rect(14, y-5, pageW-28, 8, 'F');
       doc.setFont('helvetica','bold'); doc.setFontSize(11);
       doc.text(i.tipo||'Inscrição', 16, y);
       y += 9;
@@ -2445,7 +2445,7 @@
 
     const colNome = 14, colCnpj = 92, colInicio = 138, colTermino = 165, colSenha = pageW-14;
     doc.setFontSize(8.5); doc.setFont('helvetica','bold');
-    doc.setFillColor(240,242,245); doc.rect(14, y-4, pageW-28, 6, 'F');
+    doc.setFillColor(240,240,240); doc.rect(14, y-4, pageW-28, 6, 'F');
     doc.text('Cliente', colNome, y);
     doc.text('CNPJ', colCnpj, y);
     doc.text('Início', colInicio, y);
@@ -2482,7 +2482,7 @@
     const colEmpresa = 14, colCompetencia = 110, colVencimento = 145, colValor = 195, colStatus = pageW-14;
     rel.grupos.forEach(g=>{
       if(y > 180){ doc.addPage(); y = 20; }
-      doc.setFillColor(240,242,245); doc.rect(14, y-4.5, pageW-28, 6.5, 'F');
+      doc.setFillColor(240,240,240); doc.rect(14, y-4.5, pageW-28, 6.5, 'F');
       doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
       doc.text(g.clienteNome, colEmpresa, y);
       doc.text(g.totalAberto>0.005 ? 'Em aberto: '+fmtBRL(g.totalAberto) : 'Sem pendências no filtro', colStatus, y, {align:'right'});
@@ -2539,8 +2539,8 @@
     doc.setFillColor(183,210,237); doc.rect(fillAReceberX, y-4.5, fillAReceberW, 6, 'F');
     doc.setFillColor(191,224,184); doc.rect(fillRecebidoX, y-4.5, fillRecebidoW, 6, 'F');
     doc.setFontSize(8.5); doc.setFont('helvetica','bold');
-    doc.setFillColor(240,242,245); doc.rect(14, y-4.5, fillAReceberX-14, 6, 'F');
-    doc.setFillColor(240,242,245); doc.rect(fillRecebidoX+fillRecebidoW, y-4.5, (pageW-8)-(fillRecebidoX+fillRecebidoW), 6, 'F');
+    doc.setFillColor(240,240,240); doc.rect(14, y-4.5, fillAReceberX-14, 6, 'F');
+    doc.setFillColor(240,240,240); doc.rect(fillRecebidoX+fillRecebidoW, y-4.5, (pageW-8)-(fillRecebidoX+fillRecebidoW), 6, 'F');
     doc.text('Meses/Servicos', colMes, y);
     doc.text('Vencto', colVencto, y);
     doc.text('Historico', colHist, y);
@@ -2601,7 +2601,7 @@
     doc.text(linhasDeclaracao, 14, y); y += linhasDeclaracao.length*5 + 8;
 
     doc.setFontSize(8.5); doc.setFont('helvetica','bold');
-    doc.setFillColor(240,242,245); doc.rect(14, y-4.5, pageW-28, 6, 'F');
+    doc.setFillColor(240,240,240); doc.rect(14, y-4.5, pageW-28, 6, 'F');
     doc.text('Competência', 16, y); doc.text('Serviço', 60, y); doc.text('Data Pagamento', 130, y); doc.text('Forma', 165, y); doc.text('Valor', pageW-16, y, {align:'right'});
     y += 6.5; doc.setFont('helvetica','normal');
     let total = 0;
@@ -2636,7 +2636,7 @@
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
     try{ doc.addImage(LOGO, 'JPEG', 14, 10, 22, 22); }catch(e){}
-    doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(27,58,92);
+    doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(70,75,80);
     doc.text('JP CONSULTORIA CONTÁBIL', 42, 18);
     doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(90,105,120);
     doc.text('Proposta Comercial de Serviços Contábeis', 42, 25);
@@ -2700,7 +2700,7 @@
       doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
       doc.text('Demonstrativo — declarações/impostos pendentes por tipo', 14, y); y += 7;
       doc.setFontSize(8.5);
-      doc.setFillColor(240,242,245); doc.rect(14, y-4, pageW-28, 5.5, 'F');
+      doc.setFillColor(240,240,240); doc.rect(14, y-4, pageW-28, 5.5, 'F');
       doc.setFont('helvetica','bold');
       doc.text('Imposto/Declaração', 16, y); doc.text('Competência(s)', 90, y); doc.text('Total pendente', pageW-16, y, {align:'right'});
       y += 5.5; doc.setFont('helvetica','normal');
@@ -2761,7 +2761,7 @@
       doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
       doc.text('Regularização de pendências de situação fiscal (avulso)', 14, y); y += 7;
       doc.setFontSize(8.5);
-      doc.setFillColor(240,242,245); doc.rect(14, y-4, pageW-28, 5.5, 'F');
+      doc.setFillColor(240,240,240); doc.rect(14, y-4, pageW-28, 5.5, 'F');
       doc.setFont('helvetica','bold');
       doc.text('Declaração/Imposto', 16, y); doc.text('Competência', 110, y); doc.text('Valor a cobrar', pageW-16, y, {align:'right'});
       y += 5.5; doc.setFont('helvetica','normal');
@@ -2844,9 +2844,9 @@
 
   function pdfHeader(doc, titulo, subtitulo, logoBase64){
     const pageW = doc.internal.pageSize.getWidth();
-    doc.setFillColor(27, 58, 92);
+    doc.setFillColor(226,228,231);
     doc.rect(0, 0, pageW, 26, 'F');
-    doc.setTextColor(255,255,255);
+    doc.setTextColor(35,40,45);
     doc.setFont('helvetica','bold');
     doc.setFontSize(14);
     doc.text('JP CONSULTORIA CONTÁBIL', 14, 13);
@@ -2952,7 +2952,7 @@
         doc.setFont('helvetica','bold'); doc.setFontSize(7);
         doc.setTextColor(20,25,30);
         cols.forEach(col=>{
-          doc.setFillColor(232,235,240);
+          doc.setFillColor(234,234,234);
           doc.rect(col.x0, y, col.wmm, rowH, 'F');
           doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
           doc.rect(col.x0, y, col.wmm, rowH, 'S');
@@ -3033,7 +3033,7 @@
     }
 
     doc.setFontSize(8.5); doc.setFont('helvetica','bold');
-    doc.setFillColor(240,242,245); doc.rect(14, y-4.5, pageW-28, 6, 'F');
+    doc.setFillColor(240,240,240); doc.rect(14, y-4.5, pageW-28, 6, 'F');
     let colX = 16;
     doc.text(clienteId==='all' ? 'Cliente' : 'Competência', colX, y);
     let totalGeral = 0;
@@ -3164,7 +3164,7 @@
     const num = o.tipoLivro==='diario' ? cfg.numDiario : cfg.numRazao;
     const nomeEmp = c.name || '—';
     const periodo = (o.ini ? fmtDate(o.ini) : 'início das operações') + ' a ' + fmtDate(o.fim);
-    doc.setDrawColor(27,58,92); doc.setLineWidth(0.6); doc.rect(12, 14, pageW-24, 268);
+    doc.setDrawColor(150,155,160); doc.setLineWidth(0.6); doc.rect(12, 14, pageW-24, 268);
     doc.setTextColor(20,25,30); doc.setFont('helvetica','bold'); doc.setFontSize(17);
     doc.text(tipo==='abertura' ? 'TERMO DE ABERTURA' : 'TERMO DE ENCERRAMENTO', pageW/2, 36, {align:'center'});
     doc.setFontSize(12); doc.text(info.nome.toUpperCase() + ' Nº ' + num, pageW/2, 45, {align:'center'});
@@ -3208,7 +3208,7 @@
     doc.setFontSize(7.5); doc.setTextColor(100,110,120);
     const rod = doc.splitTextToSize('Termo elaborado conforme a ITG 2000 (R1) — Escrituração Contábil — e os arts. 1.179 a 1.184 do Código Civil (Lei 10.406/2002). Assinado pelo titular ou representante legal e pelo contador regularmente habilitado.', pageW-48);
     doc.text(rod, 24, 270);
-    doc.setTextColor(20,25,30); doc.setDrawColor(27,58,92);
+    doc.setTextColor(20,25,30); doc.setDrawColor(150,155,160);
   }
   // Reserva a 1ª página para o Termo de Abertura (preenchido no fim, quando já se sabe o nº de folhas) e acrescenta o Termo de Encerramento.
   function pdfLivroTermos(doc, o){
@@ -3264,15 +3264,15 @@
     let y = 0, nn = 0;
     function pagina(){
       doc.addPage();
-      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(226,228,231); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.text('JP CONSULTORIA CONTÁBIL — Notas Explicativas', 12, 7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
       doc.text(doc.splitTextToSize(c.name||'', 186)[0] + ' — ' + (c.doc||''), 12, 13);
       doc.setTextColor(20,25,30); y = 28;
     }
     function garantir(h){ if(y + h > LIM) pagina(); }
-    function titulo(t){ garantir(16); doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(27,58,92); doc.text(t, 14, y); doc.setTextColor(20,25,30); y += 6; }
+    function titulo(t){ garantir(16); doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(70,75,80); doc.text(t, 14, y); doc.setTextColor(20,25,30); y += 6; }
     function para(t){
       doc.setFont('helvetica','normal'); doc.setFontSize(8.8);
       const ls = doc.splitTextToSize(String(t), pageW-28);
@@ -3283,14 +3283,14 @@
       doc.setFontSize(8.3);
       itens.forEach((it,i)=>{
         garantir(5);
-        if(i%2===0){ doc.setFillColor(246,248,251); doc.rect(14, y-3.4, pageW-28, 4.8, 'F'); }
+        if(i%2===0){ doc.setFillColor(246,246,246); doc.rect(14, y-3.4, pageW-28, 4.8, 'F'); }
         doc.setFont('helvetica','normal');
         doc.text(doc.splitTextToSize(it.nome, 130)[0], 17, y);
         doc.text(demNum(it.valor), pageW-16, y, {align:'right'});
         y += 4.8;
       });
       garantir(7);
-      doc.setDrawColor(27,58,92); doc.setLineWidth(0.25); doc.line(14, y-3.2, pageW-14, y-3.2);
+      doc.setDrawColor(150,155,160); doc.setLineWidth(0.25); doc.line(14, y-3.2, pageW-14, y-3.2);
       doc.setFont('helvetica','bold'); doc.text(rotuloTotal||'Total', 17, y); doc.text(demNum(total), pageW-16, y, {align:'right'});
       y += 8;
     }
@@ -3383,16 +3383,16 @@
     doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim) + '   |   ' + d.linhas.length + ' conta(s)' + (d.ocultas ? ' (' + d.ocultas + ' sem movimento ocultas)' : '') + '   |   valores em R$', 14, y); y += 7;
     const X = { cod:12, conta:32, ant:114, deb:140, cred:166, atual:195 };
     function cabecalho(){
-      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text('Código', X.cod, y); doc.text('Conta', X.conta, y);
       doc.text('Saldo anterior', X.ant, y, {align:'right'}); doc.text('Débitos', X.deb, y, {align:'right'}); doc.text('Créditos', X.cred, y, {align:'right'}); doc.text('Saldo atual', X.atual, y, {align:'right'});
       doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
     }
     function novaPagina(){
       doc.addPage();
-      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(226,228,231); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.text('JP CONSULTORIA CONTÁBIL — Balancete de Verificação', 12, 7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
       doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
@@ -3406,8 +3406,8 @@
       if(y + 4.6 > LIM){ novaPagina(); doc.setFontSize(7.5); zebra = false; }
       const sint = l.conta.tipo==='Sintética';
       const nat = l.conta.natureza==='Devedora' ? 'Devedora' : 'Credora';
-      if(sint){ doc.setFillColor(231,237,244); doc.rect(10, y-3.3, pageW-20, 4.6, 'F'); }
-      else if(zebra){ doc.setFillColor(246,248,251); doc.rect(10, y-3.3, pageW-20, 4.6, 'F'); }
+      if(sint){ doc.setFillColor(236,236,236); doc.rect(10, y-3.3, pageW-20, 4.6, 'F'); }
+      else if(zebra){ doc.setFillColor(246,246,246); doc.rect(10, y-3.3, pageW-20, 4.6, 'F'); }
       if(!sint) zebra = !zebra;
       doc.setFont('helvetica', sint ? 'bold' : 'normal'); doc.setTextColor(20,25,30);
       const recuo = Math.max(0, Math.min(contaLevel(l.conta.codigo), 3) - 1) * 2;
@@ -3422,7 +3422,7 @@
     if(!d.linhas.length){ doc.text('Nenhuma conta com movimento ou saldo no período.', X.conta, y); y += 6; }
     if(y + 16 > LIM){ novaPagina(); doc.setFontSize(7.5); }
     y += 1.5;
-    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
+    doc.setDrawColor(150,155,160); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
     doc.setFont('helvetica','bold'); doc.setFontSize(8);
     doc.text('TOTAIS DO PERÍODO (contas analíticas)', X.conta, y);
     doc.text(razaoNum(d.totDeb), X.deb, y, {align:'right'});
@@ -3536,8 +3536,8 @@
     doc.text(opts.periodo + '   |   valores em R$', 14, y); y += 8;
     function cab(){
       if(!showPct && !opts.colunaValor) return;
-      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text('Descrição', X.txt, y);
       doc.text('Valor (R$)', X.val, y, {align:'right'});
       if(showPct) doc.text('% s/ receita bruta', X.pct, y, {align:'right'});
@@ -3545,8 +3545,8 @@
     }
     function novaPagina(){
       doc.addPage();
-      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(226,228,231); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.text('JP CONSULTORIA CONTÁBIL — ' + opts.titulo, 12, 7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
       doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
@@ -3560,8 +3560,8 @@
       if(y + alt > LIM){ novaPagina(); zebra = false; }
       if(l.tipo==='secao'){
         y += 2;
-        doc.setFillColor(27,58,92); doc.rect(10, y-4.6, pageW-20, 6.6, 'F');
-        doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+        doc.setFillColor(226,228,231); doc.rect(10, y-4.6, pageW-20, 6.6, 'F');
+        doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
         doc.text(l.texto, X.txt, y);
         doc.setTextColor(20,25,30); y += 6.2; zebra = false; return;
       }
@@ -3569,7 +3569,7 @@
         y += 1.2;
         const cor = l.destaque ? (l.positivo===false ? [253,236,234] : [225,244,233]) : [231,237,244];
         doc.setFillColor(...cor); doc.rect(10, y-4.4, pageW-20, 6.6, 'F');
-        doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-4.4, pageW-10, y-4.4);
+        doc.setDrawColor(150,155,160); doc.setLineWidth(0.3); doc.line(10, y-4.4, pageW-10, y-4.4);
         doc.setFont('helvetica','bold'); doc.setFontSize(9);
         doc.text(l.texto, X.txt, y);
         doc.text(demNum(l.valor), X.val, y, {align:'right'});
@@ -3584,7 +3584,7 @@
         y += 5.8; zebra = false; return;
       }
       // item
-      if(zebra){ doc.setFillColor(246,248,251); doc.rect(10, y-3.4, pageW-20, 4.8, 'F'); }
+      if(zebra){ doc.setFillColor(246,246,246); doc.rect(10, y-3.4, pageW-20, 4.8, 'F'); }
       zebra = !zebra;
       doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,70,80);
       doc.text(doc.splitTextToSize(l.texto, showPct ? 118 : 140)[0], X.txt + 8, y);
@@ -3737,16 +3737,16 @@
     doc.text('Período: ' + (state.relDataInicio?fmtDate(state.relDataInicio):'início') + ' a ' + fmtDate(state.relDataFim) + '   |   ' + d.itens.length + ' lançamento(s)   |   valores em R$', 14, y); y += 7;
     const X = { n:12, conta:26, deb:158, cred:195 };
     function cabecalho(){
-      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text('Nº', X.n, y); doc.text('Conta / Histórico', X.conta, y);
       doc.text('Débito', X.deb, y, {align:'right'}); doc.text('Crédito', X.cred, y, {align:'right'});
       doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
     }
     function novaPagina(){
       doc.addPage();
-      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(226,228,231); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.text('JP CONSULTORIA CONTÁBIL — Livro Diário', 12, 7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
       doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
@@ -3757,7 +3757,7 @@
     doc.setFontSize(7.5);
     d.dias.forEach(dia=>{
       if(y + 4.6 + 13 > LIM){ novaPagina(); doc.setFontSize(7.5); }
-      doc.setFillColor(231,237,244); doc.rect(10, y-3.4, pageW-20, 4.8, 'F');
+      doc.setFillColor(236,236,236); doc.rect(10, y-3.4, pageW-20, 4.8, 'F');
       doc.setFont('helvetica','bold'); doc.setTextColor(20,25,30);
       doc.text(fmtDate(dia.data), X.n, y);
       doc.text('Total do dia: ' + razaoNum(dia.total), X.cred, y, {align:'right'});
@@ -3786,7 +3786,7 @@
     if(!d.itens.length){ doc.text('Nenhum lançamento no período.', X.conta, y); y += 6; }
     if(y + 14 > LIM){ novaPagina(); doc.setFontSize(7.5); }
     y += 1;
-    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
+    doc.setDrawColor(150,155,160); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
     doc.setFont('helvetica','bold'); doc.setFontSize(8);
     doc.text('TOTAL DO PERÍODO (' + d.itens.length + ' lançamentos)', X.conta, y);
     doc.text(razaoNum(d.total), X.deb, y, {align:'right'});
@@ -3830,16 +3830,16 @@
     doc.text('Período: início a ' + fmtDate(state.relDataFim) + '   |   valores em R$' + (dg.ocultas ? '   |   ' + dg.ocultas + ' conta(s) sem movimento omitida(s)' : ''), 14, y); y += 7;
     const X = { data:12, hist:29, contra:83, deb:148, cred:169, saldo:195 };
     function cabecalhoTabela(){
-      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text('Data', X.data, y); doc.text('Histórico', X.hist, y); doc.text('Contrapartida', X.contra, y);
       doc.text('Débito', X.deb, y, {align:'right'}); doc.text('Crédito', X.cred, y, {align:'right'}); doc.text('Saldo', X.saldo, y, {align:'right'});
       doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
     }
     function novaPagina(){
       doc.addPage();
-      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(226,228,231); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.text('JP CONSULTORIA CONTÁBIL — Livro Razão', 12, 7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
       doc.text(doc.splitTextToSize('Grupo ' + g.codigo + ' ' + g.nome, 80)[0], pageW-12, 7, {align:'right'});
@@ -3852,8 +3852,8 @@
       // faixa da conta (com o título preso ao menos às duas primeiras linhas)
       if(y + 5 + 4.8*3 > LIM){ novaPagina(); }
       y += 1;
-      doc.setFillColor(231,237,244); doc.rect(10, y-3.6, pageW-20, 5, 'F');
-      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(27,58,92);
+      doc.setFillColor(236,236,236); doc.rect(10, y-3.6, pageW-20, 5, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(70,75,80);
       doc.text(doc.splitTextToSize(d.conta.codigo + ' — ' + d.conta.nome, 170)[0], X.data, y);
       doc.setTextColor(20,25,30); y += 5;
       doc.setFontSize(7.5);
@@ -3868,7 +3868,7 @@
         const nl = Math.max(hist.length, contra.length, 1);
         const h = nl*3.6 + 1.6;
         if(y + h > LIM){ novaPagina(); doc.setFontSize(7.5); zebra = false; }
-        if(zebra){ doc.setFillColor(244,247,250); doc.rect(10, y-3.4, pageW-20, h, 'F'); }
+        if(zebra){ doc.setFillColor(246,246,246); doc.rect(10, y-3.4, pageW-20, h, 'F'); }
         zebra = !zebra;
         doc.setTextColor(20,25,30);
         doc.text(fmtDate(r.data), X.data, y);
@@ -3893,8 +3893,8 @@
     // resumo do grupo
     if(y + 14 + dg.contas.length*4.6 > LIM){ novaPagina(); }
     y += 2;
-    doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+    doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+    doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
     doc.text('RESUMO DO GRUPO ' + g.codigo + ' — ' + doc.splitTextToSize(g.nome, 90)[0], X.data, y);
     doc.text('Débitos', X.deb, y, {align:'right'}); doc.text('Créditos', X.cred, y, {align:'right'}); doc.text('Saldo final', X.saldo, y, {align:'right'});
     doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
@@ -3906,7 +3906,7 @@
       y += 4.4;
     });
     if(y + 6 > LIM){ novaPagina(); }
-    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3, pageW-10, y-3);
+    doc.setDrawColor(150,155,160); doc.setLineWidth(0.3); doc.line(10, y-3, pageW-10, y-3);
     doc.setFont('helvetica','bold'); doc.setFontSize(8);
     doc.text('TOTAL DO GRUPO', X.data, y);
     doc.text(razaoNum(dg.tot.deb), X.deb, y, {align:'right'}); doc.text(razaoNum(dg.tot.cred), X.cred, y, {align:'right'});
@@ -3950,16 +3950,16 @@
 
     const X = { data:12, hist:29, contra:83, deb:148, cred:169, saldo:195 };
     function cabecalhoTabela(){
-      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text('Data', X.data, y); doc.text('Histórico', X.hist, y); doc.text('Contrapartida', X.contra, y);
       doc.text('Débito', X.deb, y, {align:'right'}); doc.text('Crédito', X.cred, y, {align:'right'}); doc.text('Saldo', X.saldo, y, {align:'right'});
       doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
     }
     function novaPagina(){
       doc.addPage();
-      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(226,228,231); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.text('JP CONSULTORIA CONTÁBIL — Livro Razão', 12, 7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
       doc.text(doc.splitTextToSize(conta.codigo + ' ' + conta.nome, 80)[0], pageW-12, 7, {align:'right'});
@@ -3983,7 +3983,7 @@
       const nl = Math.max(hist.length, contra.length, 1);
       const h = nl*3.6 + 1.6;
       if(y + h > LIM){ novaPagina(); doc.setFontSize(7.5); zebra = false; }
-      if(zebra){ doc.setFillColor(244,247,250); doc.rect(10, y-3.4, pageW-20, h, 'F'); }
+      if(zebra){ doc.setFillColor(246,246,246); doc.rect(10, y-3.4, pageW-20, h, 'F'); }
       zebra = !zebra;
       doc.setTextColor(20,25,30);
       doc.text(fmtDate(r.data), X.data, y);
@@ -4000,7 +4000,7 @@
     // totais
     if(y + 18 > LIM){ novaPagina(); doc.setFontSize(7.5); }
     y += 1;
-    doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3, pageW-10, y-3);
+    doc.setDrawColor(150,155,160); doc.setLineWidth(0.3); doc.line(10, y-3, pageW-10, y-3);
     doc.setFont('helvetica','bold'); doc.setFontSize(8);
     doc.text('TOTAIS DO PERÍODO', X.hist, y);
     doc.text(razaoNum(dados.totDeb), X.deb, y, {align:'right'});
@@ -4742,7 +4742,7 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4'});
     const pageW = doc.internal.pageSize.getWidth();
-    const x0 = 20, W = 170, xr = x0 + W, azul = [47,84,150];
+    const x0 = 20, W = 170, xr = x0 + W, azul = [80,85,90];
     let y = 24;
     const pagina = (alt)=>{ if(y + alt > 281){ doc.addPage(); y = 22; } };
     const secao = (titulo)=>{
@@ -5303,7 +5303,7 @@
     };
     const tabelaHeader = (cols, y, wTotal)=>{
       doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
-      doc.setFillColor(232,235,240); doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
+      doc.setFillColor(234,234,234); doc.setDrawColor(0,0,0); doc.setLineWidth(0.2);
       let cx = mx;
       cols.forEach(c=>{ doc.rect(cx, y, c.w, 5.5, 'FD'); doc.text(c.label, cx+1.5, y+3.8); cx += c.w; });
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
@@ -7368,7 +7368,7 @@
       const cabecalho = ()=>{
         doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(20,25,30);
         cols.forEach(c=>{
-          doc.setFillColor(232,235,240); doc.rect(c.x0, y, c.wmm, rowH, 'F');
+          doc.setFillColor(234,234,234); doc.rect(c.x0, y, c.wmm, rowH, 'F');
           doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0, y, c.wmm, rowH, 'S');
           doc.text(c.label, c.align==='right' ? c.x0+c.wmm-1.5 : c.x0+1.5, y+rowH-2, c.align ? {align:c.align} : undefined);
         });
@@ -8937,7 +8937,7 @@
     const rowH = 7;
     const wNome = cw*0.55, wArquivo = cw*0.30, wStatus = cw*0.15;
     doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
-    doc.setFillColor(232,235,240);
+    doc.setFillColor(234,234,234);
     [['DOCUMENTO', mx, wNome], ['ARQUIVO', mx+wNome, wArquivo], ['SITUAÇÃO', mx+wNome+wArquivo, wStatus]].forEach(([label,x,w])=>{
       doc.rect(x, y, w, rowH-2, 'F');
       doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(x, y, w, rowH-2, 'S');
@@ -10908,9 +10908,9 @@
     const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
     const M = 14, CW = W - 2*M;
     const cab = ()=>{
-      doc.setFillColor(27,58,92); doc.rect(0,0,W,32,'F');
+      doc.setFillColor(226,228,231); doc.rect(0,0,W,32,'F');
       try{ doc.setFillColor(255,255,255); doc.roundedRect(M, 5, 22, 22, 2, 2, 'F'); doc.addImage(LOGO, 'JPEG', M+1, 6, 20, 20); }catch(e){}
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.text('JP CONSULTORIA CONTÁBIL', M+28, 14);
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.text('JP CONSULTORIA CONTÁBIL', M+28, 14);
       doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.text('Relatório de Declarações Transmitidas', M+28, 21);
       doc.setFontSize(8.5); doc.text('Emitido em ' + new Date().toLocaleString('pt-BR'), M+28, 27);
       doc.setTextColor(20,25,30);
@@ -10928,8 +10928,8 @@
     doc.setTextColor(20,25,30); y += 3;
     const cols = [ {t:'Declaração', x:M+2, w:60}, {t:'Competência', x:M+64, w:24}, {t:'Data e hora da transmissão', x:M+90, w:42}, {t:'Recibo', x:M+134, w:CW-134} ];
     const cabTab = ()=>{
-      doc.setFillColor(232,238,245); doc.rect(M, y, CW, 7, 'F');
-      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(27,58,92);
+      doc.setFillColor(236,236,236); doc.rect(M, y, CW, 7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(70,75,80);
       cols.forEach(c=>doc.text(c.t, c.x, y+4.8));
       doc.setTextColor(20,25,30); y += 9;
     };
@@ -11294,9 +11294,9 @@
     const doc = new window.jspdf.jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
     const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12, CW = W-2*M;
     const cab = ()=>{
-      doc.setFillColor(27,58,92); doc.rect(0,0,W,30,'F');
+      doc.setFillColor(226,228,231); doc.rect(0,0,W,30,'F');
       try{ doc.setFillColor(255,255,255); doc.roundedRect(M, 4, 22, 22, 2, 2, 'F'); doc.addImage(LOGO, 'JPEG', M+1, 5, 20, 20); }catch(e){}
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.text('JP CONSULTORIA CONTÁBIL', M+28, 13);
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.text('JP CONSULTORIA CONTÁBIL', M+28, 13);
       doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.text('Relatório de Impostos das Empresas', M+28, 20);
       doc.setFontSize(8.5); doc.text('Emitido em ' + new Date().toLocaleString('pt-BR'), M+28, 25.5);
       doc.setTextColor(20,25,30);
@@ -11307,7 +11307,7 @@
     doc.text('Imposto: '+(f.imposto||'todos')+'   ·   Tipo: '+(f.esfera||'todos')+'   ·   Ano: '+(f.ano||'todos')+'   ·   Meses: '+(f.meses.length?f.meses.map(m=>MESES_L[parseInt(m,10)-1]).join(', '):'todos'), M, y);
     doc.setTextColor(20,25,30); y += 7;
     const cols = [ {t:'Imposto', x:M+2}, {t:'Tipo', x:M+58}, {t:'Competência', x:M+82}, {t:'Vencimento', x:M+108}, {t:'Valor', x:M+150, right:true, xr:M+176}, {t:'Situação', x:M+182}, {t:'Observação', x:M+206} ];
-    const cabTab = ()=>{ doc.setFillColor(232,238,245); doc.rect(M, y, CW, 7, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(27,58,92);
+    const cabTab = ()=>{ doc.setFillColor(236,236,236); doc.rect(M, y, CW, 7, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(70,75,80);
       cols.forEach(c=>doc.text(c.t, c.right?c.xr:c.x, y+4.8, c.right?{align:'right'}:undefined)); doc.setTextColor(20,25,30); y += 9; };
     const rodape = ()=>{ doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(140,150,160);
       doc.text('JP Consultoria Contábil — valores estimados a partir das notas importadas e do regime cadastrado; confira com as guias oficiais. Vencimentos "a definir" dependem do município/UF.', M, H-8); doc.setTextColor(20,25,30); };
@@ -11345,9 +11345,9 @@
     const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
     const M = 16, CW = W - 2*M;
     // Cabeçalho
-    doc.setFillColor(27,58,92); doc.rect(0,0,W,34,'F');
+    doc.setFillColor(226,228,231); doc.rect(0,0,W,34,'F');
     try{ doc.setFillColor(255,255,255); doc.roundedRect(M, 6, 22, 22, 2, 2, 'F'); doc.addImage(LOGO, 'JPEG', M+1, 7, 20, 20); }catch(e){}
-    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15);
+    doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(15);
     doc.text('JP CONSULTORIA CONTÁBIL', M+28, 14);
     doc.setFont('helvetica','normal'); doc.setFontSize(10);
     doc.text('Comprovante de Entrega — SPED Fiscal (EFD ICMS/IPI)', M+28, 21);
@@ -11360,8 +11360,8 @@
     doc.text('CNPJ ' + (cl.doc||'—') + '   ·   Competência ' + spedCompLabel(comp) + '   ·   ' + (g.retificadora ? 'Escrituração substituta (retificação)' : 'Escrituração original'), M, y); y += 9;
     doc.setTextColor(20,25,30);
     const secao = (titulo)=>{
-      doc.setFillColor(232,238,245); doc.rect(M, y, CW, 7, 'F');
-      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(27,58,92); doc.text(titulo.toUpperCase(), M+3, y+4.9);
+      doc.setFillColor(236,236,236); doc.rect(M, y, CW, 7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(70,75,80); doc.text(titulo.toUpperCase(), M+3, y+4.9);
       doc.setTextColor(20,25,30); y += 11;
     };
     const linha = (k, v, destaque)=>{
@@ -15085,7 +15085,7 @@
       const cabecalho = ()=>{
         doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
         cols.forEach(c=>{
-          doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.wmm,rowH,'F');
+          doc.setFillColor(234,234,234); doc.rect(c.x0,y,c.wmm,rowH,'F');
           doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.wmm,rowH,'S');
           doc.text(c.label, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
         });
@@ -15159,7 +15159,7 @@
       const cols = colunas.map(c=>{ const x0=acc, wmm=cw*c.w; acc+=wmm; return Object.assign({},c,{x0,wmm}); });
       doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       cols.forEach(c=>{
-        doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.wmm,rowH,'F');
+        doc.setFillColor(234,234,234); doc.rect(c.x0,y,c.wmm,rowH,'F');
         doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.wmm,rowH,'S');
         doc.text(c.label, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
       });
@@ -16352,15 +16352,15 @@
     doc.text(d.itens.length + ' lançamento(s)   |   soma dos valores: ' + razaoNum(d.total) + '   |   valores em R$', 14, y); y += 7;
     const X = { data:12, conta:29, deb:195 };
     function cabecalho(){
-      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text('Data', X.data, y); doc.text('Contas / Histórico', X.conta, y); doc.text('Valor', X.deb, y, {align:'right'});
       doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
     }
     function novaPagina(){
       doc.addPage();
-      doc.setFillColor(27,58,92); doc.rect(0, 0, pageW, 17, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(226,228,231); doc.rect(0, 0, pageW, 17, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.text('JP CONSULTORIA CONTÁBIL — Pesquisa na Contabilidade', 12, 7);
       doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
       doc.text(doc.splitTextToSize(c ? c.name : '', 186)[0], 12, 13);
@@ -16368,8 +16368,8 @@
       y = 26; cabecalho();
     }
     if(d.grupos.length){
-      doc.setFillColor(27,58,92); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
-      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.setFillColor(226,228,231); doc.rect(10, y-4.2, pageW-20, 6.4, 'F');
+      doc.setTextColor(35,40,45); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
       doc.text('Totais por fornecedor / cliente', X.data, y);
       doc.text('Lanç.', 130, y, {align:'right'}); doc.text('Débitos', 162, y, {align:'right'}); doc.text('Créditos', X.deb, y, {align:'right'});
       doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); y += 6;
@@ -16404,7 +16404,7 @@
     if(!d.itens.length){ doc.text('Nenhum lançamento encontrado.', X.conta, y); y += 6; }
     if(y + 10 > LIM){ novaPagina(); }
     y += 1;
-    doc.setTextColor(20,25,30); doc.setDrawColor(27,58,92); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
+    doc.setTextColor(20,25,30); doc.setDrawColor(150,155,160); doc.setLineWidth(0.3); doc.line(10, y-3.5, pageW-10, y-3.5);
     doc.setFont('helvetica','bold'); doc.setFontSize(8);
     doc.text('TOTAL (' + d.itens.length + ' lançamentos)', X.conta, y); doc.text(razaoNum(d.total), X.deb, y, {align:'right'});
     pdfFooterDisclaimer(doc, 'Pesquisa gerada a partir dos Lançamentos Contábeis da empresa, com os filtros indicados acima.');
@@ -17124,7 +17124,7 @@
     const cabecalho = ()=>{
       doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
       colsX.forEach(c=>{
-        doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.w,rowH,'F');
+        doc.setFillColor(234,234,234); doc.rect(c.x0,y,c.w,rowH,'F');
         doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.w,rowH,'S');
         doc.text(c.label, c.align==='right'?c.x0+c.w-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
       });
@@ -17507,7 +17507,7 @@
         if(y+rowH > 280){ doc.addPage(); y=15; }
         doc.setFont('helvetica', bold?'bold':'normal'); doc.setFontSize(7.5);
         cx.forEach((c,i)=>{
-          if(fill){ doc.setFillColor(232,235,240); doc.rect(c.x0,y,c.ww,rowH,'F'); }
+          if(fill){ doc.setFillColor(234,234,234); doc.rect(c.x0,y,c.ww,rowH,'F'); }
           doc.setDrawColor(150,150,150); doc.setLineWidth(0.15); doc.rect(c.x0,y,c.ww,rowH,'S');
           const txt = doc.splitTextToSize(String(vals[i]), c.ww-3)[0] || '';
           doc.setTextColor(20,25,30);
