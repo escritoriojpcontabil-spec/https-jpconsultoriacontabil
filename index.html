@@ -18843,7 +18843,7 @@
     {v:'ferias', l:'Férias'},
   ];
   const DOM_STATUS_ENVIO = ['Pendente','Folha lançada no eSocial','Folha encerrada','DAE emitido','DAE pago'];
-  const DOM_PORTAL_URL = 'https://www.gov.br/esocial/pt-br/empregador-domestico';
+  const DOM_PORTAL_URL = 'https://www.esocial.gov.br/portal/Trabalhador/ConsultaDomestico?idTrabalhadorSelecionado=30224715&idContratoSelecionado=44051193483';
 
   async function loadDomestico(){
     const defs = [['domempregadores:','domEmpregadores'],['domempregados:','domEmpregados'],['domlancs:','domLancs'],['domenvios:','domEnvios']];
@@ -18886,6 +18886,7 @@
       {k:'cep', l:'CEP'}, {k:'logradouro', l:'Logradouro (rua, avenida...)'}, {k:'numero', l:'Número'}, {k:'complemento', l:'Complemento'},
       {k:'bairro', l:'Bairro'}, {k:'municipio', l:'Município'}, {k:'uf', l:'UF', t:'select', opts:['']  .concat(DOM_UFS)}, {k:'codigoIbge', l:'Código IBGE do município'},
       {sec:'Acesso ao eSocial'},
+      {k:'govCpf', l:'CPF de acesso ao gov.br', ph:'Se vazio, usa o CPF do empregador'},
       {k:'procurador', l:'Procurador / contador autorizado', ph:'Ex.: JP Consultoria Contábil (procuração eletrônica)'},
       {k:'obs', l:'Observações', t:'textarea'},
     ];
@@ -19248,7 +19249,7 @@
       <div class="attach-box" style="margin:12px 0;">
         <div style="font-weight:700; margin-bottom:8px;">${escapeHtml(titulo)}</div>
         <datalist id="domCboList">${DOM_CBOS.map(c=>`<option value="${escapeHtml(c)}"></option>`).join('')}</datalist>
-        <div id="domFormGrid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px;">${defs.map(c=>domCampoHtml(c, d[c.k])).join('')}</div>
+        <div id="domFormGrid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px;">${defs.map(c=>domCampoHtml(c, d[c.k])).join('')}${f.tipo==='empregador' ? `<div class="field"><label>Senha do gov.br ${d.govSenhaEnc?'(já guardada — preencha só para trocar)':''}</label><input type="password" id="domGovSenha" autocomplete="new-password" placeholder="${d.govSenhaEnc?'••••••••':'Senha do empregador no gov.br'}"/><div class="form-hint" style="margin-top:4px;">Guardada criptografada com a senha mestra do escritório; nunca em texto aberto.</div></div>` : ''}</div>
         <div style="display:flex; gap:8px; margin-top:12px;">
           <button type="button" class="btn-add" id="domSalvarForm">Salvar</button>
           <button type="button" class="btn-sm" id="domCancelarForm">Cancelar</button>
@@ -19260,8 +19261,9 @@
     return `
       <div style="display:flex; justify-content:space-between; align-items:center; margin:10px 0;"><b>Empregadores domésticos</b><button type="button" class="btn-add" data-dom-novo="empregador">+ Novo empregador</button></div>
       ${state.domForm && state.domForm.tipo==='empregador' ? domFormHtml() : ''}
-      ${lista.length ? `<table><thead><tr><th>Empregador</th><th>CPF</th><th>Município/UF</th><th>Empregados</th><th></th></tr></thead><tbody>
+      ${lista.length ? `<table><thead><tr><th>Empregador</th><th>CPF</th><th>Município/UF</th><th>Empregados</th><th>Acesso gov.br</th><th></th></tr></thead><tbody>
         ${lista.map(e=>`<tr><td>${escapeHtml(e.nome)}</td><td>${escapeHtml(formatarCpf(e.cpf))}</td><td>${escapeHtml([e.municipio,e.uf].filter(Boolean).join('/')||'—')}</td><td>${(state.domEmpregados||[]).filter(x=>x.empregadorId===e.id).length}</td>
+          <td>${e.govSenhaEnc ? `<button class="btn-sm" data-dom-acesso="${e.id}">🔑 Ver acesso</button>` : '<span style="font-size:12px;color:var(--ink-soft);">não guardado</span>'}</td>
           <td style="white-space:nowrap;"><button class="btn-sm" data-dom-edit="empregador:${e.id}">Editar</button> <button class="btn-sm" data-dom-del="empregador:${e.id}">Excluir</button></td></tr>`).join('')}
       </tbody></table>` : `<div class="empty">Nenhum empregador cadastrado. Cadastre o empregador doméstico (pessoa física) para começar.</div>`}`;
   }
@@ -19314,7 +19316,7 @@
     }
     return `
       <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin:8px 0;">${domSeletorEmpregador()}
-        <a class="btn-add" href="${DOM_PORTAL_URL}" target="_blank" rel="noopener" style="text-decoration:none; margin-bottom:8px;">Abrir portal do eSocial Doméstico ↗</a></div>
+        <a class="btn-add" href="${DOM_PORTAL_URL}" target="_blank" rel="noopener" style="text-decoration:none; margin-bottom:8px;">Abrir portal do eSocial Doméstico ↗</a>${(domEmpregadorDe(state.domEmpFiltro)||{}).govSenhaEnc ? `<button type="button" class="btn-sm" data-dom-acesso="${state.domEmpFiltro}" style="margin-bottom:8px;">🔑 Acesso gov.br do empregador</button>` : ''}</div>
       <div class="form-hint" style="margin:0 0 10px;"><b>Como funciona o envio:</b> o eSocial Doméstico só recebe a folha pelo portal oficial, com login gov.br do empregador (ou do procurador, por procuração eletrônica). O sistema calcula tudo, gera a <i>Conferência</i> na ordem do portal e a <i>Ficha de admissão</i> de cada empregado; depois de transmitir, use <i>Registrar envio</i> para guardar o protocolo, a data e o pagamento do DAE.</div>
       ${state.domForm && state.domForm.tipo==='envio' ? domFormHtml() : ''}
       ${conteudo}`;
@@ -19396,6 +19398,80 @@
     return r;
   }
 
+  // ---------- acesso do empregador ao eSocial (gov.br) — senha criptografada com a "senha mestra" do escritório ----------
+  // A senha do gov.br nunca é gravada em texto aberto: é cifrada no navegador (AES-256-GCM, chave derivada por PBKDF2)
+  // com uma senha mestra que NÃO é guardada em lugar nenhum. Sem a senha mestra não há como recuperar o acesso.
+  let domMestraSessao = '';
+  const domB64 = (u8)=> btoa(String.fromCharCode.apply(null, Array.from(u8)));
+  const domDeB64 = (s)=> Uint8Array.from(atob(s), c=>c.charCodeAt(0));
+  async function domChave(senha, salt){
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(senha), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:200000, hash:'SHA-256'}, base, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+  }
+  async function domCifrar(texto, senha){
+    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, await domChave(senha, salt), new TextEncoder().encode(texto));
+    return { v:1, salt: domB64(salt), iv: domB64(iv), data: domB64(new Uint8Array(ct)) };
+  }
+  async function domDecifrar(obj, senha){
+    const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv: domDeB64(obj.iv)}, await domChave(senha, domDeB64(obj.salt)), domDeB64(obj.data));
+    return new TextDecoder().decode(pt);
+  }
+  function domDialogo(titulo, corpoHtml, botoes){
+    return new Promise(resolve=>{
+      const bg = document.createElement('div');
+      bg.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:99999; display:flex; align-items:center; justify-content:center; padding:16px;';
+      bg.innerHTML = `<div style="background:#fff; border-radius:12px; padding:20px; max-width:460px; width:100%; box-shadow:0 10px 40px rgba(0,0,0,.3); color:#1c2733;"><div style="font-weight:700; margin-bottom:10px;">${titulo}</div><div>${corpoHtml}</div><div class="domDlgBtns" style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap;"></div></div>`;
+      const area = bg.querySelector('.domDlgBtns');
+      botoes.forEach(b=>{
+        const el = document.createElement('button'); el.type = 'button'; el.className = b.cls || 'btn-sm'; el.textContent = b.txt;
+        el.onclick = ()=>{ const r = b.fn ? b.fn(bg) : undefined; if(r===false) return; if(!b.manter){ bg.remove(); resolve(r===undefined ? b.val : r); } };
+        area.appendChild(el);
+      });
+      document.body.appendChild(bg);
+      const inp = bg.querySelector('input'); if(inp) inp.focus();
+    });
+  }
+  async function domObterMestra(){
+    if(domMestraSessao) return domMestraSessao;
+    let ver = null;
+    try{ const r = await Store.get('domcfg:mestra', true); if(r) ver = JSON.parse(r.value); }catch(e){}
+    const campo = (id, rot)=> `<div class="field" style="margin-bottom:8px;"><label>${rot}</label><input type="password" id="${id}" autocomplete="off" style="width:100%; box-sizing:border-box;"/></div>`;
+    if(!ver){
+      const nova = await domDialogo('Criar a senha mestra do escritório', `<div style="font-size:13px; margin-bottom:10px;">Ela protege as senhas do gov.br guardadas no sistema. <b>Não fica gravada em lugar nenhum — se for esquecida, as senhas guardadas não podem ser recuperadas.</b> Use no mínimo 8 caracteres.</div>${campo('domM1','Senha mestra')}${campo('domM2','Repetir a senha mestra')}`, [
+        {txt:'Cancelar', val:null},
+        {txt:'Criar', cls:'btn-add', fn:(bg)=>{ const a = bg.querySelector('#domM1').value, b = bg.querySelector('#domM2').value; if(a.length < 8){ alert('Use no mínimo 8 caracteres.'); return false; } if(a !== b){ alert('As duas senhas não conferem.'); return false; } return a; }},
+      ]);
+      if(!nova) return null;
+      try{ await Store.set('domcfg:mestra', JSON.stringify(await domCifrar('JP-OK', nova)), true); }catch(e){ alert('Não foi possível salvar a verificação da senha mestra.'); return null; }
+      domMestraSessao = nova; return nova;
+    }
+    for(let tent=0; tent<3; tent++){
+      const s = await domDialogo('Senha mestra do escritório', `<div style="font-size:13px; margin-bottom:10px;">Informe a senha mestra para usar as senhas do gov.br (ela fica na memória só até fechar a página).</div>${campo('domM1','Senha mestra')}`, [
+        {txt:'Cancelar', val:null}, {txt:'OK', cls:'btn-add', fn:(bg)=> bg.querySelector('#domM1').value},
+      ]);
+      if(!s) return null;
+      try{ if(await domDecifrar(ver, s) === 'JP-OK'){ domMestraSessao = s; return s; } }catch(e){}
+      alert('Senha mestra incorreta.');
+    }
+    return null;
+  }
+  async function domMostrarAcesso(empregador){
+    if(!empregador || !empregador.govSenhaEnc) return;
+    const m = await domObterMestra(); if(!m) return;
+    let senha;
+    try{ senha = await domDecifrar(empregador.govSenhaEnc, m); }catch(e){ alert('Não foi possível abrir a senha guardada (senha mestra diferente da usada ao salvar).'); return; }
+    const cpf = formatarCpf(empregador.govCpf || empregador.cpf);
+    const copiar = (t, bt)=>{ try{ navigator.clipboard.writeText(t); const o = bt.textContent; bt.textContent = 'Copiado ✓'; setTimeout(()=>{ bt.textContent = o; }, 1500); }catch(e){ alert('Não foi possível copiar automaticamente.'); } };
+    setTimeout(()=>{ const i = document.getElementById('domAcSenha'); if(i) i.value = senha; }, 30);
+    await domDialogo('Acesso gov.br — ' + escapeHtml(empregador.nome), `<div class="field" style="margin-bottom:8px;"><label>CPF (usuário)</label><input type="text" id="domAcCpf" readonly value="${escapeHtml(cpf)}" style="width:100%; box-sizing:border-box;"/></div><div class="field"><label>Senha</label><input type="password" id="domAcSenha" readonly style="width:100%; box-sizing:border-box;"/></div><div style="font-size:12px; color:#667085; margin-top:8px;">O gov.br pode pedir confirmação em dois fatores (app ou SMS do empregador).</div>`, [
+      {txt:'Copiar CPF', manter:true, fn:(bg)=>{ copiar(cpf.replace(/\D/g,''), bg.querySelectorAll('.domDlgBtns button')[0]); }},
+      {txt:'Mostrar senha', manter:true, fn:(bg)=>{ const i = bg.querySelector('#domAcSenha'); i.type = i.type==='password' ? 'text' : 'password'; }},
+      {txt:'Copiar senha', manter:true, fn:(bg)=>{ copiar(senha, bg.querySelectorAll('.domDlgBtns button')[2]); }},
+      {txt:'Fechar', cls:'btn-add', val:true},
+    ]);
+  }
+
   // ---------- eventos ----------
   function domBind(root){
     if(!root) return;
@@ -19452,6 +19528,7 @@
       if(onlyDigits(cepEl.value).length===8) cepEl.dataset.ult = onlyDigits(cepEl.value);
     }
     const cpfEl = document.getElementById('domf_cpf'); if(cpfEl) cpfEl.onblur = ()=>{ if(validarCpf(cpfEl.value)) cpfEl.value = formatarCpf(cpfEl.value); };
+    root.querySelectorAll('[data-dom-acesso]').forEach(b=> b.onclick = ()=> domMostrarAcesso(domEmpregadorDe(b.getAttribute('data-dom-acesso'))));
     const impPdf = document.getElementById('domImportPdf');
     if(impPdf) impPdf.onchange = async ()=>{
       const arq = impPdf.files[0]; if(!arq) return; impPdf.value = '';
@@ -19483,6 +19560,13 @@
         if(!validarCpf(o.cpf)){ alert('CPF do empregador inválido.'); return; }
         o.cpf = onlyDigits(o.cpf); o.id = f.id || uid();
         if((state.domEmpregadores||[]).some(e=>e.id!==o.id && e.cpf===o.cpf)){ alert('Já existe um empregador com este CPF.'); return; }
+        if(o.govCpf && !validarCpf(o.govCpf)){ alert('CPF de acesso ao gov.br inválido.'); return; }
+        o.govCpf = onlyDigits(o.govCpf);
+        const novaSenha = (document.getElementById('domGovSenha') || {value:''}).value;
+        if(novaSenha){
+          const m = await domObterMestra(); if(!m) return;
+          o.govSenhaEnc = await domCifrar(novaSenha, m);
+        }
         if(await domSalvar('domempregadores:', o)){ state.domForm = null; render(); }
       } else if(f.tipo==='empregado'){
         const o = Object.assign({}, f.data, domColeta(domCamposEmpregado()));
