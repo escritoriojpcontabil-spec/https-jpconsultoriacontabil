@@ -15981,6 +15981,10 @@
     (root||document).querySelectorAll('select').forEach(sel=>{
       if(sel.dataset.busca==='ok' || sel.dataset.nobusca || sel.multiple) return;
       if(sel.options.length < 12) return;
+      // A pesquisa com legenda "Conta escolhida" é do plano de contas (e dos históricos): não aparece em listas de empresas, declarações etc.
+      const comValor = Array.from(sel.options).filter(o=>o.value);
+      const pareceConta = comValor.length && comValor.filter(o=>/\d\.\d{2}/.test(o.textContent)).length >= comValor.length/2;
+      if(!pareceConta && !/hist/i.test(sel.id || '')) return;
       sel.dataset.busca = 'ok';
       const inp = document.createElement('input');
       inp.type = 'search'; inp.className = 'select-busca'; inp.autocomplete = 'off';
