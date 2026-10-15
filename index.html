@@ -704,6 +704,7 @@
     riFiltro: null,
     spedConfigs: [],
     spedGeracoes: [],
+    domEmpregadores: [], domEmpregados: [], domLancs: [], domEnvios: [], domSub: 'empregadores', domEmpFiltro: '', domComp: '', domForm: null,
     spedCompetencia: '',
     spedInputs: {},
     spedModalData: null,
@@ -12512,6 +12513,7 @@
     await loadTiposImpostoCustom();
     await loadObrigacoesAcessorias();
     await loadSpedFiscal();
+    await loadDomestico();
     await loadLivroCfgs();
     await loadDeclaracoesFaturamento();
     await loadRelatoriosFiscais();
@@ -18816,6 +18818,700 @@
     `;
   }
 
+  // =====================================================================================
+  // eSocial Doméstico — cadastro do empregador, cadastro do empregado, recibos (salário, 13º,
+  // férias), cálculo do DAE e controle do envio ao eSocial. Dados em coleções próprias
+  // (domempregadores:, domempregados:, domlancs:, domenvios:), independentes do cadastro de clientes.
+  // A transmissão ao governo é feita no portal oficial do eSocial Doméstico (gov.br ou procuração);
+  // aqui o sistema prepara os dados para conferência/lançamento e registra protocolo e DAE.
+  // =====================================================================================
+  const DOM_ALIQ = { inssPatronal: 8, gilrat: 0.8, fgts: 8, multaFgts: 3.2 };
+  const DOM_UFS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
+  const DOM_CBOS = ['5121-05 — Empregado doméstico nos serviços gerais','5121-10 — Empregado doméstico arrumador','5121-15 — Empregado doméstico faxineiro','5121-20 — Empregado doméstico diarista','7823-10 — Motorista de carro de passeio'];
+  const DOM_SEXO = ['Feminino','Masculino'];
+  const DOM_RACA = ['Branca','Preta','Parda','Amarela','Indígena','Não informado'];
+  const DOM_CIVIL = ['Solteiro(a)','Casado(a)','Divorciado(a)','Separado(a)','Viúvo(a)'];
+  const DOM_INSTRUCAO = ['Analfabeto','Fundamental incompleto','Fundamental completo','Médio incompleto','Médio completo','Superior incompleto','Superior completo','Pós-graduação','Mestrado','Doutorado'];
+  const DOM_TIPOS_LANC = [
+    {v:'salario', l:'Salário mensal'},
+    {v:'13-1', l:'13º salário — 1ª parcela'},
+    {v:'13-2', l:'13º salário — 2ª parcela'},
+    {v:'ferias', l:'Férias'},
+  ];
+  const DOM_STATUS_ENVIO = ['Pendente','Folha lançada no eSocial','Folha encerrada','DAE emitido','DAE pago'];
+  const DOM_PORTAL_URL = 'https://www.gov.br/esocial/pt-br/empregador-domestico';
+
+  async function loadDomestico(){
+    const defs = [['domempregadores:','domEmpregadores'],['domempregados:','domEmpregados'],['domlancs:','domLancs'],['domenvios:','domEnvios']];
+    const novo = {};
+    try{
+      for(const [pref, campo] of defs){
+        novo[campo] = [];
+        const k = await Store.list(pref, true);
+        if(k && k.keys){ for(const key of k.keys){ try{ const r = await Store.get(key, true); if(r) novo[campo].push(JSON.parse(r.value)); }catch(e){} } }
+      }
+    }catch(e){}
+    ['domEmpregadores','domEmpregados','domLancs','domEnvios'].forEach(c=>{ state[c] = novo[c] || []; });
+    state.domEmpregadores.sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
+    state.domEmpregados.sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
+    state.domLancs.sort((a,b)=>(b.competencia||'').localeCompare(a.competencia||'') || (a.empregadoNome||'').localeCompare(b.empregadoNome||''));
+  }
+  async function domSalvar(pref, obj){
+    try{ await Store.set(pref + obj.id, JSON.stringify(obj), true); }
+    catch(e){ alert('Não foi possível salvar.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido')); return false; }
+    await loadDomestico(); return true;
+  }
+  async function domExcluirItem(pref, id){
+    try{ await Store.delete(pref + id, true); }catch(e){}
+    await loadDomestico();
+  }
+  const domEmpregadorDe = (id)=> (state.domEmpregadores||[]).find(x=>x.id===id) || null;
+  const domEmpregadoDe = (id)=> (state.domEmpregados||[]).find(x=>x.id===id) || null;
+  const domCompLabel = (c)=> String(c||'').length>=7 ? c.slice(5,7)+'/'+c.slice(0,4) : '—';
+  const domTipoLabel = (v)=> (DOM_TIPOS_LANC.find(t=>t.v===v)||{l:v}).l;
+  const domEnd = (o)=> [o.logradouro, o.numero, o.complemento, o.bairro].filter(Boolean).join(', ') + (o.municipio ? ' — ' + o.municipio + (o.uf?'/'+o.uf:'') : '') + (o.cep ? ' — CEP ' + o.cep : '');
+
+  // ---------- definições dos formulários ----------
+  function domCamposEmpregador(){
+    return [
+      {sec:'Dados do empregador (pessoa física)'},
+      {k:'nome', l:'Nome completo', req:1}, {k:'cpf', l:'CPF', req:1, ph:'000.000.000-00'},
+      {k:'dataNascimento', l:'Data de nascimento', t:'date'}, {k:'nit', l:'NIT/PIS/PASEP (se houver)'},
+      {k:'telefone', l:'Telefone / WhatsApp'}, {k:'email', l:'E-mail', t:'email'},
+      {sec:'Endereço (local de trabalho do empregado)'},
+      {k:'cep', l:'CEP'}, {k:'logradouro', l:'Logradouro (rua, avenida...)'}, {k:'numero', l:'Número'}, {k:'complemento', l:'Complemento'},
+      {k:'bairro', l:'Bairro'}, {k:'municipio', l:'Município'}, {k:'uf', l:'UF', t:'select', opts:['']  .concat(DOM_UFS)}, {k:'codigoIbge', l:'Código IBGE do município'},
+      {sec:'Acesso ao eSocial'},
+      {k:'procurador', l:'Procurador / contador autorizado', ph:'Ex.: JP Consultoria Contábil (procuração eletrônica)'},
+      {k:'obs', l:'Observações', t:'textarea'},
+    ];
+  }
+  function domCamposEmpregado(){
+    const empregadores = (state.domEmpregadores||[]).map(e=>({v:e.id, l:e.nome}));
+    return [
+      {sec:'Vínculo'},
+      {k:'empregadorId', l:'Empregador', t:'select', opts:[{v:'',l:'— Selecione —'}].concat(empregadores), req:1},
+      {k:'dataAdmissao', l:'Data de admissão', t:'date', req:1},
+      {k:'matricula', l:'Matrícula (eSocial)'},
+      {k:'cbo', l:'CBO / função', list:'domCboList', ph:'5121-05 — Empregado doméstico nos serviços gerais'},
+      {k:'localTrabalho', l:'Local de trabalho (se diferente do endereço do empregador)'},
+      {k:'tipoContrato', l:'Tipo de contrato', t:'select', opts:['Prazo indeterminado','Prazo determinado (experiência/safra)']},
+      {k:'dataTermino', l:'Data de término (se prazo determinado)', t:'date'},
+      {k:'situacao', l:'Situação', t:'select', opts:['Ativo','Desligado']},
+      {k:'dataDesligamento', l:'Data de desligamento', t:'date'},
+      {sec:'Remuneração e jornada'},
+      {k:'salario', l:'Salário mensal (R$)', t:'num', req:1},
+      {k:'jornadaSemanal', l:'Jornada semanal (horas)', t:'num', ph:'44'},
+      {k:'jornadaDescricao', l:'Dias e horário de trabalho', ph:'Seg a sex 08:00–17:00 (1h de intervalo) e sáb 08:00–12:00'},
+      {k:'dependentesIrrf', l:'Dependentes para o IRRF (qtd.)', t:'num'},
+      {k:'formaPagamento', l:'Forma de pagamento', t:'select', opts:['Transferência/PIX','Dinheiro','Cheque']},
+      {k:'chavePix', l:'Chave PIX / conta do empregado'},
+      {k:'vt', l:'Recebe vale-transporte (desconto de até 6% do salário)', t:'check'},
+      {k:'custoVT', l:'Custo mensal do vale-transporte (R$)', t:'num'},
+      {sec:'Dados pessoais (exigidos pelo eSocial)'},
+      {k:'nome', l:'Nome completo', req:1}, {k:'cpf', l:'CPF', req:1, ph:'000.000.000-00'},
+      {k:'nit', l:'NIT/PIS/PASEP'}, {k:'dataNascimento', l:'Data de nascimento', t:'date', req:1},
+      {k:'sexo', l:'Sexo', t:'select', opts:DOM_SEXO}, {k:'racaCor', l:'Raça/cor', t:'select', opts:DOM_RACA},
+      {k:'estadoCivil', l:'Estado civil', t:'select', opts:DOM_CIVIL}, {k:'grauInstrucao', l:'Grau de instrução', t:'select', opts:DOM_INSTRUCAO},
+      {k:'nacionalidade', l:'Nacionalidade', ph:'Brasileira'}, {k:'municipioNasc', l:'Município de nascimento'}, {k:'ufNasc', l:'UF de nascimento', t:'select', opts:[''].concat(DOM_UFS)},
+      {k:'nomeMae', l:'Nome da mãe'}, {k:'nomePai', l:'Nome do pai'},
+      {k:'telefone', l:'Telefone'}, {k:'email', l:'E-mail', t:'email'},
+      {sec:'Documentos'},
+      {k:'ctpsNumero', l:'CTPS (nº) — ou CTPS Digital'}, {k:'ctpsSerie', l:'CTPS (série)'}, {k:'ctpsUf', l:'CTPS (UF)', t:'select', opts:[''].concat(DOM_UFS)},
+      {k:'rg', l:'RG (nº, órgão emissor)'},
+      {sec:'Endereço do empregado'},
+      {k:'cep', l:'CEP'}, {k:'logradouro', l:'Logradouro'}, {k:'numero', l:'Número'}, {k:'complemento', l:'Complemento'},
+      {k:'bairro', l:'Bairro'}, {k:'municipio', l:'Município'}, {k:'uf', l:'UF', t:'select', opts:[''].concat(DOM_UFS)},
+    ];
+  }
+  function domCamposLanc(tipo, d){
+    const emp = (state.domEmpregados||[]).filter(e=>(!state.domEmpFiltro || e.empregadorId===state.domEmpFiltro));
+    const base = [
+      {k:'empregadoId', l:'Empregado', t:'select', opts:[{v:'',l:'— Selecione —'}].concat(emp.map(e=>({v:e.id, l:e.nome}))), req:1},
+      {k:'tipo', l:'Tipo de recibo', t:'select', opts:DOM_TIPOS_LANC},
+      {k:'competencia', l:'Competência', t:'month', req:1},
+      {k:'dataPagamento', l:'Data do pagamento', t:'date'},
+    ];
+    if(tipo==='salario') return base.concat([
+      {k:'faltas', l:'Faltas injustificadas (dias)', t:'num'},
+      {k:'horasExtras', l:'Horas extras (R$)', t:'num'}, {k:'adicionalNoturno', l:'Adicional noturno (R$)', t:'num'},
+      {k:'outrosProventos', l:'Outros proventos (R$)', t:'num'}, {k:'outrosProvDesc', l:'Descrição dos outros proventos'},
+      {k:'descontarVT', l:'Descontar vale-transporte (até 6%)', t:'check'},
+      {k:'adiantamento', l:'Adiantamento já pago (R$)', t:'num'},
+      {k:'outrosDescontos', l:'Outros descontos (R$)', t:'num'}, {k:'outrosDescDesc', l:'Descrição dos outros descontos'},
+    ]);
+    if(tipo==='13-1' || tipo==='13-2') return base.concat([{k:'avos', l:'Avos de 13º (meses trabalhados no ano)', t:'num'}]);
+    return base.concat([
+      {k:'feriasDias', l:'Dias de férias gozados', t:'num'}, {k:'feriasVendidos', l:'Dias vendidos (abono pecuniário, máx. 10)', t:'num'},
+      {k:'feriasInicio', l:'Início do gozo', t:'date'},
+    ]);
+  }
+  function domCampoHtml(c, v){
+    const id = 'domf_' + c.k, val = (v===undefined || v===null) ? '' : v;
+    if(c.sec) return `<div style="grid-column:1/-1; font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin-top:8px;">${escapeHtml(c.sec)}</div>`;
+    const lab = `<label>${escapeHtml(c.l)}${c.req?' *':''}</label>`;
+    if(c.t==='select') return `<div class="field">${lab}<select id="${id}" ${c.k==='tipo'?'data-dom-tipo-sel="1"':''}>${(c.opts||[]).map(o=>{ const ov = typeof o==='object'?o.v:o, ol = typeof o==='object'?o.l:o; return `<option value="${escapeHtml(ov)}" ${String(ov)===String(val)?'selected':''}>${escapeHtml(ol||'—')}</option>`; }).join('')}</select></div>`;
+    if(c.t==='check') return `<div class="field" style="align-self:end;"><label style="display:flex; gap:8px; align-items:center; text-transform:none;"><input type="checkbox" id="${id}" ${val?'checked':''}/> ${escapeHtml(c.l)}</label></div>`;
+    if(c.t==='textarea') return `<div class="field" style="grid-column:1/-1;">${lab}<textarea id="${id}" rows="2">${escapeHtml(val)}</textarea></div>`;
+    const type = c.t==='date'?'date' : c.t==='time'?'time' : c.t==='month'?'month' : c.t==='num'?'number' : c.t==='email'?'email' : 'text';
+    return `<div class="field">${lab}<input type="${type}" id="${id}" value="${escapeHtml(val)}" ${c.t==='num'?'step="0.01" min="0"':''} ${c.ph?`placeholder="${escapeHtml(c.ph)}"`:''} ${c.list?`list="${c.list}"`:''}/></div>`;
+  }
+  function domColeta(defs){
+    const o = {};
+    defs.forEach(c=>{
+      if(c.sec) return;
+      const el = document.getElementById('domf_' + c.k); if(!el) return;
+      o[c.k] = c.t==='check' ? el.checked : String(el.value||'').trim();
+    });
+    return o;
+  }
+  const domNum = (v)=>{ const n = parseFloat(String(v===undefined||v===null?'':v).replace(',','.')); return isNaN(n)?0:n; };
+
+  // ---------- datas ----------
+  const domDiasNoMes = (comp)=>{ const [y,m] = comp.split('-').map(Number); return new Date(y, m, 0).getDate(); };
+  function domAntecipaDiaUtil(iso){
+    const [y,m,d] = iso.split('-').map(Number); const dt = new Date(Date.UTC(y, m-1, d));
+    while(dt.getUTCDay()===0 || dt.getUTCDay()===6) dt.setUTCDate(dt.getUTCDate()-1);
+    return dt.toISOString().slice(0,10);
+  }
+  // Vencimento do DAE: dia 7 do mês seguinte (13º: 20/12), antecipado se cair em fim de semana (feriados não são considerados).
+  function domVencimentoDae(key){
+    const [y,m] = key.split('-');
+    if(m==='13') return domAntecipaDiaUtil(y + '-12-20');
+    let ny = Number(y), nm = Number(m) + 1; if(nm>12){ nm = 1; ny++; }
+    return domAntecipaDiaUtil(ny + '-' + String(nm).padStart(2,'0') + '-07');
+  }
+  function domAvosPadrao(emp, comp){
+    const ano = Number(comp.slice(0,4));
+    let ini = 1, fim = 12;
+    if(emp && emp.dataAdmissao){
+      const [ay,am,ad] = emp.dataAdmissao.split('-').map(Number);
+      if(ay > ano) return 0;
+      if(ay === ano) ini = ad <= 15 ? am : am + 1;
+    }
+    if(emp && emp.dataDesligamento){
+      const [dy,dm,dd] = emp.dataDesligamento.split('-').map(Number);
+      if(dy < ano) return 0;
+      if(dy === ano) fim = dd >= 15 ? dm : dm - 1;
+    }
+    return Math.max(0, Math.min(12, fim - ini + 1));
+  }
+
+  // ---------- cálculo do lançamento ----------
+  function domCalcLanc(l, emp){
+    const comp = l.competencia, tab = tabelaFolhaVigente(comp);
+    const sal = Number(emp.salario)||0, deps = Number(emp.dependentesIrrf)||0;
+    const prov = [], desc = [];
+    let bruto = 0, inss = 0, irrf = 0, liquido = 0, baseEnc = 0, aviso = '';
+    if(l.tipo==='salario'){
+      const dm = domDiasNoMes(comp);
+      let diasProp = dm;
+      if(emp.dataAdmissao && emp.dataAdmissao.slice(0,7) === comp) diasProp = Math.max(0, dm - Number(emp.dataAdmissao.slice(8,10)) + 1);
+      else if(emp.dataAdmissao && emp.dataAdmissao.slice(0,7) > comp) diasProp = 0;
+      if(emp.dataDesligamento && emp.dataDesligamento.slice(0,7) === comp) diasProp = Math.min(diasProp, Number(emp.dataDesligamento.slice(8,10)));
+      const diasBase = diasProp >= dm ? 30 : Math.min(diasProp, 30);
+      const faltas = Math.max(0, domNum(l.faltas));
+      const diasPagos = Math.max(0, diasBase - faltas);
+      const salPago = round2(sal/30 * diasPagos);
+      const he = round2(domNum(l.horasExtras)), an = round2(domNum(l.adicionalNoturno)), op = round2(domNum(l.outrosProventos));
+      prov.push({desc:'Salário (' + diasPagos + ' dias)', valor: salPago});
+      if(he) prov.push({desc:'Horas extras', valor: he});
+      if(an) prov.push({desc:'Adicional noturno', valor: an});
+      if(op) prov.push({desc: l.outrosProvDesc || 'Outros proventos', valor: op});
+      let vt = 0;
+      if(l.descontarVT){ const lim = round2(sal * 0.06); const custo = domNum(emp.custoVT); vt = custo > 0 ? Math.min(lim, custo) : lim; }
+      const adi = round2(domNum(l.adiantamento)), od = round2(domNum(l.outrosDescontos));
+      const f = calcFolha(salPago, he + an + op, deps, vt + adi + od, comp);
+      bruto = f.bruto; inss = f.inss; irrf = f.irrf; liquido = f.liquido; baseEnc = f.bruto;
+      if(inss) desc.push({desc:'INSS do empregado', valor: inss});
+      if(irrf) desc.push({desc:'IRRF', valor: irrf});
+      if(vt) desc.push({desc:'Vale-transporte (até 6%)', valor: round2(vt)});
+      if(adi) desc.push({desc:'Adiantamento', valor: adi});
+      if(od) desc.push({desc: l.outrosDescDesc || 'Outros descontos', valor: od});
+      if(diasProp===0) aviso = 'Empregado sem dias trabalhados na competência (confira admissão/desligamento).';
+    } else if(l.tipo==='13-1' || l.tipo==='13-2'){
+      const avos = l.avos!=='' && l.avos!==undefined ? domNum(l.avos) : domAvosPadrao(emp, comp);
+      const c = calc13Salario(sal, avos, deps, comp);
+      if(l.tipo==='13-1'){
+        prov.push({desc:'13º salário — 1ª parcela (' + avos + '/12)', valor: c.primeiraParcela});
+        bruto = c.primeiraParcela; liquido = c.primeiraParcela; baseEnc = 0;
+      } else {
+        prov.push({desc:'13º salário (' + avos + '/12 avos)', valor: c.totalBruto});
+        desc.push({desc:'Adiantamento — 1ª parcela', valor: c.primeiraParcela});
+        if(c.inss) desc.push({desc:'INSS sobre o 13º', valor: c.inss});
+        if(c.irrf) desc.push({desc:'IRRF sobre o 13º', valor: c.irrf});
+        bruto = c.totalBruto; inss = c.inss; irrf = c.irrf; liquido = c.segundaParcela; baseEnc = c.totalBruto;
+      }
+    } else {
+      const dias = domNum(l.feriasDias) || 30, vend = domNum(l.feriasVendidos);
+      const c = calcFerias(sal, dias, vend, deps, comp);
+      prov.push({desc:'Férias (' + dias + ' dias)', valor: c.valorFeriasGozo});
+      prov.push({desc:'1/3 constitucional de férias', valor: c.tercoGozo});
+      if(vend){ prov.push({desc:'Abono pecuniário (' + vend + ' dias)', valor: c.valorAbono}); prov.push({desc:'1/3 sobre o abono', valor: c.tercoAbono}); }
+      if(c.inss) desc.push({desc:'INSS sobre férias', valor: c.inss});
+      if(c.irrf) desc.push({desc:'IRRF sobre férias', valor: c.irrf});
+      bruto = c.totalBruto; inss = c.inss; irrf = c.irrf; liquido = c.totalLiquido; baseEnc = c.baseTributavel;
+    }
+    const baseInss = Math.min(baseEnc, inssTeto(tab));
+    const enc = {
+      inssPatronal: round2(baseInss * DOM_ALIQ.inssPatronal/100),
+      gilrat: round2(baseInss * DOM_ALIQ.gilrat/100),
+      fgts: round2(baseEnc * DOM_ALIQ.fgts/100),
+      multaFgts: round2(baseEnc * DOM_ALIQ.multaFgts/100),
+    };
+    const dae = round2(inss + enc.inssPatronal + enc.gilrat + enc.fgts + enc.multaFgts);
+    const ano = comp.slice(0,4);
+    const daeKey = l.tipo==='13-1' ? '' : (l.tipo==='13-2' ? ano + '-13' : comp);
+    return { bruto: round2(bruto), inss, irrf, liquido: round2(liquido), proventos: prov, descontos: desc, baseEnc: round2(baseEnc), enc, dae, daeKey, aviso };
+  }
+
+  // ---------- PDFs ----------
+  function domPdfNovo(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return null; }
+    return new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+  }
+  function domDesenharRecibo(doc, l, emp, empregador){
+    const W = doc.internal.pageSize.getWidth(), M = 14, c = l.calc;
+    let y = pdfHeader(doc, 'Recibo de Pagamento — Empregado Doméstico', empregador.nome, '');
+    doc.setTextColor(20,25,30);
+    const campo = (rot, val, x, yy)=>{ doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(110,120,130); doc.text(rot, x, yy); doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(20,25,30); doc.text(String(val||'—'), x, yy+4.6); };
+    doc.setDrawColor(150,155,160); doc.setLineWidth(0.2);
+    doc.rect(M, y-3, W-2*M, 15);
+    campo('EMPREGADOR', empregador.nome, M+3, y+1); campo('CPF', formatarCpf(empregador.cpf), W-M-60, y+1);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,100,110); doc.text(domEnd(empregador) || '', M+3, y+10);
+    y += 17;
+    doc.rect(M, y-3, W-2*M, 21);
+    campo('EMPREGADO(A)', emp.nome, M+3, y+1); campo('CPF', formatarCpf(emp.cpf), W-M-60, y+1);
+    campo('FUNÇÃO / CBO', doc.splitTextToSize(emp.cbo || 'Empregado doméstico', 84)[0], M+3, y+11); campo('ADMISSÃO', fmtDate(emp.dataAdmissao), M+92, y+11); campo('CATEGORIA', '104 — Empregado doméstico', W-M-62, y+11);
+    y += 24;
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
+    doc.text(domTipoLabel(l.tipo) + ' — competência ' + domCompLabel(l.competencia), M, y); y += 5;
+    // tabela
+    doc.setFillColor(30,100,175); doc.rect(M, y-4.2, W-2*M, 6.4, 'F');
+    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('Descrição', M+2, y); doc.text('Proventos (R$)', W-M-48, y, {align:'right'}); doc.text('Descontos (R$)', W-M-2, y, {align:'right'});
+    y += 6; doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    const linhas = c.proventos.map(p=>({d:p.desc, p:p.valor, x:null})).concat(c.descontos.map(p=>({d:p.desc, p:null, x:p.valor})));
+    linhas.forEach((ln,i)=>{
+      if(i%2===0){ doc.setFillColor(246,246,246); doc.rect(M, y-4, W-2*M, 6, 'F'); }
+      doc.setTextColor(20,25,30); doc.text(ln.d, M+2, y);
+      if(ln.p!==null) doc.text(fmtBRL(ln.p).replace('R$','').trim(), W-M-48, y, {align:'right'});
+      if(ln.x!==null) doc.text(fmtBRL(ln.x).replace('R$','').trim(), W-M-2, y, {align:'right'});
+      y += 6;
+    });
+    const totP = round2(c.proventos.reduce((s,p)=>s+p.valor,0)), totD = round2(c.descontos.reduce((s,p)=>s+p.valor,0));
+    doc.setDrawColor(150,155,160); doc.line(M, y-3, W-M, y-3); y += 2;
+    doc.setFont('helvetica','bold'); doc.text('Totais', M+2, y);
+    doc.text(fmtBRL(totP).replace('R$','').trim(), W-M-48, y, {align:'right'}); doc.text(fmtBRL(totD).replace('R$','').trim(), W-M-2, y, {align:'right'});
+    y += 8;
+    doc.setFillColor(236,236,236); doc.rect(M, y-5, W-2*M, 9, 'F');
+    doc.setFontSize(11); doc.text('LÍQUIDO A RECEBER', M+2, y+1); doc.text(fmtBRL(c.liquido), W-M-2, y+1, {align:'right'});
+    y += 13;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    const texto = 'Recebi de ' + empregador.nome + ' a importância líquida de ' + fmtBRL(c.liquido) + ' (' + valorPorExtenso(c.liquido) + '), referente a ' + domTipoLabel(l.tipo).toLowerCase() + ' da competência ' + domCompLabel(l.competencia) + ', dando plena quitação das parcelas discriminadas neste recibo.';
+    const linhasTxt = doc.splitTextToSize(texto, W-2*M);
+    doc.text(linhasTxt, M, y); y += linhasTxt.length*4.6 + 4;
+    doc.text('Forma de pagamento: ' + (emp.formaPagamento || '—') + (emp.chavePix ? ' (' + emp.chavePix + ')' : '') + (l.dataPagamento ? '   |   Data do pagamento: ' + fmtDate(l.dataPagamento) : ''), M, y); y += 14;
+    doc.setDrawColor(120,130,140);
+    doc.line(M+4, y, M+82, y); doc.line(W-M-82, y, W-M-4, y);
+    doc.setFontSize(8.5); doc.setFont('helvetica','bold');
+    doc.text('Empregador', M+43, y+4.5, {align:'center'}); doc.text('Empregado(a)', W-M-43, y+4.5, {align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,100,110);
+    doc.text(empregador.nome, M+43, y+9, {align:'center'}); doc.text(emp.nome, W-M-43, y+9, {align:'center'});
+    y += 18;
+    if(c.baseEnc > 0 || c.inss > 0){
+      doc.setDrawColor(200,205,210); doc.rect(M, y-3, W-2*M, 26);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(60,70,80); doc.text('Encargos do empregador (informativo — recolhidos no DAE; não descontados do empregado)', M+3, y+1.5);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+      const e = c.enc;
+      doc.text('Base de cálculo: ' + fmtBRL(c.baseEnc), M+3, y+7);
+      doc.text('INSS patronal (8%): ' + fmtBRL(e.inssPatronal) + '    Seguro acidente/GILRAT (0,8%): ' + fmtBRL(e.gilrat), M+3, y+12);
+      doc.text('FGTS (8%): ' + fmtBRL(e.fgts) + '    FGTS — indenização compensatória (3,2%): ' + fmtBRL(e.multaFgts), M+3, y+17);
+      doc.setFont('helvetica','bold'); doc.text('DAE estimado (INSS empregado + encargos): ' + fmtBRL(c.dae), M+3, y+22);
+    }
+    pdfFooterDisclaimer(doc, 'Recibo emitido por JP Consultoria Contábil a partir dos dados informados pelo empregador. Cálculo conforme LC 150/2015 e tabelas vigentes do INSS/IRRF; o valor oficial do DAE é o apurado pelo eSocial Doméstico.');
+  }
+  function domRecibosPdf(lancs){
+    const doc = domPdfNovo(); if(!doc) return null;
+    lancs.forEach((l,i)=>{
+      const emp = domEmpregadoDe(l.empregadoId), empregador = emp ? domEmpregadorDe(emp.empregadorId) : null;
+      if(!emp || !empregador) return;
+      if(i>0) doc.addPage();
+      domDesenharRecibo(doc, l, emp, empregador);
+    });
+    return doc;
+  }
+  function domCampoLinhas(doc, y, titulo, pares){
+    const W = doc.internal.pageSize.getWidth(), M = 14, colW = (W-2*M)/2;
+    if(y > 262){ doc.addPage(); y = 20; }
+    doc.setFillColor(30,100,175); doc.rect(M, y-4.2, W-2*M, 6.4, 'F');
+    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text(titulo, M+2, y);
+    y += 8;
+    for(let i=0; i<pares.length; i+=2){
+      if(y > 276){ doc.addPage(); y = 20; }
+      [pares[i], pares[i+1]].forEach((p,j)=>{
+        if(!p) return;
+        const x = M + 2 + j*colW;
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(110,120,130); doc.text(p[0], x, y);
+        doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+        doc.text(doc.splitTextToSize(String(p[1]||'—'), colW-6)[0], x, y+4.5);
+      });
+      y += 10.5;
+    }
+    return y + 2;
+  }
+  function domFichaPdf(emp, empregador){
+    const doc = domPdfNovo(); if(!doc) return null;
+    let y = pdfHeader(doc, 'Ficha de Admissão — eSocial Doméstico', emp.nome, '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,100,110);
+    doc.text('Dados organizados na ordem do cadastro do empregado no portal do eSocial Doméstico, para conferência e lançamento.', 14, y); y += 8;
+    y = domCampoLinhas(doc, y, 'Empregador', [['Nome', empregador.nome], ['CPF', formatarCpf(empregador.cpf)], ['Data de nascimento', fmtDate(empregador.dataNascimento)], ['NIT/PIS', empregador.nit], ['Endereço', domEnd(empregador)], ['E-mail / telefone', [empregador.email, empregador.telefone].filter(Boolean).join(' / ')]]);
+    y = domCampoLinhas(doc, y, 'Dados pessoais do empregado', [['Nome completo', emp.nome], ['CPF', formatarCpf(emp.cpf)], ['NIT/PIS/PASEP', emp.nit], ['Data de nascimento', fmtDate(emp.dataNascimento)], ['Sexo', emp.sexo], ['Raça/cor', emp.racaCor], ['Estado civil', emp.estadoCivil], ['Grau de instrução', emp.grauInstrucao], ['Nacionalidade', emp.nacionalidade || 'Brasileira'], ['Naturalidade', [emp.municipioNasc, emp.ufNasc].filter(Boolean).join('/')], ['Nome da mãe', emp.nomeMae], ['Nome do pai', emp.nomePai], ['Telefone', emp.telefone], ['E-mail', emp.email]]);
+    y = domCampoLinhas(doc, y, 'Documentos e endereço', [['CTPS', [emp.ctpsNumero, emp.ctpsSerie && ('série ' + emp.ctpsSerie), emp.ctpsUf].filter(Boolean).join(' / ')], ['RG', emp.rg], ['Endereço', domEnd(emp)]]);
+    y = domCampoLinhas(doc, y, 'Contrato de trabalho', [['Categoria', '104 — Empregado doméstico'], ['Data de admissão', fmtDate(emp.dataAdmissao)], ['CBO / função', emp.cbo || '5121-05 — Empregado doméstico nos serviços gerais'], ['Tipo de contrato', emp.tipoContrato + (emp.dataTermino ? ' até ' + fmtDate(emp.dataTermino) : '')], ['Salário mensal', fmtBRL(emp.salario)], ['Jornada semanal', (emp.jornadaSemanal || '44') + ' horas'], ['Dias e horário', emp.jornadaDescricao], ['Matrícula', emp.matricula], ['Local de trabalho', emp.localTrabalho || 'Mesmo endereço do empregador'], ['Dependentes (IRRF)', String(emp.dependentesIrrf || 0)], ['Vale-transporte', emp.vt ? 'Sim' + (emp.custoVT ? ' — custo ' + fmtBRL(emp.custoVT) : '') : 'Não'], ['Forma de pagamento', emp.formaPagamento]]);
+    const pend = [];
+    if(!emp.nit) pend.push('NIT/PIS não informado'); if(!emp.nomeMae) pend.push('nome da mãe'); if(!emp.cbo) pend.push('CBO'); if(!emp.cep) pend.push('endereço do empregado'); if(!emp.ctpsNumero) pend.push('CTPS');
+    if(pend.length){ doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(178,59,59); doc.text('Pendências de cadastro: ' + pend.join(', ') + '.', 14, Math.min(y+2, 280)); }
+    pdfFooterDisclaimer(doc, 'Ficha de conferência para lançamento da admissão no eSocial Doméstico. A transmissão é feita pelo empregador (ou procurador) no portal oficial do eSocial.');
+    return doc;
+  }
+  function domAgruparEnvio(empregadorId){
+    const grupos = {};
+    (state.domLancs||[]).forEach(l=>{
+      if(l.empregadorId !== empregadorId || !l.calc) return;
+      const k = l.calc.daeKey || l.competencia; // 13-1 sem DAE: fica na própria competência, só para conferência
+      (grupos[k] = grupos[k] || []).push(l);
+    });
+    return grupos;
+  }
+  function domResumoDae(lancs){
+    const r = {inss:0, inssPatronal:0, gilrat:0, fgts:0, multaFgts:0, irrf:0, bruto:0, liquido:0, dae:0};
+    lancs.forEach(l=>{ const c = l.calc; r.inss += c.inss; r.irrf += c.irrf; r.inssPatronal += c.enc.inssPatronal; r.gilrat += c.enc.gilrat; r.fgts += c.enc.fgts; r.multaFgts += c.enc.multaFgts; r.bruto += c.bruto; r.liquido += c.liquido; r.dae += c.dae; });
+    Object.keys(r).forEach(k=> r[k] = round2(r[k]));
+    return r;
+  }
+  function domConferenciaPdf(empregador, key, lancs){
+    const doc = domPdfNovo(); if(!doc) return null;
+    const W = doc.internal.pageSize.getWidth(), M = 14, r = domResumoDae(lancs);
+    const is13 = key.endsWith('-13');
+    let y = pdfHeader(doc, 'Conferência para o eSocial Doméstico — ' + (is13 ? '13º salário ' + key.slice(0,4) : 'competência ' + domCompLabel(key)), empregador.nome, '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,100,110);
+    doc.text('CPF do empregador: ' + formatarCpf(empregador.cpf), M, y); y += 7;
+    doc.setFillColor(30,100,175); doc.rect(M, y-4.2, W-2*M, 6.4, 'F'); doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    const cx = [M+2, M+62, M+86, M+120, M+141, W-M-2];
+    doc.text('Empregado', cx[0], y); doc.text('Recibo', cx[1], y); doc.text('Bruto', cx[2]+18, y, {align:'right'}); doc.text('INSS', cx[3]+10, y, {align:'right'}); doc.text('IRRF', cx[4]+10, y, {align:'right'}); doc.text('Líquido', cx[5], y, {align:'right'});
+    y += 6; doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    lancs.forEach((l,i)=>{
+      if(y > 270){ doc.addPage(); y = 20; }
+      if(i%2===0){ doc.setFillColor(246,246,246); doc.rect(M, y-4, W-2*M, 6, 'F'); }
+      doc.setTextColor(20,25,30);
+      doc.text(doc.splitTextToSize(l.empregadoNome || '—', 58)[0], cx[0], y); doc.text(domTipoLabel(l.tipo).replace(' salário',''), cx[1], y);
+      doc.text(fmtBRL(l.calc.bruto).replace('R$','').trim(), cx[2]+18, y, {align:'right'}); doc.text(fmtBRL(l.calc.inss).replace('R$','').trim(), cx[3]+10, y, {align:'right'});
+      doc.text(fmtBRL(l.calc.irrf).replace('R$','').trim(), cx[4]+10, y, {align:'right'}); doc.text(fmtBRL(l.calc.liquido).replace('R$','').trim(), cx[5], y, {align:'right'});
+      y += 6;
+    });
+    y += 4;
+    doc.setFillColor(30,100,175); doc.rect(M, y-4.2, W-2*M, 6.4, 'F'); doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Composição estimada do DAE', M+2, y); y += 7;
+    doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    [['INSS do empregado (descontado no recibo)', r.inss], ['INSS patronal (8%)', r.inssPatronal], ['Seguro contra acidentes — GILRAT (0,8%)', r.gilrat], ['FGTS (8%)', r.fgts], ['FGTS — indenização compensatória (3,2%)', r.multaFgts]].forEach(([d,v])=>{ doc.text(d, M+2, y); doc.text(fmtBRL(v), W-M-2, y, {align:'right'}); y += 5.6; });
+    doc.setFont('helvetica','bold'); doc.setDrawColor(150,155,160); doc.line(M, y-3.5, W-M, y-3.5); doc.text('Total do DAE (estimado)', M+2, y+1); doc.text(fmtBRL(r.dae), W-M-2, y+1, {align:'right'}); y += 6;
+    doc.setFont('helvetica','normal'); doc.text('Vencimento: ' + fmtDate(domVencimentoDae(key)) + ' (antecipado se não for dia útil)', M+2, y+1); y += 7;
+    if(r.irrf > 0){ doc.setFontSize(8.5); doc.setTextColor(178,59,59); doc.text('IRRF retido: ' + fmtBRL(r.irrf) + ' — confira no eSocial a forma de recolhimento (não compõe o DAE estimado acima).', M+2, y); y += 7; }
+    doc.setTextColor(20,25,30); doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text('Passos no portal do eSocial Doméstico', M, y); y += 5.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    ['1. Acesse o portal do eSocial Doméstico (conta gov.br ou como procurador do empregador).', '2. Em Folha de pagamento, selecione a competência e informe a remuneração de cada empregado, conforme a tabela acima.', '3. Lance horas extras, faltas e afastamentos, quando houver, e confira o cálculo apresentado pelo portal.', '4. Encerre a folha e emita o DAE; compare o valor com a estimativa acima (o valor oficial é o do portal).', '5. Pague o DAE até o vencimento e registre aqui no sistema o número do recibo, a data do envio e o pagamento.'].forEach(s=>{ const ls = doc.splitTextToSize(s, W-2*M-4); doc.text(ls, M+2, y); y += ls.length*4.4 + 1; });
+    pdfFooterDisclaimer(doc, 'Valores calculados pelo sistema para conferência. O envio e a emissão oficial do DAE são feitos exclusivamente no eSocial Doméstico.');
+    return doc;
+  }
+
+  // ---------- telas ----------
+  function domTagEnvio(st){ const cls = st==='DAE pago' ? 'sit-ativa' : (st==='Pendente' ? 'sit-pendente' : 'sit-outra'); return `<span class="tag ${cls}">${escapeHtml(st||'Pendente')}</span>`; }
+  function domFormHtml(){
+    const f = state.domForm; if(!f) return '';
+    let defs, titulo;
+    if(f.tipo==='empregador'){ defs = domCamposEmpregador(); titulo = f.id ? 'Editar empregador' : 'Novo empregador'; }
+    else if(f.tipo==='empregado'){ defs = domCamposEmpregado(); titulo = f.id ? 'Editar empregado' : 'Novo empregado'; }
+    else if(f.tipo==='lanc'){ defs = domCamposLanc(f.data.tipo || 'salario'); titulo = f.id ? 'Editar lançamento / recibo' : 'Novo lançamento / recibo'; }
+    else { defs = [
+        {k:'status', l:'Situação do envio', t:'select', opts:DOM_STATUS_ENVIO},
+        {k:'protocolo', l:'Nº do recibo / protocolo do eSocial'},
+        {k:'dataEnvio', l:'Data do envio', t:'date'}, {k:'horaEnvio', l:'Hora do envio', t:'time'},
+        {k:'daeValor', l:'Valor oficial do DAE (R$)', t:'num'}, {k:'daePagoEm', l:'DAE pago em', t:'date'},
+        {k:'obs', l:'Observações', t:'textarea'},
+      ]; titulo = 'Registro do envio — ' + (f.key.endsWith('-13') ? '13º salário ' + f.key.slice(0,4) : domCompLabel(f.key)); }
+    const d = f.data || {};
+    return `
+      <div class="attach-box" style="margin:12px 0;">
+        <div style="font-weight:700; margin-bottom:8px;">${escapeHtml(titulo)}</div>
+        <datalist id="domCboList">${DOM_CBOS.map(c=>`<option value="${escapeHtml(c)}"></option>`).join('')}</datalist>
+        <div id="domFormGrid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px;">${defs.map(c=>domCampoHtml(c, d[c.k])).join('')}</div>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button type="button" class="btn-add" id="domSalvarForm">Salvar</button>
+          <button type="button" class="btn-sm" id="domCancelarForm">Cancelar</button>
+        </div>
+      </div>`;
+  }
+  function domPainelEmpregadores(){
+    const lista = state.domEmpregadores || [];
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin:10px 0;"><b>Empregadores domésticos</b><button type="button" class="btn-add" data-dom-novo="empregador">+ Novo empregador</button></div>
+      ${state.domForm && state.domForm.tipo==='empregador' ? domFormHtml() : ''}
+      ${lista.length ? `<table><thead><tr><th>Empregador</th><th>CPF</th><th>Município/UF</th><th>Empregados</th><th></th></tr></thead><tbody>
+        ${lista.map(e=>`<tr><td>${escapeHtml(e.nome)}</td><td>${escapeHtml(formatarCpf(e.cpf))}</td><td>${escapeHtml([e.municipio,e.uf].filter(Boolean).join('/')||'—')}</td><td>${(state.domEmpregados||[]).filter(x=>x.empregadorId===e.id).length}</td>
+          <td style="white-space:nowrap;"><button class="btn-sm" data-dom-edit="empregador:${e.id}">Editar</button> <button class="btn-sm" data-dom-del="empregador:${e.id}">Excluir</button></td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">Nenhum empregador cadastrado. Cadastre o empregador doméstico (pessoa física) para começar.</div>`}`;
+  }
+  function domSeletorEmpregador(){
+    const lista = state.domEmpregadores || [];
+    return `<div class="field" style="max-width:360px; margin:8px 0;"><label>Empregador</label><select id="domEmpFiltro"><option value="">— Todos —</option>${lista.map(e=>`<option value="${e.id}" ${state.domEmpFiltro===e.id?'selected':''}>${escapeHtml(e.nome)}</option>`).join('')}</select></div>`;
+  }
+  function domPainelEmpregados(){
+    const lista = (state.domEmpregados||[]).filter(e=>!state.domEmpFiltro || e.empregadorId===state.domEmpFiltro);
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:end; margin:10px 0; flex-wrap:wrap; gap:8px;">${domSeletorEmpregador()}<div style="display:flex; gap:8px; align-items:center;"><label class="btn-sm" style="cursor:pointer;" title="Lê o PDF 'Dados Cadastrais e Contratuais do Trabalhador' baixado do portal do eSocial Doméstico">⬆ Importar do eSocial (PDF)<input type="file" id="domImportPdf" accept=".pdf,application/pdf" style="display:none;"/></label><button type="button" class="btn-add" data-dom-novo="empregado" ${(state.domEmpregadores||[]).length?'':'disabled'}>+ Novo empregado</button></div></div>
+      ${!(state.domEmpregadores||[]).length ? '<div class="empty">Cadastre primeiro um empregador.</div>' : ''}
+      ${state.domForm && state.domForm.tipo==='empregado' ? domFormHtml() : ''}
+      ${lista.length ? `<table><thead><tr><th>Empregado</th><th>CPF</th><th>Empregador</th><th>Admissão</th><th>Salário</th><th>Situação</th><th></th></tr></thead><tbody>
+        ${lista.map(e=>`<tr><td>${escapeHtml(e.nome)}</td><td>${escapeHtml(formatarCpf(e.cpf))}</td><td>${escapeHtml((domEmpregadorDe(e.empregadorId)||{}).nome||'—')}</td><td>${e.dataAdmissao?fmtDate(e.dataAdmissao):'—'}</td><td>${fmtBRL(e.salario)}</td><td>${escapeHtml(e.situacao||'Ativo')}</td>
+          <td style="white-space:nowrap;"><button class="btn-sm" data-dom-edit="empregado:${e.id}">Editar</button> <button class="btn-sm" data-dom-ficha="${e.id}">Ficha eSocial (PDF)</button> <button class="btn-sm" data-dom-del="empregado:${e.id}">Excluir</button></td></tr>`).join('')}
+      </tbody></table>` : (state.domEmpregadores||[]).length ? `<div class="empty">Nenhum empregado cadastrado${state.domEmpFiltro?' para este empregador':''}.</div>` : ''}`;
+  }
+  function domLancsFiltrados(){
+    return (state.domLancs||[]).filter(l=>(!state.domEmpFiltro || l.empregadorId===state.domEmpFiltro) && (!state.domComp || l.competencia===state.domComp));
+  }
+  function domPainelRecibos(){
+    const lista = domLancsFiltrados();
+    return `
+      <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin:8px 0;">
+        ${domSeletorEmpregador()}
+        <div class="field" style="margin:8px 0;"><label>Competência</label><input type="month" id="domCompSel" value="${escapeHtml(state.domComp||'')}"/></div>
+        <button type="button" class="btn-add" data-dom-novo="lanc" ${(state.domEmpregados||[]).length?'':'disabled'}>+ Novo recibo</button>
+        <button type="button" class="btn-sm" id="domGerarFolha" ${state.domEmpFiltro && state.domComp ? '' : 'disabled'} title="Cria o salário mensal de todos os empregados ativos do empregador na competência">Gerar folha do mês</button>
+      </div>
+      ${!(state.domEmpregados||[]).length ? '<div class="empty">Cadastre empregador e empregado antes de gerar recibos.</div>' : ''}
+      ${state.domForm && state.domForm.tipo==='lanc' ? domFormHtml() : ''}
+      ${lista.length ? `<div style="margin:8px 0; display:flex; gap:8px;"><button type="button" class="btn-sm" id="domTodosRecibos">Todos os recibos listados (PDF)</button><button type="button" class="btn-sm" id="domTodosRecibosImp">🖨 Imprimir todos</button></div>
+      <table><thead><tr><th>Empregado</th><th>Recibo</th><th>Competência</th><th>Bruto</th><th>Descontos</th><th>Líquido</th><th></th></tr></thead><tbody>
+        ${lista.map(l=>`<tr><td>${escapeHtml(l.empregadoNome||'—')}</td><td>${escapeHtml(domTipoLabel(l.tipo))}</td><td>${domCompLabel(l.competencia)}</td><td>${fmtBRL(l.calc.bruto)}</td><td>${fmtBRL(round2(l.calc.descontos.reduce((s,p)=>s+p.valor,0)))}</td><td><b>${fmtBRL(l.calc.liquido)}</b></td>
+          <td style="white-space:nowrap;"><button class="btn-sm" data-dom-recibo="${l.id}">Recibo (PDF)</button> <button class="btn-sm" data-dom-imprimir="${l.id}">🖨 Imprimir</button> <button class="btn-sm" data-dom-edit="lanc:${l.id}">Editar</button> <button class="btn-sm" data-dom-del="lanc:${l.id}">Excluir</button></td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">Nenhum recibo${state.domComp?' em '+domCompLabel(state.domComp):''}. Use "Gerar folha do mês" ou "+ Novo recibo".</div>`}`;
+  }
+  function domPainelEnvio(){
+    const empId = state.domEmpFiltro;
+    let conteudo = '';
+    if(!empId){ conteudo = '<div class="empty">Selecione um empregador para ver as competências a enviar ao eSocial.</div>'; }
+    else {
+      const grupos = domAgruparEnvio(empId), chaves = Object.keys(grupos).sort().reverse();
+      conteudo = chaves.length ? `<table><thead><tr><th>Competência</th><th>Recibos</th><th>Remuneração</th><th>DAE estimado</th><th>Vencimento</th><th>Situação</th><th>Protocolo eSocial</th><th></th></tr></thead><tbody>
+        ${chaves.map(k=>{ const r = domResumoDae(grupos[k]); const env = (state.domEnvios||[]).find(x=>x.id===empId+'_'+k) || {}; const is13 = k.endsWith('-13');
+          return `<tr><td>${is13 ? '13º salário '+k.slice(0,4) : domCompLabel(k)}</td><td>${grupos[k].length}</td><td>${fmtBRL(r.bruto)}</td><td><b>${fmtBRL(r.dae)}</b></td><td>${fmtDate(domVencimentoDae(k))}</td><td>${domTagEnvio(env.status)}</td><td>${escapeHtml(env.protocolo||'—')}</td>
+          <td style="white-space:nowrap;"><button class="btn-sm" data-dom-env-conf="${k}">Conferência (PDF)</button> <button class="btn-sm" data-dom-env-imp="${k}">🖨</button> <button class="btn-sm" data-dom-env-abrir="${k}">Registrar envio</button></td></tr>`; }).join('')}
+      </tbody></table>` : '<div class="empty">Nenhum recibo lançado para este empregador ainda.</div>';
+    }
+    return `
+      <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin:8px 0;">${domSeletorEmpregador()}
+        <a class="btn-add" href="${DOM_PORTAL_URL}" target="_blank" rel="noopener" style="text-decoration:none; margin-bottom:8px;">Abrir portal do eSocial Doméstico ↗</a></div>
+      <div class="form-hint" style="margin:0 0 10px;"><b>Como funciona o envio:</b> o eSocial Doméstico só recebe a folha pelo portal oficial, com login gov.br do empregador (ou do procurador, por procuração eletrônica). O sistema calcula tudo, gera a <i>Conferência</i> na ordem do portal e a <i>Ficha de admissão</i> de cada empregado; depois de transmitir, use <i>Registrar envio</i> para guardar o protocolo, a data e o pagamento do DAE.</div>
+      ${state.domForm && state.domForm.tipo==='envio' ? domFormHtml() : ''}
+      ${conteudo}`;
+  }
+  function esocialDomesticoPanelHtml(){
+    const sub = state.domSub || 'empregadores';
+    const abas = [['empregadores','Empregadores'],['empregados','Empregados'],['recibos','Recibos'],['envio','Envio ao eSocial']];
+    return `
+      <div class="panel-head"><h3>eSocial Doméstico</h3></div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Cadastro do empregador e dos empregados domésticos, recibos de salário, 13º e férias (LC 150/2015), cálculo do DAE (INSS, FGTS e encargos) e controle do envio ao eSocial. Esta aba é independente da seleção de clientes do topo da página.</div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">${abas.map(([k,l])=>`<button type="button" class="btn-sm" data-dom-sub="${k}" style="${sub===k?'background:var(--navy); color:#fff; border-color:var(--navy);':''}">${l}</button>`).join('')}</div>
+      ${sub==='empregadores' ? domPainelEmpregadores() : sub==='empregados' ? domPainelEmpregados() : sub==='recibos' ? domPainelRecibos() : domPainelEnvio()}`;
+  }
+
+  // ---------- importação do PDF "Dados Cadastrais e Contratuais do Trabalhador" (portal do eSocial Doméstico) ----------
+  const DOM_UF_NOMES = {'acre':'AC','alagoas':'AL','amapá':'AP','amazonas':'AM','bahia':'BA','ceará':'CE','distrito federal':'DF','espírito santo':'ES','goiás':'GO','maranhão':'MA','mato grosso':'MT','mato grosso do sul':'MS','minas gerais':'MG','pará':'PA','paraíba':'PB','paraná':'PR','pernambuco':'PE','piauí':'PI','rio de janeiro':'RJ','rio grande do norte':'RN','rio grande do sul':'RS','rondônia':'RO','roraima':'RR','santa catarina':'SC','são paulo':'SP','sergipe':'SE','tocantins':'TO'};
+  async function domPdfCelulas(file){
+    if(!window.pdfjsLib) throw new Error('A biblioteca de leitura de PDF ainda não carregou. Tente novamente em instantes.');
+    const pdf = await window.pdfjsLib.getDocument({data: await file.arrayBuffer()}).promise;
+    const cells = [];
+    for(let i=1; i<=pdf.numPages; i++){
+      const content = await (await pdf.getPage(i)).getTextContent();
+      content.items.forEach(it=>{ const s = String(it.str||'').trim(); if(s) cells.push(s); });
+    }
+    return cells;
+  }
+  function domParseVinculo(cells){
+    const idx = (txt, from)=>{ for(let i=from||0; i<cells.length; i++) if(cells[i]===txt) return i; return -1; };
+    const val = (label, from)=>{ const i = idx(label, from); if(i<0 || i+1>=cells.length) return ''; const v = cells[i+1]; return v==='-' ? '' : v; };
+    const dataIso = (s)=>{ const m = String(s||'').match(/(\d{2})\/(\d{2})\/(\d{4})/); return m ? m[3]+'-'+m[2]+'-'+m[1] : ''; };
+    const iEmpregador = idx('EMPREGADOR:'), iEmpregado = idx('EMPREGADO:');
+    if(iEmpregado < 0) return null;
+    const r = { empregador:{ nome: val('Nome:', iEmpregador), cpf: onlyDigits(val('CPF:', iEmpregador)) }, emp:{} };
+    const e = r.emp;
+    e.nome = val('Nome:', iEmpregado); e.cpf = onlyDigits(val('CPF:', iEmpregado));
+    e.matricula = val('Matrícula:', iEmpregado); e.dataNascimento = dataIso(val('Data de Nascimento:', iEmpregado));
+    e.situacao = /ativo/i.test(val('Situação:', iEmpregado)) ? 'Ativo' : (val('Situação:', iEmpregado) ? 'Desligado' : 'Ativo');
+    const iC = Math.max(0, idx('DADOS CONTRATUAIS'));
+    e.dataAdmissao = dataIso(val('Data de Admissão', iC)) || dataIso(val('Data da Admissão:', iEmpregado));
+    const tc = val('Tipo de Contrato de Trabalho', iC);
+    e.tipoContrato = /^2/.test(tc) || /determinado/i.test(tc) && !/indeterminado/i.test(tc) ? 'Prazo determinado (experiência/safra)' : 'Prazo indeterminado';
+    e.dataTermino = dataIso(val('Data do Término', iC));
+    e.cbo = val('Cargo', iC);
+    const sal = val('Salário Base', iC); e.salario = sal ? parseFloat(sal.replace(/\./g,'').replace(',','.')) : '';
+    const iLocal = idx('Local de Trabalho', iC);
+    if(iLocal >= 0 && /^n[aã]o/i.test(val('Mesmo endereço residencial do empregador', iLocal))){
+      const j = idx('CEP', iLocal);
+      e.localTrabalho = [ [val('Tipo', j), val('Logradouro', j)].filter(Boolean).join(' '), val('Número', j), val('Bairro/Distrito', j) ].filter(Boolean).join(', ') + ' — ' + val('Município', j) + '/' + (DOM_UF_NOMES[val('UF', j).toLowerCase()] || val('UF', j)) + ' — CEP ' + val('CEP', iLocal);
+    }
+    const iJ = idx('Jornada de Trabalho', iC);
+    if(iJ >= 0){
+      const h = parseInt(val('Quantidade Média de Horas Jornada Semanal', iJ), 10); if(h) e.jornadaSemanal = h;
+      const dias = []; for(let i=iJ; i<cells.length; i++){ const m = cells[i].match(/^(Segunda|Terça|Quarta|Quinta|Sexta)-feira - (.*?)\.?$|^(Sábado|Domingo) - (.*?)\.?$/); if(m) dias.push({d: m[1]||m[3], t: m[2]||m[4]}); }
+      if(dias.length){
+        const uni = dias.every(x=>x.t===dias[0].t);
+        const nome = (x)=> x.d.length > 7 ? x.d + '-feira' : x.d;
+        e.jornadaDescricao = uni ? (dias.length>1 ? nome(dias[0]) + ' a ' + nome(dias[dias.length-1]) : nome(dias[0])) + ' — ' + dias[0].t : dias.map(x=>nome(x)+': '+x.t).join('; ');
+        if(!e.jornadaSemanal){ e.jornadaSemanal = dias.reduce((s,x)=>{ const m = x.t.match(/(\d+)\s*h/); return s + (m ? Number(m[1]) : 0); }, 0) || ''; }
+      }
+    }
+    const iD = Math.max(0, idx('DADOS CADASTRAIS'));
+    e.sexo = val('Sexo', iD);
+    e.racaCor = val('Raça', iD);
+    const ec = val('Estado Civil', iD).toLowerCase(); e.estadoCivil = DOM_CIVIL.find(o=> ec && o.toLowerCase().startsWith(ec.slice(0,5))) || '';
+    const gi = val('Grau de Instrução', iD).toLowerCase(); const inc = /incompleto/.test(gi);
+    e.grauInstrucao = /analfabeto/.test(gi) ? 'Analfabeto' : /fundamental/.test(gi) ? (inc ? 'Fundamental incompleto' : 'Fundamental completo') : /m[eé]dio/.test(gi) ? (inc ? 'Médio incompleto' : 'Médio completo') : /superior/.test(gi) ? (inc ? 'Superior incompleto' : 'Superior completo') : /mestrado/.test(gi) ? 'Mestrado' : /doutorado/.test(gi) ? 'Doutorado' : /p[óo]s/.test(gi) ? 'Pós-graduação' : '';
+    const nac = val('País de Nacionalidade', iD); e.nacionalidade = /brasil/i.test(nac) ? 'Brasileira' : nac;
+    const tel = val('Telefone Fixo', iD); if(/\d/.test(tel)) e.telefone = tel;
+    const em = val('E-mail', iD); if(/@/.test(em)) e.email = em;
+    const iR = idx('Endereço de Residência do Trabalhador', iD);
+    if(iR >= 0){
+      e.cep = val('CEP', iR); e.logradouro = [val('Tipo', iR), val('Logradouro', iR)].filter(Boolean).join(' '); e.numero = val('Número', iR);
+      e.complemento = val('Complemento', iR); e.bairro = val('Bairro/Distrito', iR); e.municipio = val('Município', iR);
+      const uf = val('UF', iR); e.uf = DOM_UF_NOMES[uf.toLowerCase()] || (uf.length===2 ? uf.toUpperCase() : '');
+    }
+    const iDep = idx('Relação de Dependentes');
+    r.temDependentes = iDep >= 0 && cells[iDep+1] && !/n[aã]o informado/i.test(cells[iDep+1]) && !/^Este relat/i.test(cells[iDep+1]);
+    Object.keys(e).forEach(k=>{ if(e[k]==='' || e[k]===undefined) delete e[k]; });
+    return r;
+  }
+
+  // ---------- eventos ----------
+  function domBind(root){
+    if(!root) return;
+    root.querySelectorAll('[data-dom-sub]').forEach(b=> b.onclick = ()=>{ state.domSub = b.getAttribute('data-dom-sub'); state.domForm = null; render(); });
+    const fil = document.getElementById('domEmpFiltro'); if(fil) fil.onchange = ()=>{ state.domEmpFiltro = fil.value; state.domForm = null; render(); };
+    const cs = document.getElementById('domCompSel'); if(cs) cs.onchange = ()=>{ state.domComp = cs.value; render(); };
+    root.querySelectorAll('[data-dom-novo]').forEach(b=> b.onclick = ()=>{
+      const t = b.getAttribute('data-dom-novo');
+      if(t==='empregador') state.domForm = {tipo:'empregador', data:{}};
+      else if(t==='empregado') state.domForm = {tipo:'empregado', data:{empregadorId: state.domEmpFiltro || '', nacionalidade:'Brasileira', tipoContrato:'Prazo indeterminado', situacao:'Ativo', jornadaSemanal:44, formaPagamento:'Transferência/PIX', cbo: DOM_CBOS[0]}};
+      else state.domForm = {tipo:'lanc', data:{tipo:'salario', competencia: state.domComp || todayStr().slice(0,7)}};
+      render();
+    });
+    root.querySelectorAll('[data-dom-edit]').forEach(b=> b.onclick = ()=>{
+      const [t,id] = b.getAttribute('data-dom-edit').split(':');
+      const fonte = t==='empregador' ? domEmpregadorDe(id) : t==='empregado' ? domEmpregadoDe(id) : (state.domLancs||[]).find(x=>x.id===id);
+      if(!fonte) return; state.domForm = {tipo:t, id, data:Object.assign({}, fonte)}; render();
+    });
+    root.querySelectorAll('[data-dom-del]').forEach(b=> b.onclick = async ()=>{
+      const [t,id] = b.getAttribute('data-dom-del').split(':');
+      if(t==='empregador' && (state.domEmpregados||[]).some(e=>e.empregadorId===id)){ alert('Este empregador possui empregados cadastrados. Exclua os empregados antes.'); return; }
+      if(!confirm('Excluir este registro? Esta ação não pode ser desfeita.')) return;
+      await domExcluirItem(t==='empregador'?'domempregadores:' : t==='empregado'?'domempregados:' : 'domlancs:', id); render();
+    });
+    const impPdf = document.getElementById('domImportPdf');
+    if(impPdf) impPdf.onchange = async ()=>{
+      const arq = impPdf.files[0]; if(!arq) return; impPdf.value = '';
+      let cells; try{ cells = await domPdfCelulas(arq); }catch(e){ alert(e && e.message ? e.message : 'Não foi possível ler o PDF.'); return; }
+      const r = domParseVinculo(cells);
+      if(!r || !r.emp.cpf){ alert('Não reconheci este PDF como "Dados Cadastrais e Contratuais do Trabalhador" do eSocial Doméstico. Baixe o relatório do empregado no portal e tente de novo.'); return; }
+      let empregador = (state.domEmpregadores||[]).find(x=>x.cpf===r.empregador.cpf);
+      if(!empregador){
+        if(!r.empregador.cpf || !confirm('O empregador ' + r.empregador.nome + ' (CPF ' + formatarCpf(r.empregador.cpf) + ') ainda não está cadastrado. Cadastrar agora com nome e CPF? (O endereço você completa depois.)')) return;
+        empregador = {id: uid(), nome: r.empregador.nome, cpf: r.empregador.cpf};
+        if(!(await domSalvar('domempregadores:', empregador))) return;
+      }
+      const existente = (state.domEmpregados||[]).find(x=>x.empregadorId===empregador.id && x.cpf===r.emp.cpf);
+      const data = Object.assign({formaPagamento:'Transferência/PIX', jornadaSemanal:44}, existente||{}, r.emp, {empregadorId: empregador.id});
+      state.domSub = 'empregados'; state.domEmpFiltro = empregador.id;
+      state.domForm = {tipo:'empregado', id: existente ? existente.id : undefined, data};
+      render();
+      setTimeout(()=> alert('Dados lidos do eSocial para ' + r.emp.nome + (existente ? ' (cadastro já existente: campos atualizados)' : '') + '.\n\nConfira e complete o que o relatório não traz: NIT/PIS, nome da mãe, CTPS, RG, dependentes do IRRF, vale-transporte e forma de pagamento.' + (r.temDependentes ? '\n\nAtenção: o relatório informa dependentes — lance a quantidade para o IRRF.' : '') + '\n\nDepois clique em Salvar.'), 80);
+    };
+    const cancel = document.getElementById('domCancelarForm'); if(cancel) cancel.onclick = ()=>{ state.domForm = null; render(); };
+    const tipoSel = document.querySelector('[data-dom-tipo-sel]');
+    if(tipoSel) tipoSel.onchange = ()=>{ const f = state.domForm; f.data = Object.assign({}, f.data, domColeta(domCamposLanc(f.data.tipo || 'salario')), {tipo: tipoSel.value}); render(); };
+    const salvar = document.getElementById('domSalvarForm');
+    if(salvar) salvar.onclick = async ()=>{
+      const f = state.domForm; if(!f) return;
+      if(f.tipo==='empregador'){
+        const o = Object.assign({}, f.data, domColeta(domCamposEmpregador()));
+        if(!o.nome){ alert('Informe o nome do empregador.'); return; }
+        if(!validarCpf(o.cpf)){ alert('CPF do empregador inválido.'); return; }
+        o.cpf = onlyDigits(o.cpf); o.id = f.id || uid();
+        if((state.domEmpregadores||[]).some(e=>e.id!==o.id && e.cpf===o.cpf)){ alert('Já existe um empregador com este CPF.'); return; }
+        if(await domSalvar('domempregadores:', o)){ state.domForm = null; render(); }
+      } else if(f.tipo==='empregado'){
+        const o = Object.assign({}, f.data, domColeta(domCamposEmpregado()));
+        if(!o.empregadorId){ alert('Selecione o empregador.'); return; }
+        if(!o.nome){ alert('Informe o nome do empregado.'); return; }
+        if(!validarCpf(o.cpf)){ alert('CPF do empregado inválido.'); return; }
+        if(!o.dataAdmissao){ alert('Informe a data de admissão.'); return; }
+        o.salario = domNum(o.salario); o.dependentesIrrf = Math.round(domNum(o.dependentesIrrf)); o.custoVT = domNum(o.custoVT); o.jornadaSemanal = domNum(o.jornadaSemanal) || 44;
+        if(!(o.salario > 0)){ alert('Informe o salário mensal.'); return; }
+        const minimoProp = round2(SALARIO_MINIMO_2026 * Math.min(1, o.jornadaSemanal/44));
+        if(o.salario < minimoProp && !confirm('O salário informado é menor que o mínimo' + (o.jornadaSemanal<44 ? ' proporcional à jornada de ' + o.jornadaSemanal + 'h' : '') + ' (' + fmtBRL(minimoProp) + '). Salvar assim mesmo?')) return;
+        o.cpf = onlyDigits(o.cpf); const emp = domEmpregadorDe(o.empregadorId);
+        if(emp && emp.cpf === o.cpf){ alert('O CPF do empregado não pode ser o mesmo do empregador.'); return; }
+        o.id = f.id || uid();
+        if((state.domEmpregados||[]).some(e=>e.id!==o.id && e.cpf===o.cpf && e.empregadorId===o.empregadorId)){ alert('Este CPF já está cadastrado para este empregador.'); return; }
+        if(await domSalvar('domempregados:', o)){ state.domForm = null; state.domEmpFiltro = o.empregadorId; render(); }
+      } else if(f.tipo==='lanc'){
+        const o = Object.assign({}, f.data, domColeta(domCamposLanc(f.data.tipo || 'salario')));
+        const emp = domEmpregadoDe(o.empregadoId);
+        if(!emp){ alert('Selecione o empregado.'); return; }
+        if(!/^\d{4}-\d{2}$/.test(o.competencia||'')){ alert('Informe a competência.'); return; }
+        o.empregadorId = emp.empregadorId; o.empregadoNome = emp.nome;
+        o.id = o.empregadoId + '_' + o.competencia + '_' + o.tipo;
+        if(f.id && f.id !== o.id) await domExcluirItem('domlancs:', f.id);
+        o.calc = domCalcLanc(o, emp);
+        if(o.calc.aviso && !confirm(o.calc.aviso + '\n\nSalvar assim mesmo?')) return;
+        if(await domSalvar('domlancs:', o)){ state.domForm = null; state.domComp = o.competencia; state.domEmpFiltro = o.empregadorId; render(); }
+      } else {
+        const defs = [{k:'status'},{k:'protocolo'},{k:'dataEnvio'},{k:'horaEnvio'},{k:'daeValor',t:'num'},{k:'daePagoEm'},{k:'obs'}];
+        const o = Object.assign({}, f.data, domColeta(defs)); o.id = state.domEmpFiltro + '_' + f.key; o.empregadorId = state.domEmpFiltro; o.chave = f.key;
+        if(await domSalvar('domenvios:', o)){ state.domForm = null; render(); }
+      }
+    };
+    const gerar = document.getElementById('domGerarFolha');
+    if(gerar) gerar.onclick = async ()=>{
+      const empId = state.domEmpFiltro, comp = state.domComp; if(!empId || !comp) return;
+      const ativos = (state.domEmpregados||[]).filter(e=>e.empregadorId===empId && (e.situacao||'Ativo')==='Ativo' && (e.dataAdmissao||'').slice(0,7) <= comp);
+      if(!ativos.length){ alert('Nenhum empregado ativo neste empregador para a competência.'); return; }
+      let n = 0;
+      for(const e of ativos){
+        const id = e.id + '_' + comp + '_salario';
+        if((state.domLancs||[]).some(x=>x.id===id)) continue;
+        const l = {id, empregadorId: empId, empregadoId: e.id, empregadoNome: e.nome, competencia: comp, tipo:'salario', descontarVT: !!e.vt, faltas:'', horasExtras:'', adicionalNoturno:'', outrosProventos:'', adiantamento:'', outrosDescontos:''};
+        l.calc = domCalcLanc(l, e);
+        await Store.set('domlancs:' + id, JSON.stringify(l), true); n++;
+      }
+      await loadDomestico(); render();
+      alert(n ? n + ' recibo(s) de salário criado(s). Revise faltas, horas extras e descontos em "Editar" antes de imprimir.' : 'Todos os empregados já têm recibo de salário nesta competência.');
+    };
+    const baixar = (doc, nome, imprimir)=>{ if(!doc) return; if(imprimir) imprimirRelatorio(()=>pdfSalvar(doc, nome)); else pdfSalvar(doc, nome); };
+    root.querySelectorAll('[data-dom-recibo]').forEach(b=> b.onclick = ()=>{ const l = (state.domLancs||[]).find(x=>x.id===b.getAttribute('data-dom-recibo')); if(l) baixar(domRecibosPdf([l]), 'recibo-domestico-' + l.competencia + '-' + String(l.empregadoNome||'').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf', false); });
+    root.querySelectorAll('[data-dom-imprimir]').forEach(b=> b.onclick = ()=>{ const l = (state.domLancs||[]).find(x=>x.id===b.getAttribute('data-dom-imprimir')); if(l) baixar(domRecibosPdf([l]), 'recibo-domestico.pdf', true); });
+    const todos = document.getElementById('domTodosRecibos'); if(todos) todos.onclick = ()=> baixar(domRecibosPdf(domLancsFiltrados()), 'recibos-domesticos-' + (state.domComp||'todos') + '.pdf', false);
+    const todosI = document.getElementById('domTodosRecibosImp'); if(todosI) todosI.onclick = ()=> baixar(domRecibosPdf(domLancsFiltrados()), 'recibos-domesticos.pdf', true);
+    root.querySelectorAll('[data-dom-ficha]').forEach(b=> b.onclick = ()=>{ const e = domEmpregadoDe(b.getAttribute('data-dom-ficha')); const emp = e && domEmpregadorDe(e.empregadorId); if(e && emp) baixar(domFichaPdf(e, emp), 'ficha-admissao-esocial-' + String(e.nome).replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf', false); });
+    const confPdf = (k, imp)=>{ const emp = domEmpregadorDe(state.domEmpFiltro); const g = domAgruparEnvio(state.domEmpFiltro)[k]; if(emp && g) baixar(domConferenciaPdf(emp, k, g), 'conferencia-esocial-domestico-' + k + '.pdf', imp); };
+    root.querySelectorAll('[data-dom-env-conf]').forEach(b=> b.onclick = ()=> confPdf(b.getAttribute('data-dom-env-conf'), false));
+    root.querySelectorAll('[data-dom-env-imp]').forEach(b=> b.onclick = ()=> confPdf(b.getAttribute('data-dom-env-imp'), true));
+    root.querySelectorAll('[data-dom-env-abrir]').forEach(b=> b.onclick = ()=>{
+      const k = b.getAttribute('data-dom-env-abrir'); const env = (state.domEnvios||[]).find(x=>x.id===state.domEmpFiltro+'_'+k) || {status:'Pendente'};
+      const g = domAgruparEnvio(state.domEmpFiltro)[k] || []; const r = domResumoDae(g);
+      state.domForm = {tipo:'envio', key:k, data:Object.assign({daeValor: r.dae}, env)}; render();
+    });
+  }
+
   const DP_TABS = [
     {k:'funcionarios', label:'Funcionários'},
     {k:'folha', label:'Contracheques / Folha Individual'},
@@ -18827,6 +19523,7 @@
     {k:'relatorios', label:'Relatórios'},
     {k:'central-recibos', label:'Central Arquivística de Recibos'},
     {k:'esocial', label:'eSocial'},
+    {k:'esocial-dom', label:'eSocial Doméstico'},
     {k:'informe-rendimentos', label:'Informe de Rendimentos'},
     {k:'sindicatos', label:'Sindicatos & CCT'},
     {k:'fichas', label:'Fichas & Contratos CLT/PF'},
@@ -18847,6 +19544,7 @@
     else if(state.dpTab==='relatorios') tabContent = relatoriosTabHtml();
     else if(state.dpTab==='central-recibos') tabContent = centralArquivisticaRecibosPanelHtml();
     else if(state.dpTab==='esocial') tabContent = esocialPanelHtml();
+    else if(state.dpTab==='esocial-dom') tabContent = esocialDomesticoPanelHtml();
     else if(state.dpTab==='informe-rendimentos') tabContent = informeRendimentosPanelHtml();
     else if(state.dpTab==='sindicatos') tabContent = sindicatosPanelHtml();
     else if(state.dpTab==='fichas') tabContent = fichasContratosTabHtml();
@@ -22225,6 +22923,8 @@
       state.spedCompetencia = b.getAttribute('data-sped-abrir'); render();
       setTimeout(()=>{ const el=document.getElementById('spedStatus'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); }, 60);
     });
+
+    domBind(root);
 
     // ===== Declaração de Faturamento =====
     const novaDeclaracaoBtn = document.getElementById('novaDeclaracaoBtn');
