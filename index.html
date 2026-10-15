@@ -18950,7 +18950,7 @@
     const id = 'domf_' + c.k, val = (v===undefined || v===null) ? '' : v;
     if(c.sec) return `<div style="grid-column:1/-1; font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin-top:8px;">${escapeHtml(c.sec)}</div>`;
     const lab = `<label>${escapeHtml(c.l)}${c.req?' *':''}</label>`;
-    if(c.t==='select') return `<div class="field">${lab}<select id="${id}" ${c.k==='tipo'?'data-dom-tipo-sel="1"':''}>${(c.opts||[]).map(o=>{ const ov = typeof o==='object'?o.v:o, ol = typeof o==='object'?o.l:o; return `<option value="${escapeHtml(ov)}" ${String(ov)===String(val)?'selected':''}>${escapeHtml(ol||'—')}</option>`; }).join('')}</select></div>`;
+    if(c.t==='select') return `<div class="field">${lab}<select id="${id}" data-nobusca="1" ${c.k==='tipo'?'data-dom-tipo-sel="1"':''}>${(c.opts||[]).map(o=>{ const ov = typeof o==='object'?o.v:o, ol = typeof o==='object'?o.l:o; return `<option value="${escapeHtml(ov)}" ${String(ov)===String(val)?'selected':''}>${escapeHtml(ol||'—')}</option>`; }).join('')}</select></div>`;
     if(c.t==='check') return `<div class="field" style="align-self:end;"><label style="display:flex; gap:8px; align-items:center; text-transform:none;"><input type="checkbox" id="${id}" ${val?'checked':''}/> ${escapeHtml(c.l)}</label></div>`;
     if(c.t==='textarea') return `<div class="field" style="grid-column:1/-1;">${lab}<textarea id="${id}" rows="2">${escapeHtml(val)}</textarea></div>`;
     const type = c.t==='date'?'date' : c.t==='time'?'time' : c.t==='month'?'month' : c.t==='num'?'number' : c.t==='email'?'email' : 'text';
@@ -19416,6 +19416,38 @@
       if(!confirm('Excluir este registro? Esta ação não pode ser desfeita.')) return;
       await domExcluirItem(t==='empregador'?'domempregadores:' : t==='empregado'?'domempregados:' : 'domlancs:', id); render();
     });
+    // CEP: máscara e preenchimento automático do endereço (ViaCEP; BrasilAPI como alternativa)
+    const cepEl = document.getElementById('domf_cep');
+    if(cepEl){
+      const msg = document.createElement('div'); msg.className = 'form-hint'; msg.style.cssText = 'margin-top:4px; min-height:14px;'; cepEl.parentNode.appendChild(msg);
+      const setv = (k, v)=>{ const el = document.getElementById('domf_' + k); if(el && v) el.value = v; };
+      const buscar = async ()=>{
+        const d = onlyDigits(cepEl.value);
+        if(d.length !== 8 || cepEl.dataset.ult === d) return;
+        cepEl.dataset.ult = d; msg.textContent = 'Buscando endereço…';
+        let r = null;
+        try{
+          const resp = await fetch('https://viacep.com.br/ws/' + d + '/json/');
+          const j = resp.ok ? await resp.json() : null;
+          if(j && !j.erro) r = {logradouro:j.logradouro, bairro:j.bairro, municipio:j.localidade, uf:j.uf, ibge:j.ibge};
+        }catch(e){}
+        if(!r){
+          try{
+            const resp = await fetch('https://brasilapi.com.br/api/cep/v2/' + d);
+            const j = resp.ok ? await resp.json() : null;
+            if(j && j.city) r = {logradouro:j.street, bairro:j.neighborhood, municipio:j.city, uf:j.state, ibge:''};
+          }catch(e){}
+        }
+        if(!r){ msg.textContent = 'CEP não encontrado ou sem conexão — preencha o endereço manualmente.'; return; }
+        setv('logradouro', r.logradouro); setv('bairro', r.bairro); setv('municipio', r.municipio); setv('uf', r.uf); setv('codigoIbge', r.ibge);
+        msg.textContent = 'Endereço preenchido pelo CEP. Complete o número e o complemento.';
+        const n = document.getElementById('domf_numero'); if(n) n.focus();
+      };
+      cepEl.oninput = ()=>{ cepEl.value = cepFmt(cepEl.value); buscar(); };
+      cepEl.onblur = buscar;
+      if(onlyDigits(cepEl.value).length===8) cepEl.dataset.ult = onlyDigits(cepEl.value);
+    }
+    const cpfEl = document.getElementById('domf_cpf'); if(cpfEl) cpfEl.onblur = ()=>{ if(validarCpf(cpfEl.value)) cpfEl.value = formatarCpf(cpfEl.value); };
     const impPdf = document.getElementById('domImportPdf');
     if(impPdf) impPdf.onchange = async ()=>{
       const arq = impPdf.files[0]; if(!arq) return; impPdf.value = '';
