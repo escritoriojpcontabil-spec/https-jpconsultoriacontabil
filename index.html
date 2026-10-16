@@ -1832,6 +1832,19 @@
     modoImpressao = true;
     try{ acao(); } finally { modoImpressao = false; }
   }
+  // Abas/botões de seção de todos os departamentos: ordem alfabética, lado a lado (linha que quebra para a seguinte).
+  // "Todos/Todas" (filtros) ficam sempre no início; símbolos/emojis no começo do rótulo são ignorados na ordenação.
+  function ordenarAbasAlfabeticamente(root){
+    const chave = (b)=> (b.textContent||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/^[^A-Za-z0-9]+/,'').toLowerCase();
+    root.querySelectorAll('.dp-tabs, .dept-tabs').forEach(box=>{
+      const botoes = Array.from(box.children).filter(el=>el.tagName==='BUTTON');
+      if(botoes.length < 2 || botoes.length !== box.children.length) return;
+      const fixo = (b)=> /^\s*todos?\b|^\s*todas?\b/i.test(b.textContent||'') ? 0 : 1;
+      const ordenados = botoes.slice().sort((a,b)=> fixo(a)-fixo(b) || chave(a).localeCompare(chave(b), 'pt-BR', {numeric:true}));
+      if(ordenados.every((b,i)=>b===botoes[i])) return;
+      ordenados.forEach(b=>box.appendChild(b));
+    });
+  }
   function adicionarBotoesImprimir(root){
     (root||document).querySelectorAll('button[id^="pdf"]').forEach(btn=>{
       if(!/^pdf\w*Btn\d*$/.test(btn.id)) return;
@@ -26049,6 +26062,7 @@
     if(lcCancel) lcCancel.onclick = ()=>{ state.modal=null; state.lancContabilModalData=null; render(); };
     aplicarBuscaSelects(root);
     if(state.view==='depto-contabil') setTimeout(reduzidosTodas, 400);
+    ordenarAbasAlfabeticamente(root);
     adicionarBotoesImprimir(root);
     if(document.getElementById('pqTexto')) pesqLigar();
     if(document.getElementById('tcDe')) tcLigar();
