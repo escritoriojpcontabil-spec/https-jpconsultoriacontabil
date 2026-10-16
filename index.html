@@ -318,7 +318,8 @@
   .portal-links{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;}
 
   /* ---------- DP - PESSOAL (FOLHA, FÉRIAS, RESCISÃO) ---------- */
-  .dp-tabs{display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap;}
+  .dp-tabs{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-bottom:18px;max-width:480px;}
+  .dp-tabs .dp-tab-btn{text-align:left;}
   .dp-tab-btn{padding:9px 15px;border-radius:9px;border:1.5px solid var(--line);background:#fff;font-size:12.5px;font-weight:700;cursor:pointer;color:var(--ink-soft);transition:all .15s;}
   .dp-tab-btn:hover{border-color:var(--gold);}
   .dp-tab-btn.active{background:var(--navy);border-color:var(--navy);color:#fff;}
@@ -358,7 +359,8 @@
   .spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(15,39,64,.25);border-top-color:var(--navy-deep);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;}
   @keyframes spin{to{transform:rotate(360deg);}}
 
-  .dept-tabs{display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap;}
+  .dept-tabs{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-bottom:20px;max-width:480px;}
+  .dept-tabs .dept-tab-btn{text-align:left;}
   .dept-tab-btn{padding:9px 16px;border-radius:9px;border:1.5px solid var(--line);background:#fff;font-size:13px;font-weight:700;cursor:pointer;color:var(--ink-soft);transition:all .15s;}
   .dept-tab-btn:hover{border-color:var(--gold);}
   .dept-tab-btn.active{background:var(--navy);border-color:var(--navy);color:#fff;}
@@ -1832,7 +1834,7 @@
     modoImpressao = true;
     try{ acao(); } finally { modoImpressao = false; }
   }
-  // Abas/botões de seção de todos os departamentos: ordem alfabética, lado a lado (linha que quebra para a seguinte).
+  // Abas/botões de seção de todos os departamentos: ordem alfabética, em coluna (um abaixo do outro).
   // "Todos/Todas" (filtros) ficam sempre no início; símbolos/emojis no começo do rótulo são ignorados na ordenação.
   function ordenarAbasAlfabeticamente(root){
     const chave = (b)=> (b.textContent||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/^[^A-Za-z0-9]+/,'').toLowerCase();
@@ -14152,6 +14154,7 @@
     if(state.user.role==='admin'){
       navItems.push({k:'admin', label:'Administração', subtitle:'Usuários do sistema', icon:ICONS.admin});
     }
+    navItems.sort((a,b)=> a.label.localeCompare(b.label, 'pt-BR'));
     return `
       <div class="sidebar">
         <div class="sb-brand"><img src="${LOGO}"/><div class="t">JP CONSULTORIA<span>Contábil</span></div></div>
