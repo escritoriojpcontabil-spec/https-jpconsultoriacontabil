@@ -653,6 +653,10 @@
     reciboHonorarioModalData: null,
     produtosMonofasicos: [],
     icmsAntecipado: [],
+    esocialEmp: [],
+    esocialEventos: [],
+    eseCompetencia: '',
+    eseDtPgto: '',
     iaCompetencia: '',
     iaNotaModalData: null,
     ncmMonofasicoCustom: [],
@@ -988,12 +992,12 @@
     'Médio completo', 'Superior incompleto', 'Superior completo', 'Pós-graduação/Mestrado/Doutorado',
   ];
   const ESOCIAL_CATEGORIA = [
-    {codigo:'101', label:'101 — Empregado CLT geral'},
-    {codigo:'102', label:'102 — Empregado doméstico'},
-    {codigo:'103', label:'103 — Empregado rural'},
-    {codigo:'104', label:'104 — Aprendiz'},
-    {codigo:'111', label:'111 — Empregado CLT prazo determinado'},
-    {codigo:'721', label:'721 — Trabalhador avulso'},
+    {codigo:'101', label:'101 — Empregado — geral (CLT)'},
+    {codigo:'102', label:'102 — Empregado — trabalhador rural por pequeno prazo'},
+    {codigo:'103', label:'103 — Empregado — aprendiz'},
+    {codigo:'105', label:'105 — Empregado — contrato a termo (Lei 9.601/98)'},
+    {codigo:'106', label:'106 — Trabalhador temporário (Lei 6.019/74)'},
+    {codigo:'111', label:'111 — Empregado — contrato de trabalho intermitente'},
   ];
   const ESOCIAL_TIPO_CONTRATO = ['Prazo indeterminado', 'Prazo determinado', 'Aprendizagem', 'Temporário'];
 
@@ -12368,6 +12372,126 @@
     }catch(e){}
     state.funcionarios.sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
   }
+  // ================= Importação dos empregados registrados no eSocial (empresas) =================
+  // Aceita: XML do evento S-2200 (admissão) baixado do eSocial — avulso ou dentro de um ZIP — e o PDF
+  // "Dados Cadastrais e Contratuais do Trabalhador". Cria o funcionário (ou atualiza, pelo CPF) com os dados cadastrais.
+  const ESE_GRAU = { '01':'Analfabeto', '02':'Fundamental incompleto', '03':'Fundamental incompleto', '04':'Fundamental incompleto', '05':'Fundamental completo', '06':'Médio incompleto', '07':'Médio completo', '08':'Superior incompleto', '09':'Superior completo', '10':'Pós-graduação/Mestrado/Doutorado', '11':'Pós-graduação/Mestrado/Doutorado', '12':'Pós-graduação/Mestrado/Doutorado' };
+  const ESE_RACA = { '1':'Branca', '2':'Preta', '3':'Parda', '4':'Amarela', '5':'Indígena', '6':'Não informado' };
+  function eseParseS2200(xmlText){
+    let doc;
+    try{ doc = new DOMParser().parseFromString(xmlText, 'application/xml'); }catch(e){ return { ok:false, motivo:'Arquivo ilegível.' }; }
+    if(doc.getElementsByTagName('parsererror').length) return { ok:false, motivo:'XML inválido.' };
+    const evt = doc.getElementsByTagName('evtAdmissao')[0];
+    if(!evt) return { ok:false, motivo:'Não é um evento S-2200 (evtAdmissao).' };
+    const t = (el, tag)=>getTagText(el, tag);
+    const ideEmp = evt.getElementsByTagName('ideEmpregador')[0];
+    const trab = evt.getElementsByTagName('trabalhador')[0], vinc = evt.getElementsByTagName('vinculo')[0];
+    if(!trab) return { ok:false, motivo:'Evento sem dados do trabalhador.' };
+    const nasc = trab.getElementsByTagName('nascimento')[0];
+    const brasil = trab.getElementsByTagName('brasil')[0] || trab.getElementsByTagName('endereco')[0];
+    const ctps = trab.getElementsByTagName('CTPS')[0];
+    const contrato = vinc ? (vinc.getElementsByTagName('infoContrato')[0] || vinc) : null;
+    const f = {};
+    f.cpf = formatarCpf(onlyDigits(t(trab,'cpfTrab')));
+    f.nome = t(trab,'nmTrab'); f.pis = t(trab,'nisTrab');
+    f.sexo = t(trab,'sexo')==='F' ? 'Feminino' : (t(trab,'sexo')==='M' ? 'Masculino' : '');
+    f.racaCor = ESE_RACA[t(trab,'racaCor')] || '';
+    f.grauInstrucao = ESE_GRAU[t(trab,'grauInstr')] || '';
+    f.dataNascimento = nasc ? t(nasc,'dtNascto') : '';
+    f.nomeMae = t(trab,'nmMae');
+    if(brasil){
+      const tp = t(brasil,'tpLograd');
+      f.logradouro = [/^[A-Za-zÀ-ÿ]{2,}$/.test(tp) ? tp : '', t(brasil,'dscLograd')].filter(Boolean).join(' ');
+      f.numeroEndereco = t(brasil,'nrLograd'); f.bairro = t(brasil,'bairro'); f.cep = cepFmt(t(brasil,'cep'));
+      f.municipioUf = t(brasil,'uf') ? '/' + t(brasil,'uf') : ''; f._codMunic = t(brasil,'codMunic'); f._uf = t(brasil,'uf');
+    }
+    if(ctps){ f.ctpsNumero = t(ctps,'nrCtps'); f.ctpsSerie = t(ctps,'serieCtps'); }
+    f.matricula = vinc ? t(vinc,'matricula') : '';
+    f.dataAdmissao = vinc ? (t(vinc,'dtAdm') || '') : '';
+    if(contrato){
+      f.cargo = t(contrato,'nmCargo') || t(vinc,'nmCargo'); f.cbo = t(contrato,'CBOCargo') || t(vinc,'CBOCargo');
+      f.categoriaEsocial = t(contrato,'codCateg') || (vinc ? t(vinc,'codCateg') : '');
+      const sal = parseFloat(t(contrato,'vrSalFx')); if(!isNaN(sal)) f.salarioBase = sal;
+      f.tipoContrato = t(contrato,'tpContr')==='2' ? 'Prazo determinado' : (t(contrato,'tpContr')==='1' ? 'Prazo indeterminado' : '');
+      const hrs = t(contrato,'qtdHrsSem'); const jd = t(contrato,'dscJorn');
+      f.jornada = jd || (hrs ? hrs + 'h semanais' : '');
+    }
+    const deps = [];
+    Array.from(evt.getElementsByTagName('dependente')).forEach(d=>{
+      deps.push({ id: uid(), nome:t(d,'nmDep'), cpf: t(d,'cpfDep') ? formatarCpf(onlyDigits(t(d,'cpfDep'))) : '', dataNascimento:t(d,'dtNascto'), tipo:t(d,'tpDep'), irrf: t(d,'depIRRF')==='S', descricao:t(d,'descrDep') });
+    });
+    return { ok:true, empTipo:t(ideEmp,'tpInsc'), empNr:onlyDigits(t(ideEmp,'nrInsc')), func:f, dependentes:deps, desligado: !!(vinc && t(vinc,'dtDeslig')) };
+  }
+  async function eseBuscaCepMunicipio(cep){
+    const d = onlyDigits(cep); if(d.length!==8) return null;
+    try{ const r = await fetch('https://viacep.com.br/ws/' + d + '/json/'); if(!r.ok) return null; const j = await r.json(); return j && !j.erro ? { municipio:j.localidade, uf:j.uf } : null; }catch(e){ return null; }
+  }
+  function eseClientePorInscricao(nr, selecionado){
+    const d = onlyDigits(nr);
+    if(d.length===14){ const c = state.clients.find(x=>onlyDigits(x.doc)===d); if(c) return c; }
+    if(d.length>=8){ const lista = state.clients.filter(x=>onlyDigits(x.doc).startsWith(d.slice(0,8))); if(lista.length===1) return lista[0]; if(lista.length>1 && selecionado){ const s = lista.find(x=>x.id===selecionado); if(s) return s; return lista[0]; } }
+    return null;
+  }
+  async function eseLerArquivos(files){
+    const itens = []; // {nome, tipo:'xml'|'pdf', conteudo}
+    for(const f of files){
+      const nome = f.name || '';
+      if(/\.zip$/i.test(nome) && window.JSZip){
+        const zip = await window.JSZip.loadAsync(f);
+        for(const k of Object.keys(zip.files)){ if(/\.xml$/i.test(k) && !zip.files[k].dir) itens.push({ nome:k, tipo:'xml', conteudo: await zip.files[k].async('string') }); }
+      } else if(/\.xml$/i.test(nome)) itens.push({ nome, tipo:'xml', conteudo: await f.text() });
+      else if(/\.pdf$/i.test(nome)) itens.push({ nome, tipo:'pdf', conteudo: f });
+      else itens.push({ nome, tipo:'outro' });
+    }
+    return itens;
+  }
+  async function importarEmpregadosEsocial(files, selecionadoId){
+    const r = { lidos:0, novos:0, atualizados:0, ignorados:[], semEmpresa:[] };
+    const itens = await eseLerArquivos(files);
+    const cepCache = {};
+    for(const it of itens){
+      let cliente = null, dados = null, deps = null, desligado = false;
+      if(it.tipo==='xml'){
+        const p = eseParseS2200(it.conteudo);
+        if(!p.ok){ r.ignorados.push(it.nome + ': ' + p.motivo); continue; }
+        cliente = eseClientePorInscricao(p.empNr, selecionadoId) || (selecionadoId ? state.clients.find(c=>c.id===selecionadoId) : null);
+        if(!cliente){ r.semEmpresa.push(it.nome + ' (empregador ' + p.empNr + ')'); continue; }
+        dados = p.func; deps = p.dependentes; desligado = p.desligado;
+        if(dados._codMunic || dados._uf){
+          const k = dados.cep; if(k && !(k in cepCache)) cepCache[k] = await eseBuscaCepMunicipio(k);
+          const m = k ? cepCache[k] : null;
+          dados.municipioUf = m ? (m.municipio + '/' + m.uf) : (dados._uf ? '/' + dados._uf : '');
+        }
+        delete dados._codMunic; delete dados._uf;
+      } else if(it.tipo==='pdf'){
+        try{
+          const v = domParseVinculo(await domPdfCelulas(it.conteudo));
+          if(!v){ r.ignorados.push(it.nome + ': PDF não reconhecido (use "Dados Cadastrais e Contratuais do Trabalhador").'); continue; }
+          cliente = selecionadoId ? state.clients.find(c=>c.id===selecionadoId) : null;
+          if(!cliente){ r.semEmpresa.push(it.nome + ' (selecione a empresa antes de importar PDF)'); continue; }
+          const e = v.emp;
+          dados = { nome:e.nome, cpf:formatarCpf(e.cpf||''), matricula:e.matricula, dataNascimento:e.dataNascimento, dataAdmissao:e.dataAdmissao, cbo:e.cbo, cargo:e.cbo, salarioBase:e.salario,
+            sexo:/fem/i.test(e.sexo||'') ? 'Feminino' : (/masc/i.test(e.sexo||'') ? 'Masculino' : ''), cep:e.cep, logradouro:e.logradouro, numeroEndereco:e.numero, bairro:e.bairro,
+            municipioUf:(e.municipio||'') + (e.uf ? '/' + e.uf : ''), tipoContrato:e.tipoContrato && /determinado/i.test(e.tipoContrato) && !/indeterminado/i.test(e.tipoContrato) ? 'Prazo determinado' : 'Prazo indeterminado' };
+          desligado = e.situacao==='Desligado';
+        }catch(err){ r.ignorados.push(it.nome + ': ' + (err && err.message ? err.message : 'erro ao ler o PDF')); continue; }
+      } else { r.ignorados.push(it.nome + ': formato não aceito (use XML do S-2200, ZIP de XMLs ou PDF).'); continue; }
+      r.lidos++;
+      const cpfD = onlyDigits(dados.cpf);
+      if(!validarCpf(cpfD)){ r.ignorados.push(it.nome + ': CPF inválido (' + (dados.cpf||'vazio') + ').'); continue; }
+      const ex = state.funcionarios.find(f=>onlyDigits(f.cpf)===cpfD && f.clientId===cliente.id);
+      Object.keys(dados).forEach(k=>{ if(dados[k]==='' || dados[k]===undefined) delete dados[k]; });
+      const reg = Object.assign({}, ex||{ status:'Ativo', dependentes:0, statusEsocial:'Não enviado' }, dados, { clientId: cliente.id, statusEsocial:'Enviado', importadoEsocialEm: new Date().toISOString() });
+      if(ex && ex.salarioBase){ reg.salarioBase = ex.salarioBase; } // salário atual do sistema vale mais que o da admissão
+      if(desligado) reg.status = 'Desligado';
+      if(deps && deps.length){ reg.dependentesLista = deps; reg.dependentes = dpDependentesIrrf(deps); }
+      await Store.set('funcionarios:' + (reg.id = reg.id || uid()), JSON.stringify(reg), true);
+      if(ex) r.atualizados++; else r.novos++;
+    }
+    await loadFuncionarios();
+    return r;
+  }
+
   async function saveFuncionario(f){
     if(!f.id) f.id = uid();
     await Store.set('funcionarios:'+f.id, JSON.stringify(f), true);
@@ -12431,6 +12555,193 @@
           </tbody>
         </table>
       ` : `<div class="empty">Nenhum funcionário cadastrado${state.deptAllClients?'':' para as empresas selecionadas'}.</div>`}
+    `;
+  }
+
+  // ================= eSocial (empresas): eventos S-1200, S-1210 e S-1299 =================
+  // Gera os XMLs dos eventos periódicos (leiaute S-1.3) a partir da folha e do pró-labore calculados no sistema.
+  // O sistema NÃO transmite: os arquivos precisam ser assinados com o certificado digital e enviados por um transmissor
+  // (ou ERP) — o nº do recibo devolvido pelo eSocial é registrado aqui para o controle.
+  const ESE_VERSAO = 'S_01_03_00';
+  const ESE_NS = { evtRemun:'http://www.esocial.gov.br/schema/evt/evtRemun/v_'+ESE_VERSAO, evtPgtos:'http://www.esocial.gov.br/schema/evt/evtPgtos/v_'+ESE_VERSAO, evtFechaEvPer:'http://www.esocial.gov.br/schema/evt/evtFechaEvPer/v_'+ESE_VERSAO };
+  async function loadEsocialEmp(){
+    state.esocialEmp = []; state.esocialEventos = [];
+    try{
+      let keys = await Store.list('esocialemp:', true);
+      if(keys && keys.keys){ for(const k of keys.keys){ try{ const r = await Store.get(k, true); if(r) state.esocialEmp.push(JSON.parse(r.value)); }catch(e){} } }
+      keys = await Store.list('esocialeventos:', true);
+      if(keys && keys.keys){ for(const k of keys.keys){ try{ const r = await Store.get(k, true); if(r) state.esocialEventos.push(JSON.parse(r.value)); }catch(e){} } }
+    }catch(e){}
+  }
+  function eseCfg(clientId){ return (state.esocialEmp||[]).find(c=>c.clientId===clientId) || { id:clientId, clientId, tpAmb:'2', verProc:'JPContabil-1.0', codLotacao:'', ideTabRubr:'', rubProventos:'', rubInss:'', rubIrrf:'', rubOutrosDesc:'', transDCTFWeb:true }; }
+  async function eseSalvarCfg(cfg){
+    cfg.id = cfg.clientId;
+    try{ await Store.set('esocialemp:'+cfg.id, JSON.stringify(cfg), true); }catch(e){ alert('Não foi possível salvar.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro')); return false; }
+    await loadEsocialEmp(); render(); return true;
+  }
+  function eseEventoDe(clientId, comp){ return (state.esocialEventos||[]).find(e=>e.id===clientId+'_'+comp) || { id:clientId+'_'+comp, clientId, competencia:comp }; }
+  async function eseSalvarEvento(ev){
+    try{ await Store.set('esocialeventos:'+ev.id, JSON.stringify(ev), true); }catch(e){ alert('Não foi possível salvar o recibo.'); return false; }
+    await loadEsocialEmp(); render(); return true;
+  }
+  function eseXml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function eseVal(v){ return (Math.round((Number(v)||0)*100)/100).toFixed(2); }
+  let eseSeq = 0;
+  // Id do evento: "ID" + tpInsc + nrInsc (14, completado com zeros à direita) + AAAAMMDDHHMMSS + sequencial (5) = 36 caracteres.
+  function eseId(cnpj14){
+    const d = new Date(), p = n=>String(n).padStart(2,'0');
+    eseSeq = (eseSeq % 99999) + 1;
+    return 'ID1' + String(cnpj14).padEnd(14,'0').slice(0,14) + d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + String(eseSeq).padStart(5,'0');
+  }
+  // Trabalhadores da competência: empregados (folha) e sócios/diretores (pró-labore).
+  function eseTrabalhadores(clientId, comp){
+    const lista = [];
+    const ultimaFolha = {};
+    (state.folhas||[]).filter(f=>f.clientId===clientId && f.competencia===comp).forEach(f=>{ ultimaFolha[f.funcionarioId] = f; });
+    Object.keys(ultimaFolha).forEach(fid=>{
+      const f = ultimaFolha[fid], func = state.funcionarios.find(x=>x.id===fid); if(!func) return;
+      lista.push({ tipo:'Empregado', nome:func.nome, cpf:onlyDigits(func.cpf), codCateg: func.categoriaEsocial || '101', matricula: func.matricula || String(func.id).slice(-6).toUpperCase(),
+        nasc: func.dataNascimento||'', bruto:Number(f.bruto)||0, inss:Number(f.inss)||0, irrf:Number(f.irrf)||0, outros:Number(f.descontosExtra)||0, liquido:Number(f.liquido)||0, empregado:true });
+    });
+    const ultimoPl = {};
+    (state.prolabores||[]).filter(p=>p.clientId===clientId && p.competencia===comp).forEach(p=>{ ultimoPl[(p.benefCpf||p.socioNome)] = p; });
+    Object.keys(ultimoPl).forEach(k=>{
+      const p = ultimoPl[k];
+      lista.push({ tipo:'Pró-labore', nome:p.benefNome||p.socioNome, cpf:onlyDigits(p.benefCpf), codCateg:p.categoriaEsocial||'723', matricula:'', nasc:'',
+        bruto:Number(p.bruto)||0, inss:Number(p.inss)||0, irrf:Number(p.irrf)||0, outros:0, liquido:Number(p.liquido)||0, empregado:false });
+    });
+    lista.sort((a,b)=>String(a.nome||'').localeCompare(String(b.nome||''), 'pt-BR'));
+    return lista;
+  }
+  function eseValidar(clientId, comp, trabs){
+    const cl = state.clients.find(c=>c.id===clientId), cfg = eseCfg(clientId), erros = [], avisos = [];
+    const cnpj = onlyDigits(cl && cl.doc);
+    if(cnpj.length!==14) erros.push('A empresa precisa ter CNPJ válido no cadastro (eSocial de empresas usa o CNPJ).');
+    if(!cfg.codLotacao) erros.push('Configuração: informe o código da lotação tributária (S-1020).');
+    if(!cfg.ideTabRubr) erros.push('Configuração: informe o identificador da tabela de rubricas (ideTabRubr, S-1010).');
+    if(!cfg.rubProventos) erros.push('Configuração: informe o código da rubrica de salário/proventos (S-1010).');
+    if(trabs.some(t=>t.inss>0) && !cfg.rubInss) erros.push('Configuração: informe o código da rubrica de desconto do INSS.');
+    if(trabs.some(t=>t.irrf>0) && !cfg.rubIrrf) erros.push('Configuração: informe o código da rubrica de desconto do IRRF.');
+    if(trabs.some(t=>t.outros>0) && !cfg.rubOutrosDesc) erros.push('Configuração: informe o código da rubrica de outros descontos.');
+    if(!trabs.length) erros.push('Não há folha nem pró-labore calculados para esta empresa na competência.');
+    trabs.forEach(t=>{
+      if(!validarCpf(t.cpf)) erros.push(t.nome + ': CPF inválido ou ausente.');
+      if(t.empregado && !t.matricula) erros.push(t.nome + ': sem matrícula.');
+      if(!t.empregado && !/^\d{4}-\d{2}-\d{2}$/.test(t.nasc||'')){ avisos.push(t.nome + ': data de nascimento do sócio não consta no sistema — o S-1200 de contribuinte individual sem S-2300 exige nome e data de nascimento (infoComplem).'); }
+      if(['102','104'].indexOf(String(t.codCateg))>=0 && t.empregado) avisos.push(t.nome + ': categoria ' + t.codCateg + ' — confira (101 = empregado geral, 103 = aprendiz).');
+    });
+    return { erros, avisos, cl, cfg, cnpj };
+  }
+  function eseXmlS1200(ctx, comp, t, seq){
+    const { cfg, cnpj } = ctx, raiz = cnpj.slice(0,8);
+    const itens = [];
+    if(t.bruto>0) itens.push([cfg.rubProventos, t.bruto]);
+    if(t.inss>0) itens.push([cfg.rubInss, t.inss]);
+    if(t.irrf>0) itens.push([cfg.rubIrrf, t.irrf]);
+    if(t.outros>0) itens.push([cfg.rubOutrosDesc, t.outros]);
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<eSocial xmlns="' + ESE_NS.evtRemun + '">\n' +
+      '  <evtRemun Id="' + eseId(cnpj) + '">\n' +
+      '    <ideEvento>\n      <indRetif>1</indRetif>\n      <indApuracao>1</indApuracao>\n      <perApur>' + comp + '</perApur>\n      <tpAmb>' + eseXml(cfg.tpAmb||'2') + '</tpAmb>\n      <procEmi>1</procEmi>\n      <verProc>' + eseXml(cfg.verProc||'JPContabil-1.0') + '</verProc>\n    </ideEvento>\n' +
+      '    <ideEmpregador>\n      <tpInsc>1</tpInsc>\n      <nrInsc>' + raiz + '</nrInsc>\n    </ideEmpregador>\n' +
+      '    <ideTrabalhador>\n      <cpfTrab>' + t.cpf + '</cpfTrab>\n' +
+      (!t.empregado && t.nome && t.nasc ? '      <infoComplem>\n        <nmTrab>' + eseXml(t.nome) + '</nmTrab>\n        <dtNascto>' + t.nasc + '</dtNascto>\n      </infoComplem>\n' : '') +
+      '    </ideTrabalhador>\n' +
+      '    <dmDev>\n      <ideDmDev>1</ideDmDev>\n      <codCateg>' + eseXml(t.codCateg) + '</codCateg>\n      <infoPerApur>\n        <ideEstabLot>\n          <tpInsc>1</tpInsc>\n          <nrInsc>' + cnpj + '</nrInsc>\n          <codLotacao>' + eseXml(cfg.codLotacao) + '</codLotacao>\n          <remunPerApur>\n' +
+      (t.empregado ? '            <matricula>' + eseXml(t.matricula) + '</matricula>\n' : '') +
+      itens.map(i=>'            <itensRemun>\n              <codRubr>' + eseXml(i[0]) + '</codRubr>\n              <ideTabRubr>' + eseXml(cfg.ideTabRubr) + '</ideTabRubr>\n              <vrRubr>' + eseVal(i[1]) + '</vrRubr>\n            </itensRemun>\n').join('') +
+      '          </remunPerApur>\n        </ideEstabLot>\n      </infoPerApur>\n    </dmDev>\n' +
+      '  </evtRemun>\n</eSocial>\n';
+  }
+  function eseXmlS1210(ctx, comp, t, dtPgto){
+    const { cfg, cnpj } = ctx;
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<eSocial xmlns="' + ESE_NS.evtPgtos + '">\n' +
+      '  <evtPgtos Id="' + eseId(cnpj) + '">\n' +
+      '    <ideEvento>\n      <indRetif>1</indRetif>\n      <perApur>' + comp + '</perApur>\n      <tpAmb>' + eseXml(cfg.tpAmb||'2') + '</tpAmb>\n      <procEmi>1</procEmi>\n      <verProc>' + eseXml(cfg.verProc||'JPContabil-1.0') + '</verProc>\n    </ideEvento>\n' +
+      '    <ideEmpregador>\n      <tpInsc>1</tpInsc>\n      <nrInsc>' + cnpj.slice(0,8) + '</nrInsc>\n    </ideEmpregador>\n' +
+      '    <ideBenef>\n      <cpfBenef>' + t.cpf + '</cpfBenef>\n      <infoPgto>\n        <dtPgto>' + dtPgto + '</dtPgto>\n        <tpPgto>1</tpPgto>\n        <perRef>' + comp + '</perRef>\n        <ideDmDev>1</ideDmDev>\n        <vrLiq>' + eseVal(t.liquido) + '</vrLiq>\n      </infoPgto>\n    </ideBenef>\n' +
+      '  </evtPgtos>\n</eSocial>\n';
+  }
+  function eseXmlS1299(ctx, comp, temRemun, temPgtos){
+    const { cfg, cnpj } = ctx;
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<eSocial xmlns="' + ESE_NS.evtFechaEvPer + '">\n' +
+      '  <evtFechaEvPer Id="' + eseId(cnpj) + '">\n' +
+      '    <ideEvento>\n      <indApuracao>1</indApuracao>\n      <perApur>' + comp + '</perApur>\n      <tpAmb>' + eseXml(cfg.tpAmb||'2') + '</tpAmb>\n      <procEmi>1</procEmi>\n      <verProc>' + eseXml(cfg.verProc||'JPContabil-1.0') + '</verProc>\n    </ideEvento>\n' +
+      '    <ideEmpregador>\n      <tpInsc>1</tpInsc>\n      <nrInsc>' + cnpj.slice(0,8) + '</nrInsc>\n    </ideEmpregador>\n' +
+      '    <infoFech>\n      <evtRemun>' + (temRemun?'S':'N') + '</evtRemun>\n      <evtPgtos>' + (temPgtos?'S':'N') + '</evtPgtos>\n      <evtComProd>N</evtComProd>\n      <evtContratAvNP>N</evtContratAvNP>\n      <evtInfoComplPer>N</evtInfoComplPer>\n' + (cfg.transDCTFWeb ? '      <transDCTFWeb>S</transDCTFWeb>\n' : '') + '    </infoFech>\n' +
+      '  </evtFechaEvPer>\n</eSocial>\n';
+  }
+  function eseBaixar(nome, conteudo, mime){
+    const blob = new Blob([conteudo], {type: mime||'application/xml'});
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = nome; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+  async function eseGerar(clientId, comp, quais, dtPgto){
+    const trabs = eseTrabalhadores(clientId, comp), ctx = eseValidar(clientId, comp, trabs);
+    if(ctx.erros.length){ alert('Corrija antes de gerar:\n\n• ' + ctx.erros.join('\n• ')); return false; }
+    if(quais.indexOf('1210')>=0 && !/^\d{4}-\d{2}-\d{2}$/.test(dtPgto||'')){ alert('Informe a data do pagamento (S-1210).'); return false; }
+    const arqs = [], base = String(comp).replace('-','');
+    if(quais.indexOf('1200')>=0) trabs.forEach(t=>arqs.push({ nome:'S-1200_' + base + '_' + t.cpf + '.xml', xml:eseXmlS1200(ctx, comp, t) }));
+    if(quais.indexOf('1210')>=0) trabs.forEach(t=>arqs.push({ nome:'S-1210_' + base + '_' + t.cpf + '.xml', xml:eseXmlS1210(ctx, comp, t, dtPgto) }));
+    if(quais.indexOf('1299')>=0) arqs.push({ nome:'S-1299_' + base + '.xml', xml:eseXmlS1299(ctx, comp, true, true) });
+    const nomeEmp = (ctx.cl.name||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
+    if(arqs.length===1){ eseBaixar(arqs[0].nome, arqs[0].xml); return true; }
+    if(!window.JSZip){ alert('A biblioteca de compactação ainda está carregando. Tente novamente.'); return false; }
+    const zip = new window.JSZip();
+    arqs.forEach(a=>zip.file(a.nome, a.xml));
+    const blob = await zip.generateAsync({type:'blob'});
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = 'esocial-' + quais.join('-') + '-' + nomeEmp + '-' + base + '.zip'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    return true;
+  }
+  function esocialEventosPanelHtml(){
+    const empresaId = deptOneSelectedClient();
+    const cabecalho = `
+      <div class="panel-head"><h3>eSocial Empresas — S-1200, S-1210 e S-1299</h3></div>
+      <div class="legis-note" style="margin-bottom:14px;"><strong>O sistema gera os arquivos; a transmissão é feita fora dele.</strong> O eSocial exige que cada evento seja assinado com o certificado digital da empresa (ou do procurador) e enviado por um transmissor/ERP. Aqui você gera os XMLs a partir da folha e do pró-labore calculados, envia pelo seu transmissor (na ordem S-1200 → S-1210 → S-1299) e registra o nº do recibo. Os eventos de tabela e cadastro (S-1000, S-1005, S-1010, S-1020, S-2200/S-2300) precisam estar enviados antes, com os mesmos códigos informados abaixo. Leiaute S-1.3 — valide os arquivos no transmissor antes do envio em produção.</div>
+    `;
+    if(!empresaId) return cabecalho + deptSelecioneUmaEmpresaHtml('gerar os eventos do eSocial');
+    const comp = state.eseCompetencia || state.competenciaAtiva;
+    const cfg = eseCfg(empresaId), trabs = eseTrabalhadores(empresaId, comp), v = eseValidar(empresaId, comp, trabs);
+    const ev = eseEventoDe(empresaId, comp);
+    const dtPadrao = state.eseDtPgto || (()=>{ const y = Number(comp.slice(0,4)), m = Number(comp.slice(5,7)); const ny = m===12?y+1:y, nm = m===12?1:m+1; return ny + '-' + String(nm).padStart(2,'0') + '-05'; })();
+    const tot = trabs.reduce((a,t)=>({bruto:a.bruto+t.bruto, inss:a.inss+t.inss, irrf:a.irrf+t.irrf, liq:a.liq+t.liquido}), {bruto:0,inss:0,irrf:0,liq:0});
+    const campo = (id, rot, val, ph)=>`<div class="field"><label>${rot}</label><input type="text" data-ese-cfg="${id}" value="${escapeHtml(val||'')}" placeholder="${escapeHtml(ph||'')}"/></div>`;
+    const recibo = (k, rot)=>`<div class="field"><label>Nº do recibo — ${rot}</label><input type="text" data-ese-rec="${k}" value="${escapeHtml(ev['rec'+k]||'')}" placeholder="1.1.0000000000000000000"/></div>`;
+    return cabecalho + `
+      <div class="form-section-title" style="margin-top:0;">Configuração da empresa (usar os mesmos códigos já enviados ao eSocial)</div>
+      <div class="form-row">
+        <div class="field"><label>Ambiente</label><select data-ese-cfg="tpAmb"><option value="2" ${cfg.tpAmb==='2'?'selected':''}>2 — Produção restrita (testes)</option><option value="1" ${cfg.tpAmb==='1'?'selected':''}>1 — Produção</option></select></div>
+        ${campo('verProc','Versão do aplicativo (verProc)',cfg.verProc,'JPContabil-1.0')}
+        ${campo('codLotacao','Código da lotação tributária (S-1020)',cfg.codLotacao,'Ex: 001')}
+        ${campo('ideTabRubr','Tabela de rubricas (ideTabRubr, S-1010)',cfg.ideTabRubr,'Ex: TAB01')}
+      </div>
+      <div class="form-row">
+        ${campo('rubProventos','Rubrica: salário / proventos (codRubr)',cfg.rubProventos,'Ex: 1000')}
+        ${campo('rubInss','Rubrica: desconto INSS',cfg.rubInss,'Ex: 9201')}
+        ${campo('rubIrrf','Rubrica: desconto IRRF',cfg.rubIrrf,'Ex: 9203')}
+        ${campo('rubOutrosDesc','Rubrica: outros descontos',cfg.rubOutrosDesc,'Ex: 5000')}
+      </div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-bottom:6px;"><input type="checkbox" data-ese-cfgchk="transDCTFWeb" ${cfg.transDCTFWeb?'checked':''}/> Fechamento transmite os dados à DCTFWeb (transDCTFWeb = S)</label>
+      <div class="form-section-title">Competência</div>
+      <div class="form-row">
+        <div class="field"><label>Competência</label><input type="month" id="eseCompetencia" value="${comp}"/></div>
+        <div class="field"><label>Data do pagamento (S-1210)</label><input type="date" id="eseDtPgto" value="${dtPadrao}"/></div>
+      </div>
+      ${v.erros.length ? `<div class="legis-note" style="margin-bottom:12px; border-left-color:var(--danger,#b3261e);"><strong>Pendências para gerar:</strong><ul style="margin:6px 0 0 18px;">${v.erros.map(e=>`<li>${escapeHtml(e)}</li>`).join('')}</ul></div>` : `<div class="form-hint" style="color:#2E7D32; margin-bottom:12px;">✓ Dados completos para gerar os eventos.</div>`}
+      ${v.avisos.length ? `<div class="form-hint" style="margin-bottom:12px;">⚠️ ${v.avisos.map(escapeHtml).join('<br/>⚠️ ')}</div>` : ''}
+      ${trabs.length ? `<table>
+        <thead><tr><th>Trabalhador</th><th>Tipo</th><th>CPF</th><th>Cat.</th><th>Matrícula</th><th style="text-align:right">Bruto</th><th style="text-align:right">INSS</th><th style="text-align:right">IRRF</th><th style="text-align:right">Líquido</th></tr></thead>
+        <tbody>${trabs.map(t=>`<tr><td>${escapeHtml(t.nome||'—')}</td><td>${t.tipo}</td><td class="mono">${t.cpf?formatarCpf(t.cpf):'—'}</td><td>${escapeHtml(t.codCateg)}</td><td>${escapeHtml(t.matricula||'—')}</td><td style="text-align:right" class="mono">${fmtBRL(t.bruto)}</td><td style="text-align:right" class="mono">${fmtBRL(t.inss)}</td><td style="text-align:right" class="mono">${fmtBRL(t.irrf)}</td><td style="text-align:right" class="mono">${fmtBRL(t.liquido)}</td></tr>`).join('')}
+        <tr style="font-weight:700;"><td colspan="5">Total</td><td style="text-align:right" class="mono">${fmtBRL(tot.bruto)}</td><td style="text-align:right" class="mono">${fmtBRL(tot.inss)}</td><td style="text-align:right" class="mono">${fmtBRL(tot.irrf)}</td><td style="text-align:right" class="mono">${fmtBRL(tot.liq)}</td></tr></tbody></table>` : ''}
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin:14px 0;">
+        <button type="button" class="btn-add" data-ese-gerar="1200">Gerar S-1200 (remuneração)</button>
+        <button type="button" class="btn-add" data-ese-gerar="1210">Gerar S-1210 (pagamentos)</button>
+        <button type="button" class="btn-add" data-ese-gerar="1299">Gerar S-1299 (fechamento)</button>
+        <button type="button" class="btn-detail" data-ese-gerar="todos">Baixar os três (ZIP)</button>
+      </div>
+      <div class="form-section-title">Controle de envio — recibos do eSocial</div>
+      <div class="form-row">${recibo('1200','S-1200')}${recibo('1210','S-1210')}${recibo('1299','S-1299')}</div>
+      <div class="form-hint">Registre o recibo devolvido pelo transmissor. O S-1299 só deve ser enviado depois que os S-1200 e S-1210 de todos os trabalhadores forem aceitos. Férias, 13º, rescisões e afastamentos têm eventos próprios (S-2230, S-2299, etc.) e não são gerados aqui; esta tela cobre a folha mensal e o pró-labore.</div>
     `;
   }
 
@@ -12990,6 +13301,7 @@
     await loadRecibosHonorarios();
     await loadProdutosMonofasicos();
     await loadIcmsAntecipado();
+    await loadEsocialEmp();
     await loadNcmMonofasicoCustom();
     await loadTabelasFolha();
     await loadFaturamentosManuais();
@@ -13041,6 +13353,8 @@
       baixaEmpresaDocumentos: state.baixaEmpresaDocumentos,
       produtosMonofasicos: state.produtosMonofasicos,
       icmsAntecipado: state.icmsAntecipado,
+      esocialEmp: state.esocialEmp,
+      esocialEventos: state.esocialEventos,
       ncmMonofasicoCustom: state.ncmMonofasicoCustom,
       tabelasFolha: state.tabelasFolha,
       faturamentosManuais: state.faturamentosManuais,
@@ -13127,6 +13441,8 @@
       {key:'baixaEmpresaDocumentos', prefix:'baixaempresadocumentos:', idField:'id'},
       {key:'produtosMonofasicos', prefix:'produtosmonofasicos:', idField:'id'},
       {key:'icmsAntecipado', prefix:'icmsantecipado:', idField:'id'},
+      {key:'esocialEmp', prefix:'esocialemp:', idField:'id'},
+      {key:'esocialEventos', prefix:'esocialeventos:', idField:'id'},
       {key:'ncmMonofasicoCustom', prefix:'ncmmonofasicocustom:', idField:'id'},
       {key:'tabelasFolha', prefix:'tabelasfolha:', idField:'id'},
       {key:'faturamentosManuais', prefix:'faturamentosmanuais:', idField:'id'},
@@ -18523,8 +18839,13 @@
     return `
       <div class="panel-head">
         <h3>Cadastro de Funcionários</h3>
-        <button type="button" class="btn-add" id="novoFuncBtn">+ Novo funcionário</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn-detail" id="funcImportEsocialBtn" title="Importa os empregados já registrados no eSocial (XML do S-2200, ZIP de XMLs ou PDF de dados cadastrais)">⬇ Importar do eSocial</button>
+          <input type="file" id="funcImportEsocialInput" accept=".xml,.zip,.pdf" multiple style="display:none"/>
+          <button type="button" class="btn-add" id="novoFuncBtn">+ Novo funcionário</button>
+        </div>
       </div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Já tem empregados registrados no eSocial? Use "Importar do eSocial" e selecione os <strong>XMLs de admissão (S-2200)</strong> baixados do eSocial (pode ser um ZIP com vários) ou o PDF "Dados Cadastrais e Contratuais do Trabalhador". A empresa é identificada pelo CNPJ do arquivo; quem já está cadastrado (mesmo CPF) é atualizado.</div>
       <div id="funcTableContainer">${funcionariosTableHtml()}</div>
     `;
   }
@@ -20154,6 +20475,7 @@
     {k:'central-recibos', label:'Central Arquivística de Recibos'},
     {k:'esocial', label:'eSocial'},
     {k:'esocial-dom', label:'eSocial Doméstico'},
+    {k:'esocial-eventos', label:'eSocial Empresas (S-1200/S-1210/S-1299)'},
     {k:'informe-rendimentos', label:'Informe de Rendimentos'},
     {k:'sindicatos', label:'Sindicatos & CCT'},
     {k:'fichas', label:'Fichas & Contratos CLT/PF'},
@@ -20175,6 +20497,7 @@
     else if(state.dpTab==='central-recibos') tabContent = centralArquivisticaRecibosPanelHtml();
     else if(state.dpTab==='esocial') tabContent = esocialPanelHtml();
     else if(state.dpTab==='esocial-dom') tabContent = esocialDomesticoPanelHtml();
+    else if(state.dpTab==='esocial-eventos') tabContent = esocialEventosPanelHtml();
     else if(state.dpTab==='informe-rendimentos') tabContent = informeRendimentosPanelHtml();
     else if(state.dpTab==='sindicatos') tabContent = sindicatosPanelHtml();
     else if(state.dpTab==='fichas') tabContent = fichasContratosTabHtml();
@@ -23078,6 +23401,28 @@
       };
     }
 
+    // ===== eSocial Empresas (S-1200 / S-1210 / S-1299) =====
+    root.querySelectorAll('[data-ese-cfg]').forEach(el=>{
+      el.onchange = async ()=>{ const emp = deptOneSelectedClient(); if(!emp) return; const c = Object.assign({}, eseCfg(emp)); c[el.getAttribute('data-ese-cfg')] = el.value.trim(); await eseSalvarCfg(c); };
+    });
+    root.querySelectorAll('[data-ese-cfgchk]').forEach(el=>{
+      el.onchange = async ()=>{ const emp = deptOneSelectedClient(); if(!emp) return; const c = Object.assign({}, eseCfg(emp)); c[el.getAttribute('data-ese-cfgchk')] = el.checked; await eseSalvarCfg(c); };
+    });
+    const eseComp = document.getElementById('eseCompetencia');
+    if(eseComp) eseComp.onchange = ()=>{ if(eseComp.value){ state.eseCompetencia = eseComp.value; state.eseDtPgto = ''; render(); } };
+    const eseDt = document.getElementById('eseDtPgto');
+    if(eseDt) eseDt.onchange = ()=>{ state.eseDtPgto = eseDt.value; };
+    root.querySelectorAll('[data-ese-gerar]').forEach(el=>{
+      el.onclick = async ()=>{
+        const emp = deptOneSelectedClient(); if(!emp) return;
+        const k = el.getAttribute('data-ese-gerar');
+        await eseGerar(emp, state.eseCompetencia || state.competenciaAtiva, k==='todos' ? ['1200','1210','1299'] : [k], (document.getElementById('eseDtPgto')||{}).value);
+      };
+    });
+    root.querySelectorAll('[data-ese-rec]').forEach(el=>{
+      el.onchange = async ()=>{ const emp = deptOneSelectedClient(); if(!emp) return; const comp = state.eseCompetencia || state.competenciaAtiva; const ev = Object.assign({}, eseEventoDe(emp, comp)); ev['rec'+el.getAttribute('data-ese-rec')] = el.value.trim(); await eseSalvarEvento(ev); };
+    });
+
     // ===== ICMS Antecipado / Fronteira =====
     const iaMsg = (txt, tipo)=>{ const m = document.getElementById('iaMsg'); if(m){ m.textContent = txt; m.className = 'lookup-msg ' + (tipo||'success'); m.style.display='block'; } };
     const iaComp = document.getElementById('iaCompetencia');
@@ -25725,6 +26070,22 @@
     });
 
     // Funcionários
+    const funcImportEsocialBtn = document.getElementById('funcImportEsocialBtn'), funcImportEsocialInput = document.getElementById('funcImportEsocialInput');
+    if(funcImportEsocialBtn && funcImportEsocialInput){
+      funcImportEsocialBtn.onclick = ()=> funcImportEsocialInput.click();
+      funcImportEsocialInput.onchange = async (e)=>{
+        const files = Array.from(e.target.files||[]); if(!files.length) return;
+        funcImportEsocialBtn.disabled = true; funcImportEsocialBtn.textContent = 'Importando...';
+        try{
+          const r = await importarEmpregadosEsocial(files, deptOneSelectedClient());
+          alert('Importação do eSocial concluída.\n\n• Novos funcionários: ' + r.novos + '\n• Atualizados (mesmo CPF): ' + r.atualizados +
+            (r.semEmpresa.length ? '\n• Sem empresa correspondente no cadastro (' + r.semEmpresa.length + '): ' + r.semEmpresa.slice(0,5).join('; ') : '') +
+            (r.ignorados.length ? '\n• Ignorados (' + r.ignorados.length + '): ' + r.ignorados.slice(0,5).join('; ') : '') +
+            '\n\nConfira o cadastro: o salário e o cargo vêm da admissão; dependentes e matrícula também foram trazidos.');
+        }catch(err){ alert('Não foi possível importar.\n\nDetalhe técnico: ' + (err && err.message ? err.message : 'erro desconhecido')); }
+        render();
+      };
+    }
     const novoFuncBtn = document.getElementById('novoFuncBtn');
     if(novoFuncBtn) novoFuncBtn.onclick = ()=>{ state.funcModalData = { dependentesLista: [] }; state.modal='func'; render(); };
     const fcCancel = document.getElementById('fcCancel');
