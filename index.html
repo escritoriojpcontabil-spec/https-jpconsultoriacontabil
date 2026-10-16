@@ -12422,6 +12422,30 @@
     });
     return { ok:true, empTipo:t(ideEmp,'tpInsc'), empNr:onlyDigits(t(ideEmp,'nrInsc')), func:f, dependentes:deps, desligado: !!(vinc && t(vinc,'dtDeslig')) };
   }
+  // PDF "Relatório de Movimentações Trabalhistas" do eSocial (empresas): empregador, empregado, matrícula, admissão e histórico de eventos.
+  function eseParseMovimentacoes(cells){
+    if(!cells.some(c=>/Hist[óo]rico de Movimenta[çc][õo]es Trabalhistas/i.test(c))) return null;
+    const dataIso = (x)=>{ const m = String(x||'').match(/(\d{2})\/(\d{2})\/(\d{4})/); return m ? m[3]+'-'+m[2]+'-'+m[1] : ''; };
+    const idx = (txt, from)=>{ for(let i=from||0; i<cells.length; i++) if(cells[i]===txt) return i; return -1; };
+    const after = (label, from)=>{ const i = idx(label, from); return i<0 ? '' : (cells[i+1]||''); };
+    const iEr = idx('EMPREGADOR:'), iEe = idx('EMPREGADO:');
+    if(iEe<0) return null;
+    const r = { empNome: after('Nome:', iEr), empCnpj: onlyDigits(after('CNPJ:', iEr)), nome: after('Nome:', iEe), cpf: onlyDigits(after('CPF:', iEe)),
+      matricula: after('Matricula:', iEe) || after('Matrícula:', iEe), dataAdmissao: dataIso(after('Data de Admissão:', iEe)), eventos: [] };
+    const iH = idx('AFETADO');
+    if(iH>=0){
+      const dt = /^\d{2}\/\d{2}\/\d{4}$/;
+      for(let i=iH+1; i<cells.length; i++){
+        if(/^\d+$/.test(cells[i]) && dt.test(cells[i+1]||'') && /^\d{2}:\d{2}:\d{2}$/.test(cells[i+2]||'') && /^\d\.\d\.\d+$/.test(cells[i+3]||'')){
+          const ev = { seq:Number(cells[i]), dataEnvio:dataIso(cells[i+1]), hora:cells[i+2], recibo:cells[i+3], tipo:'', ocorrencia:'' };
+          let j = i+4, nome = [];
+          while(j<cells.length && !dt.test(cells[j])){ nome.push(cells[j]); j++; }
+          ev.tipo = nome.join(' '); ev.ocorrencia = dataIso(cells[j]||''); r.eventos.push(ev); i = j;
+        }
+      }
+    }
+    return r;
+  }
   async function eseBuscaCepMunicipio(cep){
     const d = onlyDigits(cep); if(d.length!==8) return null;
     try{ const r = await fetch('https://viacep.com.br/ws/' + d + '/json/'); if(!r.ok) return null; const j = await r.json(); return j && !j.erro ? { municipio:j.localidade, uf:j.uf } : null; }catch(e){ return null; }
@@ -12446,7 +12470,7 @@
     return itens;
   }
   async function importarEmpregadosEsocial(files, selecionadoId){
-    const r = { lidos:0, novos:0, atualizados:0, ignorados:[], semEmpresa:[] };
+    const r = { lidos:0, novos:0, atualizados:0, ignorados:[], semEmpresa:[], incompletos:[] };
     const itens = await eseLerArquivos(files);
     const cepCache = {};
     for(const it of itens){
@@ -12465,7 +12489,17 @@
         delete dados._codMunic; delete dados._uf;
       } else if(it.tipo==='pdf'){
         try{
-          const v = domParseVinculo(await domPdfCelulas(it.conteudo));
+          const celulas = await domPdfCelulas(it.conteudo);
+          const mov = eseParseMovimentacoes(celulas);
+          if(mov){
+            cliente = (mov.empCnpj && state.clients.find(c=>onlyDigits(c.doc)===mov.empCnpj)) || (selecionadoId ? state.clients.find(c=>c.id===selecionadoId) : null);
+            if(!cliente){ r.semEmpresa.push(it.nome + ' (empregador ' + (mov.empCnpj||'?') + ')'); continue; }
+            const desl = mov.eventos.find(e=>/desligamento|rescis/i.test(e.tipo));
+            dados = { nome:mov.nome, cpf:formatarCpf(mov.cpf), matricula:mov.matricula, dataAdmissao:mov.dataAdmissao, movimentacoesEsocial:mov.eventos };
+            if(desl){ desligado = true; dados.dataDesligamento = desl.ocorrencia; }
+            dados._soMov = true;
+          } else {
+          const v = domParseVinculo(celulas);
           if(!v){ r.ignorados.push(it.nome + ': PDF não reconhecido (use "Dados Cadastrais e Contratuais do Trabalhador").'); continue; }
           cliente = selecionadoId ? state.clients.find(c=>c.id===selecionadoId) : null;
           if(!cliente){ r.semEmpresa.push(it.nome + ' (selecione a empresa antes de importar PDF)'); continue; }
@@ -12474,9 +12508,11 @@
             sexo:/fem/i.test(e.sexo||'') ? 'Feminino' : (/masc/i.test(e.sexo||'') ? 'Masculino' : ''), cep:e.cep, logradouro:e.logradouro, numeroEndereco:e.numero, bairro:e.bairro,
             municipioUf:(e.municipio||'') + (e.uf ? '/' + e.uf : ''), tipoContrato:e.tipoContrato && /determinado/i.test(e.tipoContrato) && !/indeterminado/i.test(e.tipoContrato) ? 'Prazo determinado' : 'Prazo indeterminado' };
           desligado = e.situacao==='Desligado';
+          }
         }catch(err){ r.ignorados.push(it.nome + ': ' + (err && err.message ? err.message : 'erro ao ler o PDF')); continue; }
       } else { r.ignorados.push(it.nome + ': formato não aceito (use XML do S-2200, ZIP de XMLs ou PDF).'); continue; }
       r.lidos++;
+      delete dados._soMov;
       const cpfD = onlyDigits(dados.cpf);
       if(!validarCpf(cpfD)){ r.ignorados.push(it.nome + ': CPF inválido (' + (dados.cpf||'vazio') + ').'); continue; }
       const ex = state.funcionarios.find(f=>onlyDigits(f.cpf)===cpfD && f.clientId===cliente.id);
@@ -12487,6 +12523,8 @@
       if(deps && deps.length){ reg.dependentesLista = deps; reg.dependentes = dpDependentesIrrf(deps); }
       await Store.set('funcionarios:' + (reg.id = reg.id || uid()), JSON.stringify(reg), true);
       if(ex) r.atualizados++; else r.novos++;
+      const falta = [!reg.salarioBase && 'salário', !reg.cargo && 'cargo', !reg.dataAdmissao && 'admissão'].filter(Boolean);
+      if(falta.length) r.incompletos.push(reg.nome + ' (' + falta.join(', ') + ')');
     }
     await loadFuncionarios();
     return r;
@@ -26081,7 +26119,7 @@
           alert('Importação do eSocial concluída.\n\n• Novos funcionários: ' + r.novos + '\n• Atualizados (mesmo CPF): ' + r.atualizados +
             (r.semEmpresa.length ? '\n• Sem empresa correspondente no cadastro (' + r.semEmpresa.length + '): ' + r.semEmpresa.slice(0,5).join('; ') : '') +
             (r.ignorados.length ? '\n• Ignorados (' + r.ignorados.length + '): ' + r.ignorados.slice(0,5).join('; ') : '') +
-            '\n\nConfira o cadastro: o salário e o cargo vêm da admissão; dependentes e matrícula também foram trazidos.');
+            (r.incompletos.length ? '\n\n⚠️ O arquivo não traz todos os dados. Complete no cadastro (Editar): ' + r.incompletos.slice(0,8).join('; ') + '.\nPara trazer salário, cargo, jornada e dependentes use o XML do evento S-2200 (admissão).' : '\n\nConfira o cadastro dos funcionários importados.'));
         }catch(err){ alert('Não foi possível importar.\n\nDetalhe técnico: ' + (err && err.message ? err.message : 'erro desconhecido')); }
         render();
       };
