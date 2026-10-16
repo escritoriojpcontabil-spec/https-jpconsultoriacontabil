@@ -17769,9 +17769,70 @@
     r.problemas = r.dataRuim.length + r.valorRuim.length + r.contaOutraEmpresa.length + r.contaInexistente.length + Object.keys(r.semGrupo).length;
     return r;
   }
+  // ===== Contas bancárias duplicadas (conta criada pela importação OFX x conta antiga com saldo inicial) =====
+  function bancoChave(txt){
+    const t = String(txt||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+    const mapa = ['caixa','itau','bradesco','santander','brasil','sicoob','sicredi','nubank','inter','safra','btg','c6','mercantil','banese','banrisul','bnb','pagbank','mercado pago'];
+    return mapa.find(k=>t.indexOf(k)>=0) || '';
+  }
+  // Conta do plano ainda sem extrato vinculado cujo nome combina com o banco do extrato.
+  function ofxContaSugerida(clientId, prev){
+    if(!prev) return null;
+    const k = bancoChave(ofxBancoNome(prev.banco));
+    if(!k) return null;
+    return contasBancoDaEmpresa(clientId).find(b=>!b.ofxConta && bancoChave(b.nome)===k) || null;
+  }
+  function bancoDuplicados(clientId){
+    const bancos = contasBancoDaEmpresa(clientId);
+    const livres = bancos.filter(b=>!b.ofxConta);
+    if(!livres.length) return [];
+    return bancos.filter(b=>b.ofxConta).map(o=>{
+      const k = bancoChave(o.nome);
+      const sug = livres.find(d=>d.id!==o.id && k && bancoChave(d.nome)===k) || null;
+      const movimento = state.lancamentosContabeis.filter(l=>l.clientId===clientId && (l.contaDebito===o.id || l.contaCredito===o.id)).length;
+      return { origem:o, sugerida:sug, livres, movimento };
+    }).filter(x=>x.movimento>0 && x.sugerida);
+  }
+  function bancoDuplicadosHtml(clientId){
+    const lista = bancoDuplicados(clientId);
+    if(!lista.length) return '';
+    return `<div style="margin:10px 0; padding:10px 12px; background:#fff7e6; border-left:4px solid #d48806; font-size:13px; line-height:1.5;">
+      <b>Contas bancárias repetidas:</b> a importação do extrato criou uma conta nova, e a conta que você já usava (com o saldo inicial) ficou sem movimento. Unifique para que o saldo e os lançamentos fiquem na mesma conta.
+      ${lista.map(x=>`<div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <span><b>${escapeHtml(x.origem.codigo)} ${escapeHtml(x.origem.nome)}</b> (${x.movimento} lançamentos) →</span>
+        <select class="bancoUnifDest" data-origem="${x.origem.id}">${x.livres.filter(d=>d.id!==x.origem.id).map(d=>`<option value="${d.id}" ${d.id===x.sugerida.id?'selected':''}>${escapeHtml(d.codigo)} ${escapeHtml(d.nome)}</option>`).join('')}</select>
+        <button type="button" class="btn-add bancoUnifBtn" data-origem="${x.origem.id}">Unificar</button></div>`).join('')}
+    </div>`;
+  }
+  async function bancoUnificar(clientId, origemId, destinoId){
+    const o = state.planoContas.find(c=>c.id===origemId), d = state.planoContas.find(c=>c.id===destinoId);
+    if(!o || !d || o.id===d.id) throw new Error('Contas inválidas.');
+    const alvo = [], presos = [];
+    state.lancamentosContabeis.forEach(l=>{
+      if(l.clientId!==clientId) return;
+      if(l.contaDebito!==o.id && l.contaCredito!==o.id) return;
+      const n = Object.assign({}, l);
+      if(n.contaDebito===o.id) n.contaDebito = d.id;
+      if(n.contaCredito===o.id) n.contaCredito = d.id;
+      if(n.contaDebito===n.contaCredito){ presos.push(l); return; } // transferência entre as duas contas: não mexe
+      alvo.push(n);
+    });
+    for(let i=0;i<alvo.length;i+=15){ await Promise.all(alvo.slice(i,i+15).map(l=>saveLancamentoContabilSilent(l))); }
+    d.ofxBanco = o.ofxBanco; d.ofxConta = o.ofxConta;
+    await Store.set('planocontas:'+d.id, JSON.stringify(d), true);
+    let apagada = false;
+    if(!presos.length){
+      o.ofxConta = ''; 
+      await Store.delete('planocontas:'+o.id, true);
+      state.planoContas = state.planoContas.filter(c=>c.id!==o.id); apagada = true;
+    }
+    await loadLancamentosContabeis();
+    return { movidos: alvo.length, presos: presos.length, apagada, origem:o, destino:d };
+  }
   function lancDiagnosticoHtml(){
     const clientId = state.contabilEmpresaAtiva;
     if(!clientId) return '';
+    const bancoDup = bancoDuplicadosHtml(clientId);
     const d = lancDiagnostico(clientId);
     if(!d.total) return `<div class="aviso-box" style="margin:10px 0; padding:10px 12px; background:#fff7e6; border-left:4px solid #d48806; font-size:13px;">Esta empresa ainda <b>não tem nenhum lançamento contábil</b>. Se você importou um extrato ou as notas, confira se a empresa selecionada acima é a mesma da importação.</div>`;
     const partes = [];
@@ -17795,7 +17856,7 @@
       if(sg) li.push(`<li><b>${sg}</b> conta(s) analítica(s) com movimento e <b>sem grupo sintético</b> no plano (ex.: ${escapeHtml(Object.values(d.semGrupo).slice(0,3).map(c=>c.codigo+' '+c.nome).join('; '))}) — o Balanço e a DRE não somam essas contas.</li>`);
       partes.push(caixa('#c0392b','#fdecea', `<b>Lançamentos que não entram nos relatórios:</b><ul style="margin:6px 0 8px 18px;">${li.join('')}</ul><button type="button" class="btn-add" id="lancCorrigirBtn">Corrigir automaticamente</button> <span id="lancCorrigirMsg" style="font-size:12px;"></span>`));
     }
-    return partes.join('');
+    return bancoDup + partes.join('');
   }
   function lancNormalizaData(s){
     s = String(s||'').trim();
@@ -24457,6 +24518,21 @@
     if(relMes) relMes.onchange = (e)=>{ const v = e.target.value; if(!v) return; state.relDataInicio = v+'-01'; state.relDataFim = fimDoMes(v+'-01'); state.relDataFimManual = true; render(); };
     const relDataAuto = document.getElementById('relDataAuto');
     if(relDataAuto) relDataAuto.onclick = (e)=>{ e.preventDefault(); state.relDataFimManual = false; state.relDataInicio = ''; render(); };
+    root.querySelectorAll('.bancoUnifBtn').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const origemId = btn.getAttribute('data-origem');
+        const sel = root.querySelector('.bancoUnifDest[data-origem="'+origemId+'"]');
+        const o = state.planoContas.find(c=>c.id===origemId), d = sel && state.planoContas.find(c=>c.id===sel.value);
+        if(!o || !d) return;
+        if(!confirm('Passar todos os lançamentos de "' + o.nome + '" para "' + d.nome + '" e remover a conta "' + o.nome + '"?')) return;
+        btn.disabled = true; btn.textContent = 'Unificando…';
+        try{
+          const r = await bancoUnificar(state.contabilEmpresaAtiva, o.id, d.id);
+          render();
+          alert(r.movidos + ' lançamento(s) passaram para "' + d.nome + '".' + (r.presos ? ' ' + r.presos + ' transferência(s) entre as duas contas não foram alteradas, por isso a conta antiga foi mantida.' : ' A conta repetida foi removida.'));
+        }catch(e){ btn.disabled = false; btn.textContent = 'Unificar'; alert('Falha: ' + ((e && (e.code||e.message)) || 'erro')); }
+      };
+    });
     const relVerTudoBtn = document.getElementById('relVerTudoBtn');
     if(relVerTudoBtn) relVerTudoBtn.onclick = ()=>{ const dg = lancDiagnostico(state.contabilEmpresaAtiva); state.relDataInicio = ''; state.relDataFim = fimDoMes(dg.max || todayStr()); state.relDataFimManual = true; render(); };
     const lancCorrigirBtn = document.getElementById('lancCorrigirBtn');
@@ -26118,7 +26194,7 @@
         if(!result.ok){ showMsg('Não foi possível encontrar transações neste arquivo OFX. Confirme se é um extrato bancário válido.', 'error'); return; }
         state.ofxPreview = result; state.ofxNomeArquivo = file.name; state.ofxRolar = true;
         { const emp = state.contabilEmpresaAtiva; const v = emp ? ofxContaVinculada(emp, result) : null;
-          state.ofxContaBanco = v ? v.id : ((emp && result.conta) ? '__novo__' : ''); }
+          const sug = (!v && emp) ? ofxContaSugerida(emp, result) : null; state.ofxContaBanco = v ? v.id : (sug ? sug.id : ((emp && result.conta) ? '__novo__' : '')); }
         showMsg(result.transacoes.length + ' transação(ões) encontrada(s). Confirme a importação abaixo.', 'success');
         render();
       };
