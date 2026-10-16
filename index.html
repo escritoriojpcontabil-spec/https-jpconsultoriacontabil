@@ -20450,7 +20450,8 @@
   }
 
   function deptClientSelectorHtml(dept){
-    const deptClients = state.clients.slice().filter(c=>Array.isArray(c.departments) && c.departments.includes(dept)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const deptClients = state.clients.slice().filter(c=>Array.isArray(c.departments) && c.departments.includes(dept)).sort((a,b)=>(a.name||'').localeCompare(b.name||'', 'pt-BR', {sensitivity:'base', numeric:true}));
+    const colsSel = Math.max(1, Math.min(4, Math.ceil(deptClients.length/6)));
     return `
       <div class="panel" style="margin-bottom:20px;">
         <div class="panel-head" style="margin-bottom:12px;">
@@ -20463,9 +20464,9 @@
           <input type="checkbox" id="deptAllClientsCheck" ${state.deptAllClients?'checked':''}/> Todos os clientes (${deptClients.length})
         </label>
         ${!deptClients.length ? `<div class="form-hint" style="margin:0;">Nenhum cliente vinculado a este departamento ainda — marque os departamentos no Cadastro de Clientes.</div>` : `
-          <div style="display:flex; flex-wrap:wrap; gap:10px 20px; ${state.deptAllClients?'opacity:.45; pointer-events:none;':''}">
+          <div style="columns:${colsSel} 250px; column-gap:28px; ${state.deptAllClients?'opacity:.45; pointer-events:none;':''}">
             ${deptClients.map(c=>`
-              <label style="display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink-soft); cursor:pointer;">
+              <label style="display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink-soft); cursor:pointer; break-inside:avoid; padding:4px 0;">
                 <input type="checkbox" class="dept-client-check" value="${c.id}" ${state.deptSelectedClients.includes(c.id)?'checked':''}/> ${escapeHtml(c.name)}
               </label>
             `).join('')}
