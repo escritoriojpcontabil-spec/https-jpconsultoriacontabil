@@ -999,7 +999,7 @@
     {codigo:'106', label:'106 — Trabalhador temporário (Lei 6.019/74)'},
     {codigo:'111', label:'111 — Empregado — contrato de trabalho intermitente'},
   ];
-  const ESOCIAL_TIPO_CONTRATO = ['Prazo indeterminado', 'Prazo determinado', 'Aprendizagem', 'Temporário'];
+  const ESOCIAL_TIPO_CONTRATO = ['Prazo indeterminado', 'Prazo determinado', 'Aprendizagem', 'Temporário', 'Intermitente'];
 
   // Tabelas do Simples Nacional (LC 123/2006 com alterações da LC 155/2016, vigentes desde 2018).
   const SIMPLES_TABELAS = {
@@ -1312,6 +1312,33 @@
     const liquido = round2(bruto - inss - irrf - descontosExtra);
     const fgts = calcFGTS(bruto);
     return { bruto, inss, irrf, descontosExtra, liquido, fgts };
+  }
+
+  // Folha do contrato de trabalho INTERMITENTE (CLT, Art. 443 §3º e 452-A). Ao fim de cada período de
+  // convocação o empregado recebe, discriminadamente: a remuneração das horas trabalhadas, o repouso semanal
+  // remunerado (DSR), as férias proporcionais + 1/3 e o 13º salário proporcional (§6º). INSS, IRRF e FGTS
+  // incidem sobre o total pago.
+  function calcFolhaIntermitente(valorHora, horas, feriados, dependentes, outrosDescontos, competencia){
+    const tab = tabelaFolhaVigente(competencia);
+    const vh = Number(valorHora)||0, h = Number(horas)||0;
+    const rem = round2(vh*h);
+    const m = /^(\d{4})-(\d{2})/.exec(String(competencia||''));
+    const ano = m ? +m[1] : new Date().getFullYear(), mes = m ? +m[2] : new Date().getMonth()+1;
+    const dias = new Date(ano, mes, 0).getDate();
+    let domingos = 0; for(let d=1; d<=dias; d++){ if(new Date(ano, mes-1, d).getDay()===0) domingos++; }
+    const fer = Math.max(0, Math.min(Math.round(Number(feriados)||0), dias-domingos));
+    const diasUteis = dias - domingos - fer;
+    const dsr = diasUteis>0 ? round2(rem/diasUteis*(domingos+fer)) : 0;
+    const base = round2(rem + dsr);
+    const ferias = round2(base/12), terco = round2(ferias/3), decimo = round2(base/12);
+    const bruto = round2(base + ferias + terco + decimo);
+    const inss = calcINSS(bruto, tab);
+    const baseIrrf = baseIrrfCalculo(bruto, inss, dependentes, tab);
+    const irrf = calcIRRF(baseIrrf, bruto, tab);
+    const descontosExtra = Number(outrosDescontos)||0;
+    const liquido = round2(bruto - inss - irrf - descontosExtra);
+    const fgts = calcFGTS(bruto);
+    return { intermitente:true, valorHora:vh, horas:h, feriados:fer, domingos, diasUteis, rem, dsr, ferias, terco, decimo, bruto, inss, irrf, descontosExtra, liquido, fgts };
   }
 
   // Cálculo de férias (Art. 129 a 145 da CLT).
@@ -5596,8 +5623,17 @@
     const salarioBase = func ? Number(func.salarioBase)||0 : Number(folha.bruto)||0;
     const outrosProventos = Math.max(0, round2((Number(folha.bruto)||0) - salarioBase));
     const itens = [];
-    itens.push({cod:'001', desc:'SALÁRIO NORMAL', ref:'30,00', venc:salarioBase, desc_v:null});
-    if(outrosProventos) itens.push({cod:'010', desc:'OUTROS PROVENTOS', ref:'', venc:outrosProventos, desc_v:null});
+    const numBR = (v)=> (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+    if(folha.intermitente){
+      itens.push({cod:'001', desc:'HORAS TRABALHADAS (INTERM.)', ref:numBR(folha.horas)+' h', venc:folha.rem, desc_v:null});
+      if(folha.dsr) itens.push({cod:'002', desc:'D.S.R.', ref:String((folha.domingos||0)+(folha.feriados||0)), venc:folha.dsr, desc_v:null});
+      itens.push({cod:'003', desc:'FÉRIAS PROPORCIONAIS', ref:'1/12', venc:folha.ferias, desc_v:null});
+      itens.push({cod:'004', desc:'1/3 CONSTITUCIONAL FÉRIAS', ref:'', venc:folha.terco, desc_v:null});
+      itens.push({cod:'005', desc:'13º SALÁRIO PROPORCIONAL', ref:'1/12', venc:folha.decimo, desc_v:null});
+    } else {
+      itens.push({cod:'001', desc:'SALÁRIO NORMAL', ref:'30,00', venc:salarioBase, desc_v:null});
+      if(outrosProventos) itens.push({cod:'010', desc:'OUTROS PROVENTOS', ref:'', venc:outrosProventos, desc_v:null});
+    }
     if(folha.inss) itens.push({cod:'101', desc:'I.N.S.S', ref:'', venc:null, desc_v:folha.inss});
     if(folha.irrf) itens.push({cod:'120', desc:'I.R.R.F.', ref:'', venc:null, desc_v:folha.irrf});
     if(folha.descontosExtra) itens.push({cod:'190', desc:'OUTROS DESCONTOS', ref:'', venc:null, desc_v:folha.descontosExtra});
@@ -5609,7 +5645,7 @@
       doc.rect(mx, y, cw*0.78, 9);
       doc.rect(mx+cw*0.78, y, cw*0.22, 9);
       doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(20,25,30);
-      doc.text('RECIBO DE PAGAMENTO DE SALÁRIO MENSAL', mx+2, y+6);
+      doc.text(folha.intermitente ? 'RECIBO DE PAGAMENTO — CONTRATO INTERMITENTE' : 'RECIBO DE PAGAMENTO DE SALÁRIO MENSAL', mx+2, y+6);
       doc.setFontSize(6.5); doc.setFont('helvetica','normal');
       doc.text('Competência', mx+cw*0.78+2, y+3.2);
       doc.setFont('helvetica','bold'); doc.setFontSize(9);
@@ -5671,7 +5707,7 @@
       doc.text('Descontos', mx+wCod+wDesc+wRef+wVenc+wDesc2/2, y+3.8, {align:'center'});
       y += 5.5;
 
-      const totalLinhasTabela = 12;
+      const totalLinhasTabela = Math.max(itens.length + 1, 5); // só algumas linhas em branco (recibo mais compacto)
       doc.setFont('helvetica','normal'); doc.setFontSize(7);
       for(let i=0;i<totalLinhasTabela;i++){
         const it = itens[i];
@@ -5702,13 +5738,13 @@
       doc.text('RESUMO DO', mx+1.2, y+4.5);
       doc.text('SALÁRIO', mx+1.2, y+7.5);
       doc.setFont('helvetica','normal'); doc.setFontSize(6);
-      doc.text('Salário Base', mx+wResumoLabel+1.2, y+3);
+      doc.text(folha.intermitente ? 'Valor da Hora' : 'Salário Base', mx+wResumoLabel+1.2, y+3);
       doc.text('Sal. Contribuição', mx+wResumoLabel+wResumoCol+1.2, y+3);
       doc.text('Total de Vencimentos', mx+wResumoLabel+wResumoCol*2+1.2, y+3);
       doc.text('LÍQUIDO', mx+wResumoLabel+wResumoCol*3+1.2, y+3.2);
       doc.text('A RECEBER', mx+wResumoLabel+wResumoCol*3+1.2, y+6);
       doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
-      doc.text(fmtBRL(salarioBase), mx+wResumoLabel+wResumoCol-1.5, y+10, {align:'right'});
+      doc.text(fmtBRL(folha.intermitente ? folha.valorHora : salarioBase) + (folha.intermitente ? '/h' : ''), mx+wResumoLabel+wResumoCol-1.5, y+10, {align:'right'});
       doc.text(fmtBRL(folha.bruto), mx+wResumoLabel+wResumoCol*2-1.5, y+10, {align:'right'});
       doc.text(fmtBRL(folha.bruto), mx+wResumoLabel+wResumoCol*3-1.5, y+10, {align:'right'});
       doc.setFontSize(9);
@@ -19151,7 +19187,10 @@
               <div class="field"><label>CBO (código da ocupação)</label><input type="text" id="fcCbo" placeholder="Ex: 4110-05" value="${escapeHtml(d.cbo||'')}" required/></div>
               <div class="field"><label>Categoria eSocial</label><select id="fcCategoriaEsocial">${ESOCIAL_CATEGORIA.map(c=>`<option value="${c.codigo}" ${c.codigo===d.categoriaEsocial?'selected':''}>${c.label}</option>`).join('')}</select></div>
             </div>
-            <div class="field"><label>Tipo de contrato</label><select id="fcTipoContrato">${ESOCIAL_TIPO_CONTRATO.map(s=>`<option value="${s}" ${s===d.tipoContrato?'selected':''}>${s}</option>`).join('')}</select></div>
+            <div class="form-row">
+              <div class="field"><label>Tipo de contrato</label><select id="fcTipoContrato">${ESOCIAL_TIPO_CONTRATO.map(s=>`<option value="${s}" ${s===d.tipoContrato?'selected':''}>${s}</option>`).join('')}</select></div>
+              <div class="field" id="fcValorHoraBox" style="${d.tipoContrato==='Intermitente'?'':'display:none;'}"><label>Valor da hora (R$) — contrato intermitente</label><input type="number" step="0.01" min="0" id="fcValorHora" placeholder="Ex: 7,91" value="${d.valorHora||''}"/></div>
+            </div>
             <div class="field"><label>Jornada de trabalho</label><input type="text" id="fcJornada" placeholder="Ex: 44h semanais, seg. a sex. 08h-17h, sáb. 08h-12h" value="${escapeHtml(d.jornada||'')}"/></div>
 
             <div class="form-section-title">Endereço (eSocial)</div>
@@ -19205,7 +19244,7 @@
     const totIrrf = listaCompetencia.reduce((s,f)=>s+(f.irrf||0),0) + listaProlaboresResumo.reduce((s,p)=>s+(p.irrf||0),0);
     const totFgts = listaCompetencia.reduce((s,f)=>s+(f.fgts||0),0);
 
-    let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado' && isClientInScope(f.clientId));
+    let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado' && f.tipoContrato!=='Intermitente' && isClientInScope(f.clientId));
     const jaCalculadosIds = new Set(state.folhas.filter(f=>f.competencia===state.competenciaAtiva).map(f=>f.funcionarioId));
     const pendentes = funcsElegiveis.filter(f=>!jaCalculadosIds.has(f.id));
 
@@ -19223,7 +19262,11 @@
       <div class="form-row">
         <div class="field"><label>Funcionário</label><select id="folhaFunc">${funcOptionsHtml(d.funcionarioId)}</select></div>
       </div>
-      ${func ? `<div class="form-hint" style="margin:-8px 0 12px;">Salário base: ${fmtBRL(func.salarioBase)} · Dependentes: ${func.dependentes||0}</div>` : ''}
+      ${func ? `<div class="form-hint" style="margin:-8px 0 12px;">${func.tipoContrato==='Intermitente' ? `<b>Contrato intermitente</b> · Valor da hora: ${func.valorHora ? fmtBRL(func.valorHora) : '<span style="color:#c0392b;">não cadastrado (edite o funcionário)</span>'}` : `Salário base: ${fmtBRL(func.salarioBase)}`} · Dependentes: ${func.dependentes||0}</div>` : ''}
+      ${func && func.tipoContrato==='Intermitente' ? `<div class="form-row">
+        <div class="field"><label>Horas trabalhadas no mês</label><input type="number" step="0.01" min="0" id="folhaHoras" value="${d.horas||''}" placeholder="Ex: 120"/></div>
+        <div class="field"><label>Feriados no mês (para o DSR)</label><input type="number" step="1" min="0" id="folhaFeriados" value="${d.feriados||0}"/></div>
+      </div>` : ''}
       <div class="form-row">
         <div class="field"><label>Outros proventos (R$, opcional)</label><input type="number" step="0.01" min="0" id="folhaProventos" value="0"/></div>
         <div class="field"><label>Outros descontos (R$, opcional)</label><input type="number" step="0.01" min="0" id="folhaDescontos" value="0"/></div>
@@ -26359,11 +26402,21 @@
       const mapa = { fcNome:'nome', fcCpf:'cpf', fcCargo:'cargo', fcCliente:'clientId', fcAdmissao:'dataAdmissao', fcSalario:'salarioBase', fcStatus:'status',
         fcPis:'pis', fcNascimento:'dataNascimento', fcNomeMae:'nomeMae', fcSexo:'sexo', fcRacaCor:'racaCor', fcGrauInstrucao:'grauInstrucao',
         fcCtpsNumero:'ctpsNumero', fcCtpsSerie:'ctpsSerie', fcCbo:'cbo', fcCategoriaEsocial:'categoriaEsocial', fcTipoContrato:'tipoContrato',
-        fcJornada:'jornada', fcCep:'cep', fcMunicipioUf:'municipioUf', fcLogradouro:'logradouro', fcNumeroEndereco:'numeroEndereco', fcBairro:'bairro' };
+        fcJornada:'jornada', fcValorHora:'valorHora', fcCep:'cep', fcMunicipioUf:'municipioUf', fcLogradouro:'logradouro', fcNumeroEndereco:'numeroEndereco', fcBairro:'bairro' };
       Object.keys(mapa).forEach(id=>{ const el = document.getElementById(id); if(el) d[mapa[id]] = el.value; });
       const envio = document.getElementById('fcEnvioAutomatico'); if(envio) d.envioAutomaticoEsocial = !!envio.checked;
       d.dependentesLista = fcLerDependentes();
       if(!d.dependentesLista.length){ const el = document.getElementById('fcDependentes'); if(el) d.dependentes = el.value; }
+    };
+    const fcTipoContratoEl = document.getElementById('fcTipoContrato');
+    if(fcTipoContratoEl) fcTipoContratoEl.onchange = ()=>{
+      const interm = fcTipoContratoEl.value === 'Intermitente';
+      const box = document.getElementById('fcValorHoraBox'); if(box) box.style.display = interm ? '' : 'none';
+      if(interm){
+        const cat = document.getElementById('fcCategoriaEsocial'); if(cat) cat.value = '111';
+        const vh = document.getElementById('fcValorHora'), sal = parseFloat((document.getElementById('fcSalario')||{}).value);
+        if(vh && !parseFloat(vh.value) && sal > 0) vh.value = (Math.round(sal/220*100)/100).toFixed(2);
+      }
     };
     const fcRolarPara = (id)=>{ const el = document.getElementById(id); if(el && el.scrollIntoView) el.scrollIntoView({block:'center'}); };
     const fcAddDependente = document.getElementById('fcAddDependente');
@@ -26411,6 +26464,7 @@
           cbo: document.getElementById('fcCbo').value,
           categoriaEsocial: document.getElementById('fcCategoriaEsocial').value,
           tipoContrato: document.getElementById('fcTipoContrato').value,
+          valorHora: parseFloat(document.getElementById('fcValorHora').value) || 0,
           jornada: document.getElementById('fcJornada').value,
           cep: document.getElementById('fcCep').value,
           municipioUf: document.getElementById('fcMunicipioUf').value,
@@ -26454,7 +26508,7 @@
     if(calcFolhaTodosBtn){
       calcFolhaTodosBtn.onclick = async ()=>{
         const competencia = document.getElementById('folhaCompetencia').value || state.competenciaAtiva;
-        let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado' && isClientInScope(f.clientId));
+        let funcsElegiveis = state.funcionarios.filter(f=>f.status!=='Desligado' && f.tipoContrato!=='Intermitente' && isClientInScope(f.clientId)); // intermitentes dependem das horas do mês: cálculo individual
         const jaCalculadosIds = new Set(state.folhas.filter(f=>f.competencia===competencia).map(f=>f.funcionarioId));
         const pendentes = funcsElegiveis.filter(f=>!jaCalculadosIds.has(f.id));
         if(!pendentes.length){ alert('Não há funcionários pendentes de cálculo nesta competência' + (state.deptAllClients?'':' para as empresas selecionadas') + ' — todos já têm folha calculada.'); return; }
@@ -26496,8 +26550,32 @@
         const competencia = document.getElementById('folhaCompetencia').value || state.competenciaAtiva;
         const outrosProventos = parseFloat(document.getElementById('folhaProventos').value)||0;
         const outrosDescontos = parseFloat(document.getElementById('folhaDescontos').value)||0;
-        const r = calcFolha(func.salarioBase, outrosProventos, func.dependentes, outrosDescontos, competencia);
-        document.getElementById('folhaResult').innerHTML = `
+        const interm = func.tipoContrato === 'Intermitente';
+        const horasEl = document.getElementById('folhaHoras');
+        if(interm){
+          if(!(Number(func.valorHora) > 0)){ alert('Informe o valor da hora no cadastro deste funcionário (Editar).'); return; }
+          if(!(parseFloat(horasEl && horasEl.value) > 0)){ alert('Informe as horas trabalhadas no mês.'); return; }
+        }
+        const r = interm
+          ? calcFolhaIntermitente(func.valorHora, parseFloat(horasEl.value), parseInt(document.getElementById('folhaFeriados').value)||0, func.dependentes, outrosDescontos, competencia)
+          : calcFolha(func.salarioBase, outrosProventos, func.dependentes, outrosDescontos, competencia);
+        if(interm){
+          state.folhaCalcData = Object.assign({}, state.folhaCalcData, {horas: horasEl.value, feriados: document.getElementById('folhaFeriados').value});
+          document.getElementById('folhaResult').innerHTML = `
+          <div class="payroll-result">
+            <div class="pr-line"><span>Horas trabalhadas (${r.horas.toLocaleString('pt-BR')} h × ${fmtBRL(r.valorHora)})</span><span>${fmtBRL(r.rem)}</span></div>
+            <div class="pr-line"><span>D.S.R. (${r.domingos} domingo(s) + ${r.feriados} feriado(s) / ${r.diasUteis} dias úteis)</span><span>${fmtBRL(r.dsr)}</span></div>
+            <div class="pr-line"><span>Férias proporcionais (1/12)</span><span>${fmtBRL(r.ferias)}</span></div>
+            <div class="pr-line"><span>1/3 constitucional sobre as férias</span><span>${fmtBRL(r.terco)}</span></div>
+            <div class="pr-line"><span>13º salário proporcional (1/12)</span><span>${fmtBRL(r.decimo)}</span></div>
+            <div class="pr-line"><span><b>Total bruto</b></span><span><b>${fmtBRL(r.bruto)}</b></span></div>
+            <div class="pr-line neg"><span>(-) INSS</span><span>${fmtBRL(r.inss)}</span></div>
+            <div class="pr-line neg"><span>(-) IRRF</span><span>${fmtBRL(r.irrf)}</span></div>
+            ${r.descontosExtra ? `<div class="pr-line neg"><span>(-) Outros descontos</span><span>${fmtBRL(r.descontosExtra)}</span></div>` : ''}
+            <div class="pr-line total"><span>Líquido a receber</span><span>${fmtBRL(r.liquido)}</span></div>
+            <div class="pr-line" style="margin-top:8px; color:var(--ink-soft);"><span>FGTS a depositar (8% sobre o total)</span><span>${fmtBRL(r.fgts)}</span></div>
+          </div>`;
+        } else document.getElementById('folhaResult').innerHTML = `
           <div class="payroll-result">
             <div class="pr-line"><span>Salário base + proventos (bruto)</span><span>${fmtBRL(r.bruto)}</span></div>
             <div class="pr-line neg"><span>(-) INSS</span><span>${fmtBRL(r.inss)}</span></div>
@@ -26512,6 +26590,7 @@
           bruto: r.bruto, inss: r.inss, irrf: r.irrf, descontosExtra: r.descontosExtra,
           liquido: r.liquido, fgts: r.fgts, status: 'Calculada',
         };
+        if(interm) Object.assign(folhaData, { intermitente:true, horas:r.horas, valorHora:r.valorHora, feriados:r.feriados, domingos:r.domingos, rem:r.rem, dsr:r.dsr, ferias:r.ferias, terco:r.terco, decimo:r.decimo });
         await saveFolha(folhaData);
         const resultado = await gerarLancamentosFolha(folhaData, func);
         if(resultado.ok){
