@@ -1057,7 +1057,7 @@
   };
 
   const SIT_FISCAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação'];
-  const SIT_ESTADUAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação', 'Dispensada (sem atividade de comércio)'];
+  const SIT_ESTADUAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação', 'Dispensada (sem atividade de comércio)', 'Baixada (mudança de atividade)'];
   const SIT_MUNICIPAL_STATUS = ['Regular', 'Irregular', 'Pendente de verificação', 'Dispensada'];
 
   // Inscrição Estadual só é obrigatória para empresas com atividade de comércio, indústria ou
@@ -11164,7 +11164,7 @@
     spedPreencherDoCliente(cfg, cl);
     if(!cfg.ie){
       const ie = (state.inscricoes||[]).find(i=>i.clientId===clientId && i.tipo==='Inscrição Estadual');
-      if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero;
+      if(ie && ie.numero!=='ISENTO' && ie.numero!=='BAIXADA') cfg.ie = ie.numero;
     }
     const ent = spedEntradas(clientId, comp);
     const notas = state.notasFiscais
@@ -11479,7 +11479,7 @@
     const resumo = fsResumoNotas(cl.id, ym);
     const fat = faturamentoNotasMes(cl.id, ym);
     const ie = (state.inscricoes||[]).find(i=>i.clientId===cl.id && i.tipo==='Inscrição Estadual');
-    const ctx = { exigeIE: clienteExigeIE(cl) && !!ie && ie.numero!=='ISENTO' };
+    const ctx = { exigeIE: clienteExigeIE(cl) && !!ie && ie.numero!=='ISENTO' && ie.numero!=='BAIXADA' };
     plano.resumo = resumo; plano.ctx = ctx;
     const prox = fsMesSeguinte(ym, 1);
     const ano = ym.slice(0,4);
@@ -13888,6 +13888,7 @@
   function clienteExigeIE(d){
     if(!d) return false;
     if(d.personType==='PF') return false;
+    if(d.ieBaixada) return false; // IE baixada (ex.: mudança de atividade) — não exige nova inscrição
     if(d.regimeTributario==='MEI') return false;
     if(['Comércio / Indústria','Revenda de combustíveis'].indexOf(d.atividadePresumido)>=0) return true;
     if(/^Anexo (I|II) /.test(String(d.anexoSimples||''))) return true; // Simples: Anexo I = comércio, Anexo II = indústria
@@ -14672,7 +14673,8 @@
       doc: c.doc||'', name: c.name||'', phone: c.phone||'', email: c.email||'',
       departments: Array.isArray(c.departments) ? c.departments.slice() : [], address: (c.cep ? (c.address||'') : separarCepDoEndereco(c.address).address), cep: clienteCep(c), city: c.city||'', uf: c.uf||'',
       situacao: c.situacao||'', mainActivity: c.mainActivity||'', lookupMsg:'', lookupType:'info', lookupLoading:false,
-      ie: (clienteIEAtual(c.id)||{}).numero && (clienteIEAtual(c.id)||{}).numero!=='ISENTO' ? clienteIEAtual(c.id).numero : '', ieIsento: !!(clienteIEAtual(c.id) && clienteIEAtual(c.id).numero==='ISENTO'),
+      ie: (clienteIEAtual(c.id)||{}).numero && (clienteIEAtual(c.id)||{}).numero!=='ISENTO' && (clienteIEAtual(c.id)||{}).numero!=='BAIXADA' ? clienteIEAtual(c.id).numero : '',
+      ieBaixada: !!c.ieBaixada, ieBaixaData: c.ieBaixaData||'', ieBaixaMotivo: c.ieBaixaMotivo||'Mudança de atividade', ieIsento: !!(clienteIEAtual(c.id) && clienteIEAtual(c.id).numero==='ISENTO'),
       personType: c.personType||'', porte: c.porte||'', regimeTributario: c.regimeTributario||'',
       dataAbertura: c.dataAbertura||'', secondaryActivities: c.secondaryActivities||'',
       anexoSimples: c.anexoSimples||'', fatorRAtivo: !!c.fatorRAtivo,
@@ -14992,7 +14994,7 @@
             <div class="detail-item"><div class="dl">Regime tributário</div><div class="dv">${escapeHtml(c.regimeTributario||'—')}</div></div>
             ${c.regimeTributario==='Simples Nacional' ? `<div class="detail-item"><div class="dl">Anexo do Simples</div><div class="dv">${escapeHtml(c.anexoSimples||'—')}${c.fatorRAtivo?' <span class="tag sit-outra">Fator R automático (III/V)</span>':''}</div></div>` : ''}
             ${c.regimeTributario==='Lucro Presumido' ? `<div class="detail-item"><div class="dl">Atividade (presunção)</div><div class="dv">${escapeHtml(c.atividadePresumido||'—')}${c.issAliquotaPresumido?' · ISS '+escapeHtml(c.issAliquotaPresumido)+'%':''}</div></div>` : ''}
-            <div class="detail-item"><div class="dl">Inscrição Estadual</div><div class="dv">${(()=>{ const ie = clienteIEAtual(c.id); if(ie) return escapeHtml(ie.numero==='ISENTO'?'Isento / não contribuinte':ie.numero); return clienteExigeIE(c) ? '<span class="tag sit-baixada">Obrigatória — não cadastrada</span>' : '—'; })()}</div></div>
+            <div class="detail-item"><div class="dl">Inscrição Estadual</div><div class="dv">${(()=>{ const ie = clienteIEAtual(c.id); if(c.ieBaixada) return '<span class="tag sit-baixada">IE baixada' + (c.ieBaixaData ? ' em ' + fmtDate(c.ieBaixaData) : '') + '</span> <span style="font-size:12px; color:var(--ink-soft);">' + escapeHtml(c.ieBaixaMotivo||'') + (ie && ie.numero && ie.numero!=='BAIXADA' ? ' · nº anterior ' + escapeHtml(ie.numero) : '') + '</span>'; if(ie) return escapeHtml(ie.numero==='ISENTO'?'Isento / não contribuinte':ie.numero); return clienteExigeIE(c) ? '<span class="tag sit-baixada">Obrigatória — não cadastrada</span>' : '—'; })()}</div></div>
             <div class="detail-item"><div class="dl">Data de abertura</div><div class="dv">${c.dataAbertura?fmtDate(c.dataAbertura):'—'}</div></div>
             <div class="detail-item detail-full"><div class="dl">Atividade principal</div><div class="dv">${escapeHtml(c.mainActivity||'—')}</div></div>
             <div class="detail-item detail-full"><div class="dl">Atividade(s) secundária(s)</div><div class="dv">${escapeHtml(c.secondaryActivities||'—')}</div></div>
@@ -17728,6 +17730,118 @@
     state.lancamentosContabeis.forEach(l=>{ if(l.clientId===clientId && l.data && l.data>ult) ult = l.data; });
     return fimDoMes(ult || todayStr());
   }
+  // ===== Diagnóstico: lançamentos que os relatórios contábeis não conseguem enxergar =====
+  // Causas tratadas: (1) período escolhido não cobre os lançamentos; (2) data fora do formato AAAA-MM-DD;
+  // (3) valor gravado como texto; (4) conta de débito/crédito que não pertence ao plano da empresa
+  // (ex.: id de outra empresa ou conta apagada); (5) conta analítica sem grupo sintético pai.
+  function lancDiagnostico(clientId){
+    const planoEmp = state.planoContas.filter(c=>c.clientId===clientId);
+    const idsEmp = {}; planoEmp.forEach(c=>{ idsEmp[c.id] = c; });
+    const porId = {}; state.planoContas.forEach(c=>{ porId[c.id] = c; });
+    const porCodigo = {}; planoEmp.forEach(c=>{ if(!porCodigo[c.codigo]) porCodigo[c.codigo] = c; });
+    const sinteticas = planoEmp.filter(c=>c.tipo==='Sintética').map(c=>c.codigo+'.');
+    const lancs = state.lancamentosContabeis.filter(l=>l.clientId===clientId);
+    const r = { total:lancs.length, min:'', max:'', meses:{}, dataRuim:[], valorRuim:[], contaOutraEmpresa:[], contaInexistente:[], mesmaConta:[], semGrupo:{}, foraPeriodo:0, noPeriodo:0 };
+    const ini = state.relDataInicio || '', fim = state.relDataFim || '9999-12-31';
+    lancs.forEach(l=>{
+      const okData = /^\d{4}-\d{2}-\d{2}$/.test(String(l.data||''));
+      if(!okData) r.dataRuim.push(l);
+      else {
+        if(!r.min || l.data < r.min) r.min = l.data;
+        if(!r.max || l.data > r.max) r.max = l.data;
+        const ym = l.data.slice(0,7); r.meses[ym] = (r.meses[ym]||0) + 1;
+        if((ini && l.data < ini) || l.data > fim) r.foraPeriodo++; else r.noPeriodo++;
+      }
+      if(typeof l.valor !== 'number' || !isFinite(l.valor)) r.valorRuim.push(l);
+      ['contaDebito','contaCredito'].forEach(campo=>{
+        const id = l[campo];
+        if(idsEmp[id]){
+          const c = idsEmp[id];
+          if(c.tipo==='Analítica' && !sinteticas.some(p=>String(c.codigo).startsWith(p))) r.semGrupo[c.id] = c;
+          return;
+        }
+        const o = porId[id];
+        if(o) r.contaOutraEmpresa.push({ l, campo, origem:o, destino: porCodigo[o.codigo] || null });
+        else r.contaInexistente.push({ l, campo });
+      });
+      if(l.contaDebito && l.contaDebito === l.contaCredito) r.mesmaConta.push(l);
+    });
+    r.problemas = r.dataRuim.length + r.valorRuim.length + r.contaOutraEmpresa.length + r.contaInexistente.length + Object.keys(r.semGrupo).length;
+    return r;
+  }
+  function lancDiagnosticoHtml(){
+    const clientId = state.contabilEmpresaAtiva;
+    if(!clientId) return '';
+    const d = lancDiagnostico(clientId);
+    if(!d.total) return `<div class="aviso-box" style="margin:10px 0; padding:10px 12px; background:#fff7e6; border-left:4px solid #d48806; font-size:13px;">Esta empresa ainda <b>não tem nenhum lançamento contábil</b>. Se você importou um extrato ou as notas, confira se a empresa selecionada acima é a mesma da importação.</div>`;
+    const partes = [];
+    const caixa = (cor, fundo, html)=> `<div style="margin:10px 0; padding:10px 12px; background:${fundo}; border-left:4px solid ${cor}; font-size:13px; line-height:1.5;">${html}</div>`;
+    if(d.foraPeriodo && !d.noPeriodo){
+      partes.push(caixa('#d48806','#fff7e6', `Nenhum lançamento desta empresa cai no período escolhido (${state.relDataInicio?fmtDate(state.relDataInicio):'início'} a ${fmtDate(state.relDataFim)}). Os ${d.total} lançamentos vão de <b>${fmtDate(d.min)}</b> a <b>${fmtDate(d.max)}</b>. <button type="button" class="btn-sm" id="relVerTudoBtn">Mostrar todo o período (${fmtDate(d.min)} a ${fmtDate(d.max)})</button>`));
+    } else if(d.foraPeriodo){
+      partes.push(caixa('#1f4e79','#eef5fb', `Período atual: ${d.noPeriodo} lançamento(s) incluído(s) e <b>${d.foraPeriodo} fora do período</b> (os lançamentos desta empresa vão de ${fmtDate(d.min)} a ${fmtDate(d.max)}). <button type="button" class="btn-sm" id="relVerTudoBtn">Mostrar todo o período</button>`));
+    }
+    if(d.problemas){
+      const li = [];
+      if(d.dataRuim.length) li.push(`<li><b>${d.dataRuim.length}</b> com data em formato inválido (os relatórios ignoram esses lançamentos).</li>`);
+      if(d.valorRuim.length) li.push(`<li><b>${d.valorRuim.length}</b> com valor gravado como texto.</li>`);
+      const reaponta = d.contaOutraEmpresa.filter(x=>x.destino).length;
+      if(d.contaOutraEmpresa.length) li.push(`<li><b>${d.contaOutraEmpresa.length}</b> lado(s) de lançamento ligado(s) a conta de <b>outra empresa</b> — ${reaponta} podem ser religados pelo código da conta ao plano desta empresa.</li>`);
+      if(d.contaInexistente.length){
+        const ex = d.contaInexistente.slice(0,4).map(x=>fmtDate(x.l.data)+' '+fmtBRL(x.l.valor)+' '+String(x.l.historico||'').slice(0,40)).join(' · ');
+        li.push(`<li><b>${d.contaInexistente.length}</b> lado(s) de lançamento ligado(s) a conta que <b>não existe mais</b> (ex.: ${escapeHtml(ex)}) — se a outra conta não for a "Conta a Classificar", vão para ela; senão edite o lançamento em Lançamentos.</li>`);
+      }
+      const sg = Object.keys(d.semGrupo).length;
+      if(sg) li.push(`<li><b>${sg}</b> conta(s) analítica(s) com movimento e <b>sem grupo sintético</b> no plano (ex.: ${escapeHtml(Object.values(d.semGrupo).slice(0,3).map(c=>c.codigo+' '+c.nome).join('; '))}) — o Balanço e a DRE não somam essas contas.</li>`);
+      partes.push(caixa('#c0392b','#fdecea', `<b>Lançamentos que não entram nos relatórios:</b><ul style="margin:6px 0 8px 18px;">${li.join('')}</ul><button type="button" class="btn-add" id="lancCorrigirBtn">Corrigir automaticamente</button> <span id="lancCorrigirMsg" style="font-size:12px;"></span>`));
+    }
+    return partes.join('');
+  }
+  function lancNormalizaData(s){
+    s = String(s||'').trim();
+    let m;
+    if((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0');
+    if((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) return m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+    if((m = s.match(/^(\d{4})(\d{2})(\d{2})/))) return m[1]+'-'+m[2]+'-'+m[3];
+    if(/^\d{5}$/.test(s)){ const d = new Date(Date.UTC(1899,11,30) + (+s)*86400000); return d.toISOString().slice(0,10); }
+    return '';
+  }
+  async function lancCorrigirRelatorios(clientId){
+    const d = lancDiagnostico(clientId);
+    const mudar = {}; // id -> lançamento atualizado
+    const pegar = (l)=> mudar[l.id] || (mudar[l.id] = Object.assign({}, l));
+    const res = { datas:0, valores:0, religadas:0, classificar:0, grupos:0, semSolucao:0 };
+    const outroLado = (l, campo)=> (mudar[l.id] || l)[campo==='contaDebito' ? 'contaCredito' : 'contaDebito'];
+    d.dataRuim.forEach(l=>{ const n = lancNormalizaData(l.data); if(n){ pegar(l).data = n; res.datas++; } else res.semSolucao++; });
+    d.valorRuim.forEach(l=>{ const v = parseValorBR(l.valor); if(isFinite(v)){ pegar(l).valor = Math.round(v*100)/100; res.valores++; } else res.semSolucao++; });
+    const contaClassificar = state.planoContas.find(c=>c.clientId===clientId && c.tipo==='Analítica' && (c.papel==='classificar' || c.nome==='Conta a Classificar (Importação OFX)'));
+    d.contaOutraEmpresa.forEach(x=>{
+      if(x.destino){ pegar(x.l)[x.campo] = x.destino.id; res.religadas++; }
+      else if(contaClassificar && outroLado(x.l, x.campo) !== contaClassificar.id){ const n = pegar(x.l); n[x.campo] = contaClassificar.id; n.historico = String(n.historico||'') + ' (reclassificar contrapartida)'; res.classificar++; }
+      else res.semSolucao++;
+    });
+    d.contaInexistente.forEach(x=>{
+      if(contaClassificar && outroLado(x.l, x.campo) !== contaClassificar.id){ const n = pegar(x.l); n[x.campo] = contaClassificar.id; if(!/reclassificar contrapartida/i.test(n.historico||'')) n.historico = String(n.historico||'') + ' (reclassificar contrapartida)'; res.classificar++; }
+      else res.semSolucao++;
+    });
+    // contas analíticas sem grupo: cria o grupo sintético pai (prefixo do código) quando falta
+    const novasContas = [];
+    Object.values(d.semGrupo).forEach(c=>{
+      const partes = String(c.codigo).split('.');
+      for(let i=1;i<partes.length;i++){
+        const cod = partes.slice(0,i).join('.');
+        if(!state.planoContas.some(x=>x.clientId===clientId && x.codigo===cod) && !novasContas.some(x=>x.codigo===cod)){
+          const ref = state.planoContas.find(x=>x.clientId===clientId && String(x.codigo).startsWith(cod+'.')) || c;
+          novasContas.push({ id:uid(), clientId, codigo:cod, nome:'Grupo '+cod, tipo:'Sintética', natureza: ref.natureza||'Devedora', contaSuperior: i>1 ? partes.slice(0,i-1).join('.') : null, origemAutomatica:true });
+        }
+      }
+    });
+    for(const nc of novasContas){ await Store.set('planocontas:'+nc.id, JSON.stringify(nc), true); state.planoContas.push(nc); res.grupos++; }
+    const lista = Object.values(mudar);
+    for(let i=0;i<lista.length;i+=15){ await Promise.all(lista.slice(i,i+15).map(l=>saveLancamentoContabilSilent(l))); }
+    if(lista.length) await loadLancamentosContabeis();
+    return res;
+  }
   function periodoSeletorHtml(){
     if(!state.relDataFimManual) state.relDataFim = relDataFimPadrao(state.contabilEmpresaAtiva);
     const ini = state.relDataInicio, fim = state.relDataFim;
@@ -17917,6 +18031,7 @@
       <div class="form-hint" style="margin:-4px 0 14px;">Relatórios de apoio contábil calculados automaticamente a partir dos Lançamentos Contábeis desta empresa, conforme a Lei 6.404/76 (estrutura das demonstrações financeiras) e o Código Civil (escrituração — Art. 1.179 a 1.195).</div>
       ${empresaContabilSelectorHtml()}
       ${periodoSeletorHtml()}
+      ${lancDiagnosticoHtml()}
       <div class="dept-tabs" style="margin:14px 0;">
         <button type="button" class="dept-tab-btn ${state.contabilRelSubTab==='balancete'?'active':''}" data-rel-subtab="balancete">Balancete de Verificação</button>
         <button type="button" class="dept-tab-btn ${state.contabilRelSubTab==='balanco'?'active':''}" data-rel-subtab="balanco">Balanço Patrimonial</button>
@@ -21767,6 +21882,16 @@
             <div class="field"><label>Inscrição Estadual (ICMS) <span id="clIeObrig" style="color:var(--danger,#b3261e); font-weight:700;">${clienteExigeIE(d)?'— obrigatória (atividade de comércio/indústria)':''}</span></label>
               <input type="text" id="clIE" value="${escapeHtml(d.ie||'')}" placeholder="Somente números, conforme a SEFAZ" ${d.ieIsento?'disabled':''}/>
               <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:6px; font-weight:400;"><input type="checkbox" id="clIEIsento" ${d.ieIsento?'checked':''}/> Isento / não contribuinte de ICMS</label>
+              <div style="margin-top:8px;">
+                <button type="button" class="btn-sm" id="clIEBaixadaBtn">${d.ieBaixada ? '✓ Inscrição Estadual baixada — clique para desfazer' : 'Inscrição Estadual baixada (mudança de atividade)'}</button>
+                <div id="clIEBaixadaBox" style="display:${d.ieBaixada?'block':'none'}; margin-top:8px;">
+                  <div class="form-row">
+                    <div class="field"><label>Data da baixa</label><input type="date" id="clIEBaixaData" value="${escapeHtml(d.ieBaixaData||'')}"/></div>
+                    <div class="field"><label>Motivo</label><select id="clIEBaixaMotivo">${['Mudança de atividade','Encerramento da atividade de comércio','Outro'].map(m=>`<option ${m===d.ieBaixaMotivo?'selected':''}>${m}</option>`).join('')}</select></div>
+                  </div>
+                  <div class="form-hint" style="margin-top:-4px;">Com a IE baixada o sistema deixa de exigir Inscrição Estadual, não gera SPED Fiscal/ICMS e mostra a baixa no cadastro. O número anterior (se informado acima) fica guardado como histórico.</div>
+                </div>
+              </div>
               <div class="form-hint" style="margin-top:4px;">Fica gravada também em Legal &gt; Inscrições e é usada no SPED Fiscal.</div>
             </div>
 
@@ -23906,7 +24031,7 @@
     if(spedConfigBtn) spedConfigBtn.onclick = ()=>{
       if(!spedEmp){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
       const cfg = Object.assign({}, spedCfgDe(spedEmp) || {});
-      if(!cfg.ie){ const ie = (state.inscricoes||[]).find(i=>i.clientId===spedEmp && i.tipo==='Inscrição Estadual'); if(ie && ie.numero!=='ISENTO') cfg.ie = ie.numero; }
+      if(!cfg.ie){ const ie = (state.inscricoes||[]).find(i=>i.clientId===spedEmp && i.tipo==='Inscrição Estadual'); if(ie && ie.numero!=='ISENTO' && ie.numero!=='BAIXADA') cfg.ie = ie.numero; }
       cfg.clientId = spedEmp;
       if(!cfg.cep) cfg.cep = clienteCep(state.clients.find(c=>c.id===spedEmp));
       spedPreencherDoCliente(cfg, state.clients.find(c=>c.id===spedEmp));
@@ -24332,6 +24457,17 @@
     if(relMes) relMes.onchange = (e)=>{ const v = e.target.value; if(!v) return; state.relDataInicio = v+'-01'; state.relDataFim = fimDoMes(v+'-01'); state.relDataFimManual = true; render(); };
     const relDataAuto = document.getElementById('relDataAuto');
     if(relDataAuto) relDataAuto.onclick = (e)=>{ e.preventDefault(); state.relDataFimManual = false; state.relDataInicio = ''; render(); };
+    const relVerTudoBtn = document.getElementById('relVerTudoBtn');
+    if(relVerTudoBtn) relVerTudoBtn.onclick = ()=>{ const dg = lancDiagnostico(state.contabilEmpresaAtiva); state.relDataInicio = ''; state.relDataFim = fimDoMes(dg.max || todayStr()); state.relDataFimManual = true; render(); };
+    const lancCorrigirBtn = document.getElementById('lancCorrigirBtn');
+    if(lancCorrigirBtn) lancCorrigirBtn.onclick = async ()=>{
+      lancCorrigirBtn.disabled = true; lancCorrigirBtn.textContent = 'Corrigindo…';
+      try{
+        const r = await lancCorrigirRelatorios(state.contabilEmpresaAtiva);
+        render();
+        alert('Correção concluída: ' + r.datas + ' data(s) ajustada(s), ' + r.valores + ' valor(es) convertido(s), ' + r.religadas + ' conta(s) religada(s) ao plano da empresa, ' + r.classificar + ' lado(s) enviado(s) para "Conta a Classificar", ' + r.grupos + ' grupo(s) criado(s)' + (r.semSolucao ? '. Sem solução automática: ' + r.semSolucao + ' (edite em Lançamentos).' : '.'));
+      }catch(e){ lancCorrigirBtn.disabled = false; lancCorrigirBtn.textContent = 'Corrigir automaticamente'; alert('Falha ao corrigir: ' + ((e && (e.code||e.message)) || 'erro')); }
+    };
     const relDataFim = document.getElementById('relDataFim');
     if(relDataFim) relDataFim.onchange = (e)=>{ state.relDataFim = e.target.value ? fimDoMes(e.target.value) : relDataFimPadrao(state.contabilEmpresaAtiva); state.relDataFimManual = !!e.target.value; render(); };
     const razaoContaSelect = document.getElementById('razaoContaSelect');
@@ -26852,6 +26988,16 @@
       state.clientModalData.ieIsento = e.target.checked;
       if(clIeEl){ clIeEl.disabled = e.target.checked; if(e.target.checked){ clIeEl.value=''; state.clientModalData.ie=''; } }
     };
+    const clIEBaixadaBtn = document.getElementById('clIEBaixadaBtn');
+    if(clIEBaixadaBtn) clIEBaixadaBtn.onclick = ()=>{
+      const d = state.clientModalData; if(!d) return;
+      d.ieBaixada = !d.ieBaixada;
+      const box = document.getElementById('clIEBaixadaBox');
+      if(box) box.style.display = d.ieBaixada ? 'block' : 'none';
+      if(d.ieBaixada){ const di = document.getElementById('clIEBaixaData'); if(di && !di.value) di.value = todayStr(); const iso = document.getElementById('clIEIsento'); if(iso){ iso.checked = false; d.ieIsento = false; if(clIeEl) clIeEl.disabled = false; } }
+      clIEBaixadaBtn.textContent = d.ieBaixada ? '✓ Inscrição Estadual baixada — clique para desfazer' : 'Inscrição Estadual baixada (mudança de atividade)';
+      atualizarAvisoIE();
+    };
     ['clMainActivity','clSecondaryActivities'].forEach(id=>{ const el=document.getElementById(id); if(el){ const prev=el.oninput; el.oninput=(e)=>{ if(prev) prev(e); atualizarAvisoIE(); }; } });
     if(clAtividadePresumidoEl){ const prevA = clAtividadePresumidoEl.onchange; clAtividadePresumidoEl.onchange = (e)=>{ prevA(e); atualizarAvisoIE(); }; }
     const clIssDiaEl = document.getElementById('clIssDia');
@@ -27033,7 +27179,11 @@
           contractPeriodicity: document.getElementById('clContractPeriodicity').value,
           contractStatus: document.getElementById('clContractStatus').value,
           contractNotes: document.getElementById('clContractNotes').value,
+          ieBaixada: !!(state.clientModalData && state.clientModalData.ieBaixada),
+          ieBaixaData: (state.clientModalData && state.clientModalData.ieBaixada) ? ((document.getElementById('clIEBaixaData')||{}).value || '') : '',
+          ieBaixaMotivo: (state.clientModalData && state.clientModalData.ieBaixada) ? ((document.getElementById('clIEBaixaMotivo')||{}).value || '') : '',
         };
+        if(c.ieBaixada && !c.ieBaixaData){ alert('Informe a data da baixa da Inscrição Estadual.'); return; }
         const cepDig = (document.getElementById('clCep').value||'').replace(/\D/g,'');
         if(cepDig && cepDig.length!==8){ alert('CEP inválido: informe os 8 dígitos (ex.: 53439-000).'); document.getElementById('clCep').focus(); return; }
         const ieDigitos = (document.getElementById('clIE').value||'').replace(/\D/g,'');
@@ -27048,9 +27198,9 @@
         const ok = await saveClient(c);
         if(ok){
           const ieExist = clienteIEAtual(c.id);
-          const numeroIE = ieIsento ? 'ISENTO' : ieDigitos;
-          if(numeroIE && (!ieExist || ieExist.numero!==numeroIE)){
-            await saveInscricaoItem(Object.assign({}, ieExist||{}, { clientId:c.id, tipo:'Inscrição Estadual', numero:numeroIE, dataEmissao:(ieExist&&ieExist.dataEmissao)||todayStr(), observacoes:(ieExist&&ieExist.observacoes)||'Cadastrada no cadastro do cliente' }));
+          const numeroIE = c.ieBaixada ? (ieDigitos || 'BAIXADA') : (ieIsento ? 'ISENTO' : ieDigitos);
+          if(numeroIE && (!ieExist || ieExist.numero!==numeroIE || (c.ieBaixada && !/BAIXADA/.test(ieExist.observacoes||'')))){
+            await saveInscricaoItem(Object.assign({}, ieExist||{}, { clientId:c.id, tipo:'Inscrição Estadual', numero:numeroIE, dataEmissao:(ieExist&&ieExist.dataEmissao)||todayStr(), observacoes: c.ieBaixada ? ('IE BAIXADA em ' + fmtDate(c.ieBaixaData) + ' — ' + c.ieBaixaMotivo) : ((ieExist&&ieExist.observacoes)||'Cadastrada no cadastro do cliente') }));
           }
         }
         if(!ok){
