@@ -652,6 +652,9 @@
     recibosHonorarios: [],
     reciboHonorarioModalData: null,
     produtosMonofasicos: [],
+    icmsAntecipado: [],
+    iaCompetencia: '',
+    iaNotaModalData: null,
     ncmMonofasicoCustom: [],
     tabelasFolha: [],
     faturamentosManuais: [],
@@ -6544,7 +6547,7 @@
   const PARC_STATUS = ['Em dia', 'Atrasado', 'Quitado', 'Rescindido'];
   const TIPO_IMPOSTO_PAGAR = [
     'DAS (Simples Nacional)', 'IRPJ', 'CSLL', 'PIS/COFINS', 'INSS/Contribuição Previdenciária', 'FGTS',
-    'ICMS', 'IPVA', 'ITCMD', 'ISS', 'IPTU', 'ITBI', 'Outro',
+    'ICMS', 'ICMS Antecipado (Fronteira)', 'IPVA', 'ITCMD', 'ISS', 'IPTU', 'ITBI', 'Outro',
   ];
 
   // ============================================================================
@@ -6926,7 +6929,18 @@
       if(!/^(5|6|7)(1\d\d|40\d)$/.test(cfop)){ foraDeVenda++; continue; }
       const vProd = parseFloat(getTagText(prod, 'vProd')) || 0;
       const vDesc = parseFloat(getTagText(prod, 'vDesc')) || 0;
-      itens.push({ ncm: getTagText(prod, 'NCM'), descricao: getTagText(prod, 'xProd'), valor: Math.round((vProd - vDesc)*100)/100 });
+      // ICMS por substituição tributária (a empresa vendeu produto cujo ICMS já foi recolhido antes): CST 60 / CSOSN 500 ou CFOP 5.405/6.405.
+      let cst = '';
+      const icmsEl = dets[i].getElementsByTagName('ICMS')[0];
+      if(icmsEl){
+        for(let k=0;k<icmsEl.children.length;k++){
+          const ch = icmsEl.children[k];
+          cst = getTagText(ch, 'CSOSN') || getTagText(ch, 'CST') || '';
+          if(cst) break;
+        }
+      }
+      const stAuto = (cst==='500' || cst==='60' || /^[56]405$/.test(cfop));
+      itens.push({ ncm: getTagText(prod, 'NCM'), descricao: getTagText(prod, 'xProd'), valor: Math.round((vProd - vDesc)*100)/100, cfop, cst, stAuto });
     }
     return {
       ok:true,
@@ -6984,15 +6998,22 @@
     await loadProdutosMonofasicos(); render();
     return ok;
   }
-  function monoChaveItem(ncm, descricao){ return ncmDigits(ncm) + '|' + String(descricao||'').trim().toLowerCase(); }
+  function monoChaveItem(ncm, descricao, st){ return ncmDigits(ncm) + '|' + String(descricao||'').trim().toLowerCase() + (st ? '|st' : ''); }
+  // ICMS-ST efetivo de uma linha: o ajuste manual (ovrSt) vale mais que a leitura automática do XML (stAuto).
+  function monoStEfetivo(item){
+    if(!item) return false;
+    if(item.ovrSt==='sim') return true;
+    if(item.ovrSt==='nao') return false;
+    return !!item.stAuto;
+  }
   // Junta itens ao documento: mesmo NCM + mesma descrição => soma os valores (mantém o ajuste manual).
   function monoMesclarItens(doc, novos, origem){
     let qtd = 0;
     novos.forEach(n=>{
-      const chave = monoChaveItem(n.ncm, n.descricao);
-      const existente = doc.itens.find(i=>monoChaveItem(i.ncm, i.descricao)===chave);
+      const chave = monoChaveItem(n.ncm, n.descricao, !!n.stAuto);
+      const existente = doc.itens.find(i=>monoChaveItem(i.ncm, i.descricao, !!i.stAuto)===chave);
       if(existente){ existente.valor = round2((Number(existente.valor)||0) + (Number(n.valor)||0)); }
-      else{ doc.itens.push({ id: uid(), ncm: ncmDigits(n.ncm), descricao: String(n.descricao||'').trim(), valor: round2(Number(n.valor)||0), ovr: '', origem: origem||'manual' }); }
+      else{ doc.itens.push({ id: uid(), ncm: ncmDigits(n.ncm), descricao: String(n.descricao||'').trim(), valor: round2(Number(n.valor)||0), ovr: '', ovrSt: '', stAuto: !!n.stAuto, origem: origem||'manual' }); }
       qtd++;
     });
     return qtd;
@@ -7020,11 +7041,13 @@
     return { itens, erros };
   }
   // Importa vários XMLs de NF-e/NFC-e de VENDA da empresa selecionada.
-  async function importarXmlsMonofasico(files, clientId){
+  async function importarXmlsMonofasico(files, clientId, opts){
+    opts = opts || {};
     const cliente = state.clients.find(c=>c.id===clientId);
     const docEmpresa = ncmDigits(cliente ? cliente.doc : '');
-    const r = { lidas:0, notas:0, itens:0, duplicadas:0, canceladas:0, outroEmitente:0, naoSaida:0, invalidas:0, itensForaDeVenda:0, competencias:{} };
+    const r = { notasRegistradas:0, contab:null, lidas:0, notas:0, itens:0, duplicadas:0, canceladas:0, outroEmitente:0, naoSaida:0, invalidas:0, itensForaDeVenda:0, competencias:{} };
     const docs = {}; // competência -> documento em edição
+    const notasNovas = [];
     for(const f of files){
       r.lidas++;
       let texto = '';
@@ -7036,6 +7059,23 @@
       if(docEmpresa.length >= 11 && ncmDigits(p.emitDoc) !== docEmpresa){ r.outroEmitente++; continue; }
       if(!p.competencia){ r.invalidas++; continue; }
       if(!docs[p.competencia]) docs[p.competencia] = monoDocDe(clientId, p.competencia) ? JSON.parse(JSON.stringify(monoDocDe(clientId, p.competencia))) : monoNovoDoc(clientId, p.competencia);
+      // Vincula ao Departamento Fiscal/Contábil: a nota de venda também entra em "Notas Fiscais" (se ainda não estiver)
+      // e, depois, vira lançamento contábil (Clientes × Receita).
+      if(opts.registrarNota !== false){
+        try{
+          const nf = parseNotaFiscalXml(texto);
+          if(nf && nf.ok){
+            const xmlHash = await hashArquivoTexto(texto);
+            if(!notaFiscalArquivoJaExiste(xmlHash) && !notaFiscalJaExiste(clientId, nf.numero, nf.serie)){
+              await saveNotaFiscalSilent({ clientId, tipo: nf.tipo, tipoOperacao:'Saída', numero:nf.numero, serie:nf.serie||'', dataEmissao:nf.dataEmissao, valor:nf.valor, status:nf.status,
+                chaveAcesso:nf.chaveAcesso||'', emitNome:nf.emitNome||'', emitDoc:nf.emitDoc||'', destNome:nf.destNome||'', destDoc:nf.destDoc||'',
+                xmlOriginal:texto, anexoNome:f.name||'', xmlHash, observacoes:'Importado pelo Separador de Produtos Monofásicos (' + (f.name||'XML') + ')' });
+              r.notasRegistradas++; notasNovas.push({clientId, comp:p.competencia});
+              await loadNotasFiscais();
+            }
+          }
+        }catch(e){ console.error(e); }
+      }
       const doc = docs[p.competencia];
       if(p.chave && doc.chaves.includes(p.chave)){ r.duplicadas++; continue; }
       r.itensForaDeVenda += p.foraDeVenda;
@@ -7049,6 +7089,10 @@
       if(!ok) delete r.competencias[comp];
     }
     await loadProdutosMonofasicos();
+    if(opts.registrarNota !== false && (notasNovas.length || r.notas)){
+      try{ r.contab = nfResumoContabil(await contabilizarNotas([clientId], {silent:true})); }catch(e){ console.error(e); }
+      if(notasNovas.length){ try{ await fiscalSincronizar(notasNovas); }catch(e){ console.error(e); } }
+    }
     return r;
   }
   function empresaTemAtividadeComercio(c){
@@ -7059,17 +7103,22 @@
   }
   // Totais por classificação de uma lista de itens.
   function monoResumo(itens){
-    const r = { total:0, monofasico:0, conferir:0, nao:0, invalido:0, porGrupo:{} };
+    const r = { total:0, monofasico:0, conferir:0, nao:0, invalido:0, st:0, ambos:0, soMono:0, soSt:0, porGrupo:{} };
     (itens||[]).forEach(i=>{
       const v = Number(i.valor)||0;
       const c = classeMonofasicaItem(i);
+      const st = monoStEfetivo(i);
       r.total += v; r[c.status] += v;
+      if(st) r.st += v;
+      if(c.status==='monofasico' && st) r.ambos += v;
+      else if(c.status==='monofasico') r.soMono += v;
+      else if(st) r.soSt += v;
       if(c.status==='monofasico'){
         const g = (c.regra && c.regra.grupo) || (i.ovr==='monofasico' ? 'Confirmado manualmente' : 'Outros');
         r.porGrupo[g] = (r.porGrupo[g]||0) + v;
       }
     });
-    ['total','monofasico','conferir','nao','invalido'].forEach(k=>{ r[k] = round2(r[k]); });
+    ['total','monofasico','conferir','nao','invalido','st','ambos','soMono','soSt'].forEach(k=>{ r[k] = round2(r[k]); });
     Object.keys(r.porGrupo).forEach(g=>{ r.porGrupo[g] = round2(r.porGrupo[g]); });
     return r;
   }
@@ -7083,11 +7132,11 @@
     const doc = monoCopiaDoc(empresaId, comp);
     if(d.id){
       const it = doc.itens.find(i=>i.id===d.id);
-      if(it){ it.ncm = ncmDigits(d.ncm); it.descricao = String(d.descricao||'').trim(); it.valor = round2(Number(d.valor)||0); it.ovr = d.ovr||''; }
+      if(it){ it.ncm = ncmDigits(d.ncm); it.descricao = String(d.descricao||'').trim(); it.valor = round2(Number(d.valor)||0); it.ovr = d.ovr||''; it.ovrSt = d.ovrSt||''; }
     } else {
-      monoMesclarItens(doc, [{ ncm:d.ncm, descricao:d.descricao, valor:d.valor }], 'manual');
-      const it = doc.itens.find(i=>monoChaveItem(i.ncm, i.descricao)===monoChaveItem(d.ncm, d.descricao));
-      if(it && d.ovr) it.ovr = d.ovr;
+      monoMesclarItens(doc, [{ ncm:d.ncm, descricao:d.descricao, valor:d.valor, stAuto: d.ovrSt==='sim' }], 'manual');
+      const it = doc.itens.find(i=>monoChaveItem(i.ncm, i.descricao, !!i.stAuto)===monoChaveItem(d.ncm, d.descricao, d.ovrSt==='sim'));
+      if(it){ if(d.ovr) it.ovr = d.ovr; if(d.ovrSt && d.ovrSt!=='sim') it.ovrSt = d.ovrSt; }
     }
     return salvarDocMonofasicoERecarregar(doc);
   }
@@ -7101,6 +7150,19 @@
     const it = doc.itens.find(i=>i.id===itemId);
     if(it) it.ovr = ovr || '';
     return salvarDocMonofasicoERecarregar(doc);
+  }
+  async function monoDefinirSt(empresaId, comp, itemId, ovrSt){
+    const doc = monoCopiaDoc(empresaId, comp);
+    const it = doc.itens.find(i=>i.id===itemId);
+    if(it) it.ovrSt = ovrSt || '';
+    return salvarDocMonofasicoERecarregar(doc);
+  }
+  // Receita da competência a segregar no DAS, a partir do separador: só monofásica / só ICMS-ST / ambas.
+  function monoSegregacaoCompetencia(clientId, comp){
+    const d = monoDocDe(clientId, comp);
+    if(!d || !(d.itens||[]).length) return { tem:false, mono:0, st:0, ambos:0, total:0 };
+    const r = monoResumo(d.itens);
+    return { tem:true, mono:r.soMono, st:r.soSt, ambos:r.ambos, total:r.total };
   }
   async function monoLimparCompetencia(empresaId, comp){
     try{ await Store.delete('produtosmonofasicos:'+monoDocId(empresaId, comp), true); }catch(e){}
@@ -7175,6 +7237,7 @@
       <div class="cc-list">
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Total de vendas lançadas</div><div class="cr-meta">${itens.length} linha(s) de produto</div></div><span class="tag sit-outra">${fmtBRL(res.total)}</span></div>
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Receita monofásica — segregar</div><div class="cr-meta">${monoPct(res.monofasico, res.total)} do total · confirmada pelo NCM (ou ajuste manual)</div></div><span class="tag sit-ativa">${fmtBRL(res.monofasico)}</span></div>
+        <div class="cc-row"><div class="cr-main"><div class="cr-title">Receita com ICMS por substituição tributária — segregar</div><div class="cr-meta">${monoPct(res.st, res.total)} do total · lida do XML (CST 60 / CSOSN 500 / CFOP 5.405) ou marcada à mão${res.ambos ? ' · inclui ' + fmtBRL(res.ambos) + ' que também é monofásica' : ''}</div></div><span class="tag sit-ativa">${fmtBRL(res.st)}</span></div>
         <div class="cc-row"><div class="cr-main"><div class="cr-title">A conferir</div><div class="cr-meta">${monoPct(res.conferir, res.total)} do total · NCM candidato que exige verificação (ex.: lista da CMED) — não entra na segregação até você confirmar</div></div><span class="tag sit-pendente">${fmtBRL(res.conferir)}</span></div>
         <div class="cc-row"><div class="cr-main"><div class="cr-title">Tributação normal (fora do regime monofásico)</div><div class="cr-meta">${monoPct(res.nao, res.total)} do total</div></div><span class="tag sit-outra">${fmtBRL(res.nao)}</span></div>
         ${res.invalido ? `<div class="cc-row"><div class="cr-main"><div class="cr-title">Sem NCM válido</div><div class="cr-meta">Corrija o NCM desses produtos para classificá-los</div></div><span class="tag sit-baixada">${fmtBRL(res.invalido)}</span></div>` : ''}
@@ -7184,7 +7247,7 @@
       <div class="form-section-title">Produtos da competência</div>
       ${!itens.length ? `<div class="empty">Nenhum produto lançado nesta competência. Importe os XMLs de venda, cole uma lista ou adicione manualmente.</div>` : `
         <table>
-          <thead><tr><th>NCM</th><th>Produto</th><th>Classificação</th><th>Enquadramento / base legal</th><th style="text-align:right">Valor</th><th>Ajuste manual</th><th></th></tr></thead>
+          <thead><tr><th>NCM</th><th>Produto</th><th>Classificação</th><th>Enquadramento / base legal</th><th style="text-align:right">Valor</th><th>Ajuste manual</th><th>ICMS-ST</th><th></th></tr></thead>
           <tbody>
             ${linhasVisiveis.map(({item:i, cls})=>`
               <tr>
@@ -7202,6 +7265,14 @@
                     <option value="" ${!i.ovr?'selected':''}>Automática</option>
                     <option value="monofasico" ${i.ovr==='monofasico'?'selected':''}>Confirmar monofásico</option>
                     <option value="nao" ${i.ovr==='nao'?'selected':''}>Não é monofásico</option>
+                  </select>
+                </td>
+                <td>
+                  ${monoStEfetivo(i) ? '<span class="tag sit-ativa">ICMS-ST</span><br/>' : ''}
+                  <select data-mono-st="${i.id}" style="font-size:12px;">
+                    <option value="" ${!i.ovrSt?'selected':''}>Automático${i.stAuto?' (ST)':''}</option>
+                    <option value="sim" ${i.ovrSt==='sim'?'selected':''}>Sim — ICMS por ST</option>
+                    <option value="nao" ${i.ovrSt==='nao'?'selected':''}>Não</option>
                   </select>
                 </td>
                 <td style="white-space:nowrap;"><button class="btn-sm" data-mono-editar="${i.id}">Editar</button> <button class="btn-sm danger" data-mono-excluir="${i.id}">Excluir</button></td>
@@ -7264,6 +7335,13 @@
                 <option value="" ${!d.ovr?'selected':''}>Automática (pelo NCM)</option>
                 <option value="monofasico" ${d.ovr==='monofasico'?'selected':''}>Confirmar como monofásico</option>
                 <option value="nao" ${d.ovr==='nao'?'selected':''}>Não é monofásico</option>
+              </select>
+            </div>
+            <div class="field"><label>ICMS por substituição tributária (ST)</label>
+              <select id="monoItemOvrSt">
+                <option value="" ${!d.ovrSt?'selected':''}>Automático${d.stAuto?' (o XML indica ST)':' (pelo XML; manual = não)'}</option>
+                <option value="sim" ${d.ovrSt==='sim'?'selected':''}>Sim — ICMS já recolhido por ST (segregar)</option>
+                <option value="nao" ${d.ovrSt==='nao'?'selected':''}>Não — ICMS normal</option>
               </select>
             </div>
             <div class="form-hint" style="margin:-6px 0 12px;">Valores negativos servem para devoluções de venda.</div>
@@ -7392,6 +7470,10 @@
     const linhasResumo = [
       ['Total de vendas lançadas', fmtBRL(res.total), '100,0%'],
       ['Receita monofásica — segregar', fmtBRL(res.monofasico), monoPct(res.monofasico, res.total)],
+      ['Receita com ICMS por substituição tributária — segregar', fmtBRL(res.st), monoPct(res.st, res.total)],
+      ['   · somente monofásica (PIS/Cofins)', fmtBRL(res.soMono), monoPct(res.soMono, res.total)],
+      ['   · somente ICMS-ST', fmtBRL(res.soSt), monoPct(res.soSt, res.total)],
+      ['   · monofásica e ICMS-ST ao mesmo tempo', fmtBRL(res.ambos), monoPct(res.ambos, res.total)],
       ['A conferir (não entra na segregação até confirmar)', fmtBRL(res.conferir), monoPct(res.conferir, res.total)],
       ['Tributação normal (fora do regime monofásico)', fmtBRL(res.nao), monoPct(res.nao, res.total)],
     ];
@@ -7401,6 +7483,10 @@
     const colsNcm = [{label:'NCM', w:0.13}, {label:'GRUPO — PRODUTO (EXEMPLO)', w:0.55}, {label:'QTD.', w:0.07, align:'right'}, {label:'VALOR', w:0.25, align:'right'}];
     const mono = agrega('monofasico');
     if(mono.length) tabela('Receita monofásica por NCM (PIS/Pasep e Cofins cobrados na origem)', colsNcm, mono.map(m=>[fmtNcm(m.ncm), m.grupo + ' — ' + m.exemplo, String(m.qtd), fmtBRL(m.valor)]));
+    const stm = {};
+    itens.forEach(i=>{ if(!monoStEfetivo(i)) return; const k = ncmDigits(i.ncm); if(!stm[k]) stm[k] = { ncm:k, exemplo:i.descricao||'', qtd:0, valor:0 }; stm[k].qtd++; stm[k].valor += Number(i.valor)||0; });
+    const stl = Object.values(stm).sort((a,b)=>b.valor-a.valor);
+    if(stl.length) tabela('Receita com ICMS por substituição tributária (ICMS recolhido anteriormente)', [{label:'NCM', w:0.13}, {label:'PRODUTO (EXEMPLO)', w:0.55}, {label:'QTD.', w:0.07, align:'right'}, {label:'VALOR', w:0.25, align:'right'}], stl.map(m=>[fmtNcm(m.ncm), m.exemplo, String(m.qtd), fmtBRL(m.valor)]));
     const conf = agrega('conferir');
     if(conf.length) tabela('Produtos a conferir (exigem verificação adicional)', colsNcm, conf.map(m=>[fmtNcm(m.ncm), m.grupo + ' — ' + m.exemplo, String(m.qtd), fmtBRL(m.valor)]));
 
@@ -7413,6 +7499,260 @@
 
     pdfFooterDisclaimer(doc, 'Classificação automática pelo NCM, com base nas Tabelas 4.3.10 e 4.3.11 da EFD-Contribuições (SPED/Receita Federal) e nas Leis 10.147/2000, 13.097/2015 e 10.485/2002. Itens "a conferir" dependem de verificação adicional (ex.: lista da CMED). Válido para competências até 12/2026 — a partir de 01/2027 o PIS/Cofins é substituído pela CBS (LC 214/2025). Confira antes de utilizar.');
     pdfSalvar(doc, 'segregacao-monofasico-' + (cliente ? cliente.name : 'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + comp.replace('-','') + '.pdf');
+  }
+
+  // ================= ICMS Antecipado / Fronteira (SEFAZ-PE) =================
+  // Compras interestaduais sujeitas a ICMS na passagem pela fronteira (código de receita 00058-2). O valor devido de cada
+  // nota vem do "Extrato de Notas Fiscais relativas a Operações Interestaduais sujeitas ao ICMS Antecipado" da SEFAZ.
+  // Um documento por empresa + competência: { id, clientId, competencia, ie, are, extrato, vencimento, totalExtrato,
+  //   notas:[{id, registro, dataPassagem, numero, uf, valor, icms, cnpjEmit}] }
+  const IA_TIPO = 'ICMS Antecipado (Fronteira)';
+  async function loadIcmsAntecipado(){
+    state.icmsAntecipado = [];
+    try{
+      const keys = await Store.list('icmsantecipado:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){
+          try{ const r = await Store.get(k, true); if(r) state.icmsAntecipado.push(JSON.parse(r.value)); }catch(e){}
+        }
+      }
+    }catch(e){}
+  }
+  function iaDocId(clientId, comp){ return clientId + '_' + comp; }
+  function iaDocDe(clientId, comp){ return (state.icmsAntecipado||[]).find(d=>d.id===iaDocId(clientId, comp)) || null; }
+  function iaVencPadrao(comp){
+    const y = Number(comp.slice(0,4)), m = Number(comp.slice(5,7));
+    const ny = m===12 ? y+1 : y, nm = m===12 ? 1 : m+1;
+    return ny + '-' + String(nm).padStart(2,'0') + '-26';
+  }
+  function iaNovoDoc(clientId, comp){
+    return { id: iaDocId(clientId, comp), clientId, competencia: comp, ie:'', extrato:'', vencimento: iaVencPadrao(comp), totalExtrato: null, notas:[] };
+  }
+  function iaCopia(clientId, comp){ const d = iaDocDe(clientId, comp); return d ? JSON.parse(JSON.stringify(d)) : iaNovoDoc(clientId, comp); }
+  async function iaSalvar(doc){
+    try{ await Store.set('icmsantecipado:'+doc.id, JSON.stringify(doc), true); }
+    catch(e){ alert('Não foi possível salvar.\n\nDetalhe técnico: ' + (e && e.message ? e.message : 'erro desconhecido')); return false; }
+    await loadIcmsAntecipado(); render(); return true;
+  }
+  function iaTotais(doc){
+    const t = { valor:0, icms:0, qtd:0 };
+    ((doc && doc.notas)||[]).forEach(n=>{ t.valor += Number(n.valor)||0; t.icms += Number(n.icms)||0; t.qtd++; });
+    t.valor = round2(t.valor); t.icms = round2(t.icms); return t;
+  }
+  // Lê o texto do extrato em PDF da SEFAZ-PE.
+  function parseExtratoIcmsAntecipado(texto){
+    const t = String(texto||'');
+    const out = { competencia:'', ie:'', vencimento:'', extrato:'', total:null, notas:[] };
+    // O PDF pode vir com a ordem das colunas invertida (valor antes do rótulo), conforme o leitor de PDF.
+    let m = t.match(/Per[ií]odo Fiscal:?\s*(\d{2})\/(\d{4})/i) || t.match(/(?<![\/\d])(\d{2})\/(\d{4})(?![\/\d])/);
+    if(m) out.competencia = m[2] + '-' + m[1];
+    m = t.match(/Inscri[cç][aã]o Estadual:?\s*(\d{7}-\d{2})/i) || t.match(/(\d{7}-\d{2})\s+Per[ií]odo Fiscal/i) || t.match(/\b(\d{7}-\d{2})\b/);
+    if(m) out.ie = m[1];
+    m = t.match(/Data de Vencimento:?\s*(\d{2})\/(\d{2})\/(\d{4})/i) || t.match(/(\d{2})\/(\d{2})\/(\d{4})\s+Data de Vencimento/i);
+    if(m) out.vencimento = m[3]+'-'+m[2]+'-'+m[1];
+    m = t.match(/N[°º]\s*do Extrato:?\s*(\d+-\d)/i) || t.match(/(\d+-\d)\s+N[°º]\s*do Extrato/i);
+    if(m) out.extrato = m[1];
+    const D = '(?:(\\d{2})\\/(\\d{2})\\/(\\d{4})\\s+)?';
+    const reF = new RegExp('(\\d{3}\\.\\d\\.\\d{9}-\\d)\\s+' + D + '(\\d+)\\s+([A-Z]{2})\\s+([\\d.]+,\\d{2})\\s+([\\d.]+,\\d{2})\\s+(\\d{2}\\.\\d{3}\\.\\d{3}\\/\\d{4}-\\d{2})', 'g');
+    const reR = new RegExp('(\\d{2}\\.\\d{3}\\.\\d{3}\\/\\d{4}-\\d{2})\\s+([\\d.]+,\\d{2})\\s+([\\d.]+,\\d{2})\\s+([A-Z]{2})\\s+(\\d+)\\s+' + D + '(\\d{3}\\.\\d\\.\\d{9}-\\d)', 'g');
+    let x, fim = 0;
+    while((x = reF.exec(t))){
+      out.notas.push({ id: uid(), registro:x[1], dataPassagem: x[2] ? x[4]+'-'+x[3]+'-'+x[2] : '', numero:x[5], uf:x[6], valor: parseValorBR(x[7]), icms: parseValorBR(x[8]), cnpjEmit:x[9] });
+      fim = reF.lastIndex;
+    }
+    let reverso = false;
+    if(!out.notas.length){
+      reverso = true;
+      while((x = reR.exec(t))){
+        out.notas.push({ id: uid(), registro:x[9], dataPassagem: x[6] ? x[8]+'-'+x[7]+'-'+x[6] : '', numero:x[5], uf:x[4], valor: parseValorBR(x[3]), icms: parseValorBR(x[2]), cnpjEmit:x[1] });
+        fim = reR.lastIndex;
+      }
+    }
+    if(reverso){
+      const nums = t.slice(fim).match(/[\d.]+,\d{2}/);
+      if(nums) out.total = parseValorBR(nums[0]);
+    } else {
+      m = t.match(/ICMS A RECOLHER([\s\S]*?)(?:PAGUE|$)/i);
+      if(m){ const nums = m[1].match(/[\d.]+,\d{2}/g); if(nums && nums.length) out.total = parseValorBR(nums[nums.length-1]); }
+    }
+    return out;
+  }
+  // Estimativa (NÃO oficial): base = valor × (1 + MVA); ICMS = base × alíq. interna − valor × alíq. interestadual.
+  function iaAliqInterestadual(uf){
+    return ['PR','SC','RS','SP','RJ','MG'].indexOf(String(uf||'').toUpperCase())>=0 ? 7 : 12;
+  }
+  function iaEstimar(valor, mvaPerc, internaPerc, interPerc){
+    const base = (Number(valor)||0) * (1 + (Number(mvaPerc)||0)/100);
+    return Math.max(0, round2(base * (Number(internaPerc)||0)/100 - (Number(valor)||0) * (Number(interPerc)||0)/100));
+  }
+  function iaNotaNoSistema(clientId, n){
+    const num = String(n.numero||'').replace(/\D/g,'').replace(/^0+/,'');
+    const doc = onlyDigits(n.cnpjEmit||'');
+    return (state.notasFiscais||[]).some(x=>x.clientId===clientId && x.tipoOperacao==='Entrada' && x.status!=='Cancelada'
+      && String(x.numero||'').replace(/\D/g,'').replace(/^0+/,'')===num && (!doc || !x.emitDoc || onlyDigits(x.emitDoc)===doc));
+  }
+  function iaImpostoId(docId){ return 'icmsant_' + docId; }
+  function iaCompAtual(){ return state.iaCompetencia || state.competenciaAtiva || todayStr().slice(0,7); }
+
+  function icmsAntecipadoPanelHtml(){
+    const empresaId = deptOneSelectedClient();
+    const cabecalho = `
+      <div class="panel-head"><h3>ICMS Antecipado / Fronteira (Pernambuco)</h3></div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Compras de outros estados sujeitas ao ICMS recolhido na passagem pela fronteira (DAE 10 · código de receita 00058-2). Importe o <strong>Extrato de Notas Fiscais — ICMS Antecipado</strong> da SEFAZ-PE (PDF) para trazer as notas e os valores devidos; depois gere a guia em Impostos &amp; Guias e o lançamento contábil. O valor oficial é sempre o do extrato/DAE da SEFAZ.</div>
+    `;
+    if(!empresaId) return cabecalho + deptSelecioneUmaEmpresaHtml('controlar o ICMS antecipado');
+    const comp = iaCompAtual();
+    const doc = iaDocDe(empresaId, comp) || iaNovoDoc(empresaId, comp);
+    const tot = iaTotais(doc);
+    const guia = (state.impostosPagar||[]).find(i=>i.id===iaImpostoId(doc.id));
+    const dif = doc.totalExtrato!=null ? round2(tot.icms - doc.totalExtrato) : 0;
+    return cabecalho + `
+      <div class="form-row">
+        <div class="field"><label>Competência (período fiscal)</label><input type="month" id="iaCompetencia" value="${comp}"/></div>
+        <div class="field"><label>Inscrição Estadual</label><input type="text" data-ia-campo="ie" value="${escapeHtml(doc.ie||'')}" placeholder="0000000-00"/></div>
+        <div class="field"><label>Nº do extrato</label><input type="text" data-ia-campo="extrato" value="${escapeHtml(doc.extrato||'')}"/></div>
+        <div class="field"><label>Vencimento</label><input type="date" data-ia-campo="vencimento" value="${doc.vencimento||''}"/></div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+        <button type="button" class="btn-add" id="iaPdfBtn">Importar extrato da SEFAZ (PDF)</button>
+        <input type="file" id="iaPdfInput" accept="application/pdf,.pdf" style="display:none"/>
+        <button type="button" class="btn-detail" id="iaNovaBtn">+ Adicionar nota</button>
+        <button type="button" class="btn-detail" id="iaGuiaBtn" ${tot.icms>0?'':'disabled'}>${guia ? 'Atualizar guia em Impostos & Guias' : 'Gerar guia em Impostos & Guias'}</button>
+        <button type="button" class="btn-detail" id="iaContabBtn" ${tot.icms>0?'':'disabled'}>Lançar na contabilidade</button>
+        <button type="button" class="btn-detail" id="iaPdfRelBtn" ${tot.qtd?'':'disabled'}>📄 Relatório (PDF)</button>
+        ${doc.notas.length ? `<button type="button" class="btn-sm danger" id="iaLimparBtn">Limpar esta competência</button>` : ''}
+      </div>
+      <div id="iaMsg" class="lookup-msg" style="display:none; margin-bottom:12px;"></div>
+      <div class="cc-list">
+        <div class="cc-row"><div class="cr-main"><div class="cr-title">ICMS antecipado a recolher</div><div class="cr-meta">${tot.qtd} nota(s) · valor das notas ${fmtBRL(tot.valor)} · vencimento ${doc.vencimento?fmtDate(doc.vencimento):'—'}</div></div><span class="tag sit-ativa">${fmtBRL(tot.icms)}</span></div>
+        ${doc.totalExtrato!=null ? `<div class="cc-row"><div class="cr-main"><div class="cr-title">Total do extrato da SEFAZ</div><div class="cr-meta">${Math.abs(dif)<0.005 ? 'Confere com a soma das notas.' : '⚠️ Diferença de ' + fmtBRL(dif) + ' entre a soma das notas e o extrato — confira os valores.'}</div></div><span class="tag ${Math.abs(dif)<0.005?'sit-ativa':'sit-pendente'}">${fmtBRL(doc.totalExtrato)}</span></div>` : ''}
+        ${guia ? `<div class="cc-row"><div class="cr-main"><div class="cr-title">Guia em Impostos &amp; Guias</div><div class="cr-meta">${fmtBRL(guia.valorAPagar)} · vence ${guia.vencimento?fmtDate(guia.vencimento):'—'}</div></div><span class="tag ${guia.dataPagamento?'sit-ativa':'sit-pendente'}">${guia.dataPagamento?'Pago':'A pagar'}</span></div>` : ''}
+      </div>
+      <div class="form-section-title">Notas da competência</div>
+      ${!doc.notas.length ? `<div class="empty">Nenhuma nota lançada. Importe o extrato em PDF da SEFAZ ou adicione manualmente.</div>` : `
+        <table>
+          <thead><tr><th>Registro de nota</th><th>Nota</th><th>UF</th><th>CNPJ emitente</th><th style="text-align:right">Valor da NF</th><th style="text-align:right">ICMS devido</th><th style="text-align:right">%</th><th>Nota de entrada</th><th></th></tr></thead>
+          <tbody>
+            ${doc.notas.map(n=>`
+              <tr>
+                <td class="mono" style="white-space:nowrap;">${escapeHtml(n.registro||'—')}</td>
+                <td>${escapeHtml(n.numero||'')}</td>
+                <td>${escapeHtml(n.uf||'')}</td>
+                <td class="mono" style="white-space:nowrap;">${escapeHtml(n.cnpjEmit||'')}</td>
+                <td style="text-align:right" class="mono">${fmtBRL(n.valor)}</td>
+                <td style="text-align:right" class="mono">${fmtBRL(n.icms)}</td>
+                <td style="text-align:right" class="mono">${n.valor ? ((n.icms/n.valor)*100).toFixed(2).replace('.',',')+'%' : '—'}</td>
+                <td>${iaNotaNoSistema(empresaId, n) ? '<span class="tag sit-ativa">no sistema</span>' : '<span class="tag sit-outra">não importada</span>'}</td>
+                <td style="white-space:nowrap;"><button class="btn-sm" data-ia-editar="${n.id}">Editar</button> <button class="btn-sm danger" data-ia-excluir="${n.id}">Excluir</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`}
+      <div class="form-hint" style="margin-top:12px;">Dica: o ICMS devido varia por produto (MVA, redução de base, FECEP). Por isso o sistema usa o valor do extrato; ao adicionar uma nota à mão há um botão de <em>estimativa</em> (MVA × alíquota interna − ICMS da origem), que não substitui o extrato.</div>
+    `;
+  }
+  function iaNotaModalHtml(){
+    const d = state.iaNotaModalData;
+    if(!d) return '';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3>${d.id ? 'Editar nota' : 'Adicionar nota'} — ICMS antecipado</h3>
+          <form id="iaNotaForm">
+            <div class="form-row">
+              <div class="field"><label>Nº da nota fiscal</label><input type="text" id="iaNNumero" value="${escapeHtml(d.numero||'')}" required/></div>
+              <div class="field"><label>UF de origem</label><input type="text" id="iaNUf" maxlength="2" value="${escapeHtml(d.uf||'')}" style="text-transform:uppercase"/></div>
+              <div class="field"><label>CNPJ do emitente</label><input type="text" id="iaNCnpj" value="${escapeHtml(d.cnpjEmit||'')}"/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Registro de nota</label><input type="text" id="iaNRegistro" value="${escapeHtml(d.registro||'')}" placeholder="012.6.000000000-0"/></div>
+              <div class="field"><label>Data da passagem</label><input type="date" id="iaNData" value="${d.dataPassagem||''}"/></div>
+            </div>
+            <div class="form-row">
+              <div class="field"><label>Valor da NF (R$)</label><input type="number" step="0.01" id="iaNValor" value="${d.valor!=null?d.valor:''}" required/></div>
+              <div class="field"><label>ICMS devido (R$)</label><input type="number" step="0.01" id="iaNIcms" value="${d.icms!=null?d.icms:''}" required/></div>
+            </div>
+            <details style="margin-bottom:12px;"><summary style="cursor:pointer; font-weight:600;">Estimar o ICMS (não oficial)</summary>
+              <div class="form-row" style="margin-top:8px;">
+                <div class="field"><label>MVA / margem (%)</label><input type="number" step="0.01" id="iaNMva" value="0"/></div>
+                <div class="field"><label>Alíquota interna PE (%)</label><input type="number" step="0.01" id="iaNInterna" value="20.5"/></div>
+                <div class="field"><label>Alíquota interestadual (%)</label><input type="number" step="0.01" id="iaNInter" value="12"/></div>
+              </div>
+              <button type="button" class="btn-sm" id="iaNEstimarBtn">Calcular estimativa e preencher ICMS</button>
+              <div class="form-hint" style="margin-top:6px;">Estimativa = Valor × (1 + MVA) × alíq. interna − Valor × alíq. interestadual. Confira sempre com o extrato da SEFAZ-PE.</div>
+            </details>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="iaNotaCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  }
+  function gerarRelatorioIcmsAntecipadoPDF(empresaId, comp){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const cliente = state.clients.find(c=>c.id===empresaId);
+    const d0 = iaDocDe(empresaId, comp);
+    if(!d0 || !d0.notas.length){ alert('Não há notas lançadas nesta competência.'); return; }
+    const tot = iaTotais(d0);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    const pageW = doc.internal.pageSize.getWidth();
+    const mx = 12, cw = pageW - mx*2, rowH = 6.5;
+    let y = pdfHeader(doc, 'ICMS Antecipado / Fronteira — Conferência', cliente ? cliente.name : '—', cliente ? cliente.logo : '');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text('Competência: ' + monthLabel(comp) + '/' + comp.slice(0,4) + '   ·   IE: ' + (d0.ie||'—') + '   ·   Extrato nº ' + (d0.extrato||'—') + '   ·   Vencimento: ' + (d0.vencimento?fmtDate(d0.vencimento):'—') + '   ·   Código da receita 00058-2', mx, y);
+    y += 8;
+    const cols = [{l:'REGISTRO DE NOTA',w:0.2},{l:'NOTA',w:0.1},{l:'UF',w:0.06},{l:'CNPJ EMITENTE',w:0.2},{l:'VALOR DA NF',w:0.15,a:'right'},{l:'ICMS DEVIDO',w:0.15,a:'right'},{l:'%',w:0.14,a:'right'}];
+    let acc = mx; cols.forEach(c=>{ c.x0 = acc; c.wmm = cw*c.w; acc += c.wmm; });
+    const cab = ()=>{
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      cols.forEach(c=>{ doc.setFillColor(234,234,234); doc.rect(c.x0,y,c.wmm,rowH,'F'); doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.wmm,rowH,'S'); doc.text(c.l, c.a==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.a?{align:c.a}:undefined); });
+      y += rowH; doc.setFont('helvetica','normal');
+    };
+    cab();
+    const linha = (v, bold)=>{
+      if(y + rowH > 190){ doc.addPage(); y = 15; cab(); }
+      doc.setFont('helvetica', bold?'bold':'normal'); doc.setFontSize(8); doc.setDrawColor(210,210,210); doc.setLineWidth(0.15);
+      cols.forEach((c,i)=>{ doc.rect(c.x0,y,c.wmm,rowH,'S'); doc.text(String(v[i]), c.a==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.a?{align:c.a}:undefined); });
+      y += rowH;
+    };
+    d0.notas.forEach(n=>linha([n.registro||'', n.numero||'', n.uf||'', n.cnpjEmit||'', fmtBRL(n.valor), fmtBRL(n.icms), n.valor ? ((n.icms/n.valor)*100).toFixed(2).replace('.',',')+'%' : '—']));
+    linha(['TOTAL','','','', fmtBRL(tot.valor), fmtBRL(tot.icms), tot.valor ? ((tot.icms/tot.valor)*100).toFixed(2).replace('.',',')+'%' : '—'], true);
+    y += 6;
+    doc.setFontSize(9); doc.setFont('helvetica','normal');
+    if(d0.totalExtrato!=null) doc.text('Total do extrato da SEFAZ-PE: ' + fmtBRL(d0.totalExtrato) + (Math.abs(tot.icms - d0.totalExtrato)<0.005 ? ' (confere com a soma das notas).' : ' — DIFERENÇA de ' + fmtBRL(tot.icms - d0.totalExtrato) + ' em relação à soma das notas.'), mx, y);
+    pdfFooterDisclaimer(doc, 'Valores conforme o Extrato de Notas Fiscais relativas a Operações Interestaduais sujeitas ao ICMS Antecipado (SEFAZ-PE). Em caso de divergência prevalece o extrato/DAE oficial.');
+    pdfSalvar(doc, 'icms-antecipado-' + (cliente ? cliente.name : 'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + comp.replace('-','') + '.pdf');
+  }
+  async function iaGerarGuia(empresaId, comp){
+    const d = iaDocDe(empresaId, comp); if(!d) return false;
+    const tot = iaTotais(d);
+    const id = iaImpostoId(d.id);
+    const ex = (state.impostosPagar||[]).find(i=>i.id===id);
+    const rec = Object.assign({}, ex||{}, { id, clientId:empresaId, tipoImposto:IA_TIPO, competencia:comp, valorAPagar:tot.icms, vencimento:d.vencimento||'', esfera:'Estadual', origem:'icms-antecipado',
+      obs:'DAE ICMS Fronteira (cód. 00058-2) · ' + tot.qtd + ' nota(s)' + (d.extrato?' · extrato '+d.extrato:'') });
+    if(!ex){ rec.valorPago=''; rec.dataPagamento=''; }
+    return saveImpostoPagar(rec);
+  }
+  async function iaLancarContabil(empresaId, comp){
+    const d = iaDocDe(empresaId, comp); if(!d) return { ok:false, motivo:'Sem dados.' };
+    const tot = iaTotais(d);
+    if(!(tot.icms>0)) return { ok:false, motivo:'Não há ICMS a lançar.' };
+    if(!state.planoContas.some(c=>c.clientId===empresaId)) return { ok:false, motivo:'A empresa ainda não tem Plano de Contas.' };
+    const deb = nfContaPorPadroes(empresaId, [/icms antecipad/i, /icms.*fronteira/i, /icms sobre compras/i, /^mercadorias para revenda/i], null, 'Devedora');
+    const cred = nfContaPorPadroes(empresaId, [/icms (antecipad\w* )?a recolher/i, /impostos? (e contribui[cç][oõ]es )?a recolher/i, /obriga[cç][oõ]es (fiscais|tribut[aá]rias)/i, /impostos? e taxas a pagar/i], null, 'Credora');
+    if(!deb || !cred){
+      return { ok:false, motivo:'Faltam contas no Plano de Contas: ' + [!deb && 'ICMS Antecipado (ou Mercadorias para Revenda)', !cred && 'ICMS a Recolher (ou Impostos a Recolher)'].filter(Boolean).join(' e ') + '.' };
+    }
+    const ultimo = new Date(Number(comp.slice(0,4)), Number(comp.slice(5,7)), 0).getDate();
+    const id = 'icmsant-' + d.id;
+    const ex = state.lancamentosContabeis.find(l=>l.id===id);
+    if(ex && ex.editadoManual) return { ok:true, mantido:true };
+    const l = Object.assign({}, ex||{}, { id, clientId:empresaId, data: comp + '-' + String(ultimo).padStart(2,'0'), valor: tot.icms, contaDebito:deb.id, contaCredito:cred.id,
+      historico:'ICMS antecipado/fronteira ref. ' + monthLabel(comp) + '/' + comp.slice(0,4) + ' (' + tot.qtd + ' nota(s)) (lançamento automático)', origemAutomatica:true });
+    await saveLancamentoContabilSilent(l);
+    await loadLancamentosContabeis();
+    return { ok:true, atualizado: !!ex, debito: deb.nome, credito: cred.nome };
   }
 
   // Nomes sugeridos para as abas mais comuns do Plano de Contas Referencial oficial (ECF/RFB).
@@ -10182,6 +10522,87 @@
     'DES/DMS Municipal', 'RAIS', 'CAGED/e-Social', 'PGDAS-D (Simples Nacional)', 'DASN-SIMEI (MEI)', 'Outra',
   ];
   const OBRIGACAO_PERIODICIDADE = ['Mensal', 'Trimestral', 'Anual', 'Eventual'];
+  // Obrigações acessórias por regime tributário. situacao: 'exigida' | 'condicional' | 'dispensada'.
+  const OBRIG_REGIME = {
+    'MEI': [
+      { nome:'DASN-SIMEI (MEI)', per:'Anual', sit:'exigida', nota:'Declaração anual do MEI, até 31/05 do ano seguinte.' },
+      { nome:'CAGED/e-Social', per:'Mensal', sit:'condicional', nota:'Somente se houver empregado (um por MEI).' },
+      { nome:'SPED Fiscal (EFD ICMS/IPI)', per:'Mensal', sit:'dispensada', nota:'MEI não está obrigado à EFD ICMS/IPI.' },
+      { nome:'SPED Contribuições (EFD Contribuições)', per:'Mensal', sit:'dispensada', nota:'Dispensado.' },
+      { nome:'ECD (Escrituração Contábil Digital)', per:'Anual', sit:'dispensada', nota:'Dispensado.' },
+      { nome:'ECF (Escrituração Contábil Fiscal)', per:'Anual', sit:'dispensada', nota:'Dispensado.' },
+    ],
+    'Simples Nacional': [
+      { nome:'PGDAS-D (Simples Nacional)', per:'Mensal', sit:'exigida', nota:'Apuração e declaração do DAS, até o dia 20 do mês seguinte.' },
+      { nome:'DEFIS', per:'Anual', sit:'exigida', nota:'Declaração de Informações Socioeconômicas e Fiscais, até 31/03 do ano seguinte.' },
+      { nome:'DCTFWeb', per:'Mensal', sit:'condicional', nota:'Somente se houver empregados, pró-labore ou retenções previdenciárias.' },
+      { nome:'CAGED/e-Social', per:'Mensal', sit:'condicional', nota:'Somente se houver empregados ou contribuintes individuais (sócios com pró-labore).' },
+      { nome:'EFD-Reinf', per:'Mensal', sit:'condicional', nota:'Somente se houver retenções (INSS, IR, CSRF) sobre serviços tomados ou prestados.' },
+      { nome:'DES/DMS Municipal', per:'Mensal', sit:'condicional', nota:'Conforme a exigência do município (serviços prestados/tomados).' },
+      { nome:'SPED Fiscal (EFD ICMS/IPI)', per:'Mensal', sit:'dispensada', nota:'Em Pernambuco, empresa do Simples Nacional NÃO é obrigada à EFD ICMS/IPI — somente as do regime normal (Presumido/Real). Em outras UFs, confira a norma estadual.' },
+      { nome:'SPED Contribuições (EFD Contribuições)', per:'Mensal', sit:'dispensada', nota:'Optantes pelo Simples Nacional são dispensados.' },
+      { nome:'ECD (Escrituração Contábil Digital)', per:'Anual', sit:'dispensada', nota:'Dispensada para o Simples Nacional (regra geral).' },
+      { nome:'ECF (Escrituração Contábil Fiscal)', per:'Anual', sit:'dispensada', nota:'Dispensada para o Simples Nacional.' },
+      { nome:'GIA', per:'Mensal', sit:'dispensada', nota:'Em geral dispensada para o Simples Nacional — confira a norma da UF.' },
+      { nome:'DIME/DAM Estadual', per:'Mensal', sit:'dispensada', nota:'Em geral dispensada para o Simples Nacional — confira a norma da UF.' },
+    ],
+    'Lucro Presumido': [
+      { nome:'DCTFWeb', per:'Mensal', sit:'exigida', nota:'Até o dia 15 do mês seguinte (débitos previdenciários e retenções).' },
+      { nome:'SPED Contribuições (EFD Contribuições)', per:'Mensal', sit:'exigida', nota:'PIS/Cofins — 10º dia útil do 2º mês seguinte.' },
+      { nome:'ECF (Escrituração Contábil Fiscal)', per:'Anual', sit:'exigida', nota:'Último dia útil de julho do ano seguinte.' },
+      { nome:'SPED Fiscal (EFD ICMS/IPI)', per:'Mensal', sit:'exigida', nota:'Regime normal: exigida de quem é contribuinte de ICMS/IPI (comércio e indústria).' },
+      { nome:'DIME/DAM Estadual', per:'Mensal', sit:'condicional', nota:'Declaração estadual de apuração do ICMS, conforme a UF (Pernambuco: contribuintes do regime normal).' },
+      { nome:'EFD-Reinf', per:'Mensal', sit:'exigida', nota:'Retenções e pagamentos a terceiros.' },
+      { nome:'CAGED/e-Social', per:'Mensal', sit:'exigida', nota:'Eventos trabalhistas, previdenciários e de segurança do trabalho.' },
+      { nome:'DES/DMS Municipal', per:'Mensal', sit:'condicional', nota:'Se houver serviços prestados/tomados, conforme o município.' },
+      { nome:'ECD (Escrituração Contábil Digital)', per:'Anual', sit:'condicional', nota:'Obrigatória se distribuir lucros acima da base presumida sem escrituração contábil completa.' },
+    ],
+    'Lucro Real': [
+      { nome:'DCTFWeb', per:'Mensal', sit:'exigida', nota:'Até o dia 15 do mês seguinte.' },
+      { nome:'SPED Contribuições (EFD Contribuições)', per:'Mensal', sit:'exigida', nota:'PIS/Cofins não cumulativos.' },
+      { nome:'ECD (Escrituração Contábil Digital)', per:'Anual', sit:'exigida', nota:'Último dia útil de maio do ano seguinte.' },
+      { nome:'ECF (Escrituração Contábil Fiscal)', per:'Anual', sit:'exigida', nota:'Último dia útil de julho do ano seguinte (inclui LALUR/LACS).' },
+      { nome:'SPED Fiscal (EFD ICMS/IPI)', per:'Mensal', sit:'exigida', nota:'Regime normal: exigida de quem é contribuinte de ICMS/IPI.' },
+      { nome:'DIME/DAM Estadual', per:'Mensal', sit:'condicional', nota:'Conforme a UF (Pernambuco: contribuintes do regime normal).' },
+      { nome:'EFD-Reinf', per:'Mensal', sit:'exigida', nota:'Retenções e pagamentos a terceiros.' },
+      { nome:'CAGED/e-Social', per:'Mensal', sit:'exigida', nota:'Eventos trabalhistas e previdenciários.' },
+      { nome:'DES/DMS Municipal', per:'Mensal', sit:'condicional', nota:'Se houver serviços, conforme o município.' },
+    ],
+    'Isento / Outro': [
+      { nome:'DCTFWeb', per:'Mensal', sit:'condicional', nota:'Se houver empregados ou retenções.' },
+      { nome:'CAGED/e-Social', per:'Mensal', sit:'condicional', nota:'Se houver empregados.' },
+      { nome:'EFD-Reinf', per:'Mensal', sit:'condicional', nota:'Se houver retenções.' },
+      { nome:'ECD (Escrituração Contábil Digital)', per:'Anual', sit:'condicional', nota:'Conforme a natureza da entidade — confira.' },
+      { nome:'ECF (Escrituração Contábil Fiscal)', per:'Anual', sit:'condicional', nota:'Conforme a natureza da entidade — confira.' },
+    ],
+  };
+  function obrigRegimeInfo(regime, nome){ return (OBRIG_REGIME[regime]||[]).find(o=>o.nome===nome) || null; }
+  const OBRIG_SIT_LABEL = { exigida:'Exigida', condicional:'Depende do caso', dispensada:'Dispensada' };
+  const OBRIG_SIT_CLASS = { exigida:'sit-ativa', condicional:'sit-pendente', dispensada:'sit-outra' };
+  function obrigacoesPorRegimeHtml(empresa){
+    const cl = empresa ? state.clients.find(c=>c.id===empresa) : null;
+    const regimes = Object.keys(OBRIG_REGIME);
+    const sel = state.obrRegimeVer || (cl && OBRIG_REGIME[cl.regimeTributario] ? cl.regimeTributario : 'Simples Nacional');
+    const lista = OBRIG_REGIME[sel] || [];
+    const grupos = [['exigida','Exigidas'],['condicional','Dependem do caso (empregados, retenções, município…)'],['dispensada','Dispensadas para este regime']];
+    return `
+      <div class="form-section-title" style="margin-top:0;">Obrigações acessórias por regime tributário</div>
+      <div class="form-hint" style="margin:-4px 0 10px;">${cl ? 'Empresa selecionada: <strong>' + escapeHtml(cl.name) + '</strong> — regime <strong>' + escapeHtml(cl.regimeTributario||'não informado') + '</strong>. ' : ''}Escolha o regime para ver o que é exigido, o que depende do caso e o que é dispensado. Use "+ Lançar" para incluir a obrigação no controle da empresa.</div>
+      <div class="field" style="max-width:320px;"><label>Regime tributário</label>
+        <select id="obrRegimeSel">${regimes.map(r=>`<option value="${escapeHtml(r)}" ${r===sel?'selected':''}>${escapeHtml(r)}${cl && cl.regimeTributario===r ? ' (regime da empresa)' : ''}</option>`).join('')}</select>
+      </div>
+      ${grupos.map(([k,titulo])=>{
+        const itens = lista.filter(o=>o.sit===k);
+        if(!itens.length) return '';
+        return `<div style="margin:12px 0 4px; font-weight:700; font-size:13px;"><span class="tag ${OBRIG_SIT_CLASS[k]}">${OBRIG_SIT_LABEL[k]}</span> ${titulo}</div>
+          <table><thead><tr><th>Obrigação</th><th>Periodicidade</th><th>Observação</th><th></th></tr></thead><tbody>
+          ${itens.map(o=>`<tr><td><strong>${escapeHtml(o.nome)}</strong></td><td>${escapeHtml(o.per)}</td><td style="font-size:12px; color:var(--ink-soft);">${escapeHtml(o.nota)}</td>
+            <td>${k!=='dispensada' && empresa ? `<button type="button" class="btn-sm" data-obr-lancar="${escapeHtml(o.nome)}" data-obr-per="${escapeHtml(o.per)}">+ Lançar</button>` : ''}</td></tr>`).join('')}
+          </tbody></table>`;
+      }).join('')}
+      <div style="height:18px;"></div>`;
+  }
+
 
   async function loadObrigacoesAcessorias(){
     state.obrigacoesAcessorias = [];
@@ -11006,7 +11427,7 @@
   function fsSlug(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
   function fsCompLabel(ym){ return ym.slice(5,7)+'/'+ym.slice(0,4); }
 
-  const FS_ESFERA = { 'DAS (Simples Nacional)':'Federal', 'IRPJ':'Federal', 'CSLL':'Federal', 'PIS/COFINS':'Federal', 'INSS/Contribuição Previdenciária':'Federal', 'FGTS':'Federal', 'ICMS':'Estadual', 'IPVA':'Estadual', 'ITCMD':'Estadual', 'ISS':'Municipal', 'IPTU':'Municipal', 'ITBI':'Municipal' };
+  const FS_ESFERA = { 'DAS (Simples Nacional)':'Federal', 'IRPJ':'Federal', 'CSLL':'Federal', 'PIS/COFINS':'Federal', 'INSS/Contribuição Previdenciária':'Federal', 'FGTS':'Federal', 'ICMS':'Estadual', 'ICMS Antecipado (Fronteira)':'Estadual', 'IPVA':'Estadual', 'ITCMD':'Estadual', 'ISS':'Municipal', 'IPTU':'Municipal', 'ITBI':'Municipal' };
   function fsEsferaDoImposto(tipo){ return FS_ESFERA[tipo] || 'Outro'; }
 
   // Notas da empresa na competência (não canceladas).
@@ -11069,8 +11490,10 @@
         const usaFatorR = !!cl.fatorRAtivo && (anexo==='Anexo III — Serviços (locação, agências, etc.)' || anexo==='Anexo V — Serviços intelectuais/técnicos');
         const anexoUsado = usaFatorR ? calcFatorR(cl.id, ym).anexoSugerido : anexo;
         const rbt12 = faturamentoNotas12Meses(cl.id, ym);
-        const r = calcSimples(anexoUsado, rbt12, fat.total);
-        plano.calculos.push({ tipo:'simples', competencia:ym, anexo:anexoUsado, fatorRAtivo:!!cl.fatorRAtivo, rbt12, receitaMes:fat.total, faixaNum:r.faixaNum, aliqNominal:r.aliqNominal, deduz:r.deduz, aliqEfetiva:r.aliqEfetiva, imposto:r.imposto });
+        const sepSeg = monoSegregacaoCompetencia(cl.id, ym);
+        const r = calcSimplesSegregado(anexoUsado, rbt12, fat.total, sepSeg);
+        if(r.segregado) plano.avisos.push('DAS calculado com a segregação do Separador de Produtos Monofásicos: monofásica ' + fmtBRL(r.seg.mono) + ' · ICMS-ST ' + fmtBRL(r.seg.st) + ' · ambas ' + fmtBRL(r.seg.ambos) + '. Confira com o PGDAS-D.');
+        plano.calculos.push(Object.assign({ tipo:'simples', competencia:ym, anexo:anexoUsado, fatorRAtivo:!!cl.fatorRAtivo, rbt12, receitaMes:fat.total, faixaNum:r.faixaNum, aliqNominal:r.aliqNominal, deduz:r.deduz, aliqEfetiva:r.aliqEfetiva, imposto:r.imposto }, calcSegCampos(r)));
         plano.impostos.push({ tipoImposto:'DAS (Simples Nacional)', competencia:ym, valor:round2(r.imposto), vencimento:fsAjustar(fsDiaDoMes(prox,20),'prorrogar'),
           obs:'Receita '+fsCompLabel(ym)+' '+fmtBRL(fat.total)+' · RBT12 '+fmtBRL(rbt12)+' · '+r.faixaNum+'ª faixa · alíq. efetiva '+(r.aliqEfetiva*100).toFixed(2).replace('.',',')+'%' });
       }
@@ -11520,9 +11943,21 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Controle de entregas acessórias por empresa — DCTFWeb, DEFIS, SPED, ECD/ECF, RAIS e outras, com vencimento e status de entrega. Use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
       ${!empresa ? deptSelecioneUmaEmpresaHtml('lançar ou ver as obrigações') : ''}
+      ${obrigacoesPorRegimeHtml(empresa)}
+      <div class="form-section-title">Obrigações lançadas${empresa ? ' — ' + escapeHtml(clientName(empresa)) : ''}</div>
       <div id="obrigacaoTableContainer">${obrigacoesAcessoriasTableHtml()}</div>
-      ${spedPanelHtml(empresa)}
+      ${spedPanelGateHtml(empresa)}
     `;
+  }
+  // SPED Fiscal só para regime normal: Simples Nacional/MEI ficam com um aviso (e a opção de abrir mesmo assim).
+  function spedPanelGateHtml(empresa){
+    if(!empresa) return '';
+    const cl = state.clients.find(c=>c.id===empresa);
+    if(cl && (cl.regimeTributario==='Simples Nacional' || cl.regimeTributario==='MEI') && !state.spedForcar){
+      return `<div class="legis-note" style="margin-top:24px;"><strong>SPED Fiscal (EFD ICMS/IPI) — não exigido.</strong> ${escapeHtml(clientName(empresa))} é do ${escapeHtml(cl.regimeTributario)}: em Pernambuco, apenas empresas do regime normal (Lucro Presumido/Real) entregam o SPED Fiscal. O gerador fica oculto para esta empresa.
+        <div style="margin-top:8px;"><button type="button" class="btn-sm" id="spedForcarBtn">Abrir o gerador mesmo assim</button></div></div>`;
+    }
+    return spedPanelHtml(empresa);
   }
 
   function obrigacaoAcessoriaModalHtml(){
@@ -11534,7 +11969,15 @@
           <h3>${d.id ? 'Editar obrigação' : 'Nova obrigação'} — ${escapeHtml(clientName(deptOneSelectedClient()))}</h3>
           <form id="obrigacaoForm">
             <div class="field"><label>Obrigação</label>
-              <select id="obrNome">${(d.nome && OBRIGACAO_NOME_PADRAO.indexOf(d.nome)<0 ? [d.nome] : []).concat(OBRIGACAO_NOME_PADRAO).map(n=>`<option value="${escapeHtml(n)}" ${n===d.nome?'selected':''}>${escapeHtml(n)}</option>`).join('')}</select>
+              <select id="obrNome">${(()=>{
+                const regime = (state.clients.find(c=>c.id===deptOneSelectedClient())||{}).regimeTributario;
+                const grupo = (sit)=>OBRIGACAO_NOME_PADRAO.filter(n=>{ const i = obrigRegimeInfo(regime, n); return sit==='outras' ? !i : (i && i.sit===sit); });
+                const opt = n=>`<option value="${escapeHtml(n)}" ${n===d.nome?'selected':''}>${escapeHtml(n)}</option>`;
+                const extra = (d.nome && OBRIGACAO_NOME_PADRAO.indexOf(d.nome)<0) ? [d.nome] : [];
+                if(!OBRIG_REGIME[regime]) return extra.concat(OBRIGACAO_NOME_PADRAO).map(opt).join('');
+                return extra.map(opt).join('') + [['exigida','Exigidas para ' + regime],['condicional','Dependem do caso'],['dispensada','Dispensadas para ' + regime],['outras','Outras']].map(([k,t])=>{ const l = grupo(k); return l.length ? `<optgroup label="${escapeHtml(t)}">${l.map(opt).join('')}</optgroup>` : ''; }).join('');
+              })()}</select>
+              <div class="form-hint" id="obrAviso" style="margin-top:4px;"></div>
             </div>
             <div class="form-row">
               <div class="field"><label>Periodicidade</label>
@@ -12546,6 +12989,7 @@
     await loadBaixaEmpresaDocumentos();
     await loadRecibosHonorarios();
     await loadProdutosMonofasicos();
+    await loadIcmsAntecipado();
     await loadNcmMonofasicoCustom();
     await loadTabelasFolha();
     await loadFaturamentosManuais();
@@ -12596,6 +13040,7 @@
       baixasEmpresas: state.baixasEmpresas,
       baixaEmpresaDocumentos: state.baixaEmpresaDocumentos,
       produtosMonofasicos: state.produtosMonofasicos,
+      icmsAntecipado: state.icmsAntecipado,
       ncmMonofasicoCustom: state.ncmMonofasicoCustom,
       tabelasFolha: state.tabelasFolha,
       faturamentosManuais: state.faturamentosManuais,
@@ -12681,6 +13126,7 @@
       {key:'baixasEmpresas', prefix:'baixasempresas:', idField:'id'},
       {key:'baixaEmpresaDocumentos', prefix:'baixaempresadocumentos:', idField:'id'},
       {key:'produtosMonofasicos', prefix:'produtosmonofasicos:', idField:'id'},
+      {key:'icmsAntecipado', prefix:'icmsantecipado:', idField:'id'},
       {key:'ncmMonofasicoCustom', prefix:'ncmmonofasicocustom:', idField:'id'},
       {key:'tabelasFolha', prefix:'tabelasfolha:', idField:'id'},
       {key:'faturamentosManuais', prefix:'faturamentosmanuais:', idField:'id'},
@@ -13088,9 +13534,11 @@
   function clienteExigeIE(d){
     if(!d) return false;
     if(d.personType==='PF') return false;
+    if(d.regimeTributario==='MEI') return false;
     if(['Comércio / Indústria','Revenda de combustíveis'].indexOf(d.atividadePresumido)>=0) return true;
+    if(/^Anexo (I|II) /.test(String(d.anexoSimples||''))) return true; // Simples: Anexo I = comércio, Anexo II = indústria
     const txt = [d.mainActivity, d.secondaryActivities].join(' ');
-    return /(com[eé]rcio|varejist|atacadist|ind[uú]stria|fabrica[cç][aã]o|revenda)/i.test(txt);
+    return /(com[eé]rcio|comercializa|varejist|atacadist|ind[uú]stria|fabrica[cç][aã]o|revenda|distribuidor|farm[aá]cia|drogaria|mercearia|supermercado|\bloja\b|mercadorias|posto de combust)/i.test(txt);
   }
   function clienteIEAtual(clientId){
     return (state.inscricoes||[]).find(i=>i.clientId===clientId && i.tipo==='Inscrição Estadual') || null;
@@ -14632,6 +15080,54 @@
     return { faixaNum: faixaIdx+1, aliqNominal: faixa.aliq, deduz: faixa.deduz, aliqEfetiva, imposto };
   }
 
+  // Partilha do Anexo I (Comércio) — % da alíquota efetiva que cabe a cada tributo, por faixa (LC 123/2006, Anexo I).
+  const PARTILHA_ANEXO_I = [
+    { IRPJ:5.50, CSLL:3.50, COFINS:12.74, PIS:2.76, CPP:41.50, ICMS:34.00 },
+    { IRPJ:5.50, CSLL:3.50, COFINS:12.74, PIS:2.76, CPP:41.50, ICMS:34.00 },
+    { IRPJ:5.50, CSLL:3.50, COFINS:12.74, PIS:2.76, CPP:42.00, ICMS:33.50 },
+    { IRPJ:5.50, CSLL:3.50, COFINS:12.74, PIS:2.76, CPP:42.00, ICMS:33.50 },
+    { IRPJ:5.50, CSLL:3.50, COFINS:12.74, PIS:2.76, CPP:42.00, ICMS:33.50 },
+    { IRPJ:13.50, CSLL:10.00, COFINS:28.27, PIS:6.13, CPP:42.10, ICMS:0 },
+  ];
+  // DAS com segregação de receitas (Anexo I): receita monofásica sem PIS/Cofins, receita com ICMS-ST sem ICMS,
+  // e a que é as duas coisas sem PIS/Cofins nem ICMS. Cada tributo é arredondado por categoria (como no PGDAS-D).
+  function calcSimplesSegregado(anexoKey, rbt12, receitaMes, seg){
+    const base = calcSimples(anexoKey, rbt12, receitaMes);
+    seg = seg || {};
+    const M = Math.max(0, Number(seg.mono)||0), S = Math.max(0, Number(seg.st)||0), A = Math.max(0, Number(seg.ambos)||0);
+    base.segregado = false; base.seg = { mono:0, st:0, ambos:0 };
+    if(anexoKey !== 'Anexo I — Comércio' || (M + S + A) <= 0) return base;
+    const part = PARTILHA_ANEXO_I[Math.min(PARTILHA_ANEXO_I.length, base.faixaNum) - 1];
+    let normal = receitaMes - M - S - A;
+    let m = M, st = S, am = A;
+    if(normal < 0){ // segregação maior que a receita: reduz proporcionalmente para não gerar valor negativo
+      const f = receitaMes / (M + S + A); m = M*f; st = S*f; am = A*f; normal = 0;
+    }
+    const tribs = ['IRPJ','CSLL','COFINS','PIS','CPP','ICMS'];
+    const cats = [
+      { cat:'Receita sem segregação (tributação integral)', receita: normal, fora: [] },
+      { cat:'Receita monofásica (sem PIS/Cofins)', receita: m, fora: ['COFINS','PIS'] },
+      { cat:'Receita com ICMS-ST (sem ICMS)', receita: st, fora: ['ICMS'] },
+      { cat:'Receita monofásica e ICMS-ST (sem PIS/Cofins/ICMS)', receita: am, fora: ['COFINS','PIS','ICMS'] },
+    ];
+    const porTributo = {}; tribs.forEach(t=>porTributo[t]=0);
+    let total = 0;
+    const linhas = cats.map(c=>{
+      let v = 0; const detalhe = {};
+      tribs.forEach(t=>{
+        const x = c.fora.includes(t) ? 0 : round2(c.receita * base.aliqEfetiva * part[t] / 100);
+        detalhe[t] = x; porTributo[t] = round2(porTributo[t] + x); v = round2(v + x);
+      });
+      total = round2(total + v);
+      return { cat:c.cat, receita: round2(c.receita), valor: v, aliq: c.receita>0 ? v/c.receita : 0, detalhe };
+    });
+    base.segregado = true; base.seg = { mono: round2(m), st: round2(st), ambos: round2(am) };
+    base.impostoIntegral = base.imposto;
+    base.imposto = total; base.porTributo = porTributo; base.linhasSeg = linhas;
+    return base;
+  }
+  function calcSegCampos(r){ return r.segregado ? { seg:r.seg, porTributo:r.porTributo, linhasSeg:r.linhasSeg, impostoIntegral:r.impostoIntegral } : {}; }
+
   // ---- Faturamento lançado mês a mês, SEM notas fiscais ----
   // Para empresas cujas notas não estão no sistema (ou que faturam sem nota), o faturamento é digitado
   // por competência, separado em Vendas e Serviços. Um documento por empresa + mês:
@@ -14704,13 +15200,13 @@
     return { total: n.total + m.total, quantidade: n.quantidade, notas: n.total, manual: m.total };
   }
 
-  // RBT12: soma o faturamento dos 12 meses terminando na competência informada (inclusive) —
-  // usado como referência para a Receita Bruta dos Últimos 12 Meses do Simples Nacional.
+  // RBT12: soma o faturamento dos 12 meses ANTERIORES à competência de apuração (o próprio mês não entra) —
+  // é assim que o PGDAS-D calcula (LC 123/2006): para 01/2026, são 01/2025 a 12/2025.
   function faturamentoNotas12Meses(clientId, competenciaFinal){
     if(!clientId || !competenciaFinal) return 0;
     const [ano, mes] = competenciaFinal.split('-').map(Number);
     let total = 0;
-    for(let i=0; i<12; i++){
+    for(let i=1; i<=12; i++){
       const d = new Date(ano, mes-1-i, 1);
       const comp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
       total += faturamentoNotasMes(clientId, comp).total;
@@ -14722,7 +15218,7 @@
     if(!clientId || !competenciaFinal) return [];
     const [ano, mes] = competenciaFinal.split('-').map(Number);
     const linhas = [];
-    for(let i=11; i>=0; i--){
+    for(let i=12; i>=1; i--){
       const d = new Date(ano, mes-1-i, 1);
       const comp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
       linhas.push({ competencia: comp, total: faturamentoNotasMes(clientId, comp).total });
@@ -14736,7 +15232,7 @@
     if(!clientId || !competenciaFinal) return 0;
     const [ano, mes] = competenciaFinal.split('-').map(Number);
     let total = 0;
-    for(let i=0; i<12; i++){
+    for(let i=1; i<=12; i++){
       const d = new Date(ano, mes-1-i, 1);
       const comp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
       total += (state.folhas||[]).filter(f=>f.clientId===clientId && f.competencia===comp).reduce((s,f)=>s+(Number(f.bruto)||0),0);
@@ -14879,7 +15375,7 @@
         <select id="calcAnexo">${Object.keys(SIMPLES_TABELAS).map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
       </div>
       <div class="form-row">
-        <div class="field"><label>RBT12 — Receita bruta últimos 12 meses (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
+        <div class="field"><label>RBT12 — Receita bruta dos 12 meses anteriores (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
         <div class="field"><label>Receita do mês (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaMes" placeholder="Ex: 25000"/></div>
       </div>
       <button type="button" class="btn-calc" id="calcSimplesBtn">Calcular DAS</button>
@@ -15043,8 +15539,15 @@
         <button type="button" class="btn-sm" id="calcUsarNotasBtn" style="margin-bottom:14px;">Usar faturamento (Notas Fiscais + lançado sem nota fiscal)</button>
         <div id="calcNotasResumo"></div>
         <div class="form-row">
-          <div class="field"><label>RBT12 — Receita bruta últimos 12 meses (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
+          <div class="field"><label>RBT12 — Receita bruta dos 12 meses anteriores (R$)</label><input type="number" step="0.01" min="0" id="calcRbt12" placeholder="Ex: 300000"/></div>
           <div class="field"><label>Receita do mês (R$)</label><input type="number" step="0.01" min="0" id="calcReceitaMes" placeholder="Ex: 25000"/></div>
+        </div>
+        <div class="form-section-title" style="margin-top:4px;">Segregação de receitas (somente Anexo I — Comércio)</div>
+        <div class="form-hint" style="margin:-4px 0 10px;">Receitas do mês que não pagam todos os tributos do DAS. Use o botão acima para preencher com o <strong>Separador de Produtos Monofásicos</strong> da competência, ou digite à mão.</div>
+        <div class="form-row">
+          <div class="field"><label>Só monofásica (sem PIS/Cofins) — R$</label><input type="number" step="0.01" min="0" id="calcRecMono" placeholder="0,00"/></div>
+          <div class="field"><label>Só ICMS-ST (sem ICMS) — R$</label><input type="number" step="0.01" min="0" id="calcRecSt" placeholder="0,00"/></div>
+          <div class="field"><label>Monofásica e ICMS-ST — R$</label><input type="number" step="0.01" min="0" id="calcRecAmbos" placeholder="0,00"/></div>
         </div>
         ${usaFatorR ? `
           <div class="legis-note" style="margin-bottom:14px;">
@@ -15142,19 +15645,26 @@
 
     const detalhe12 = detalheFaturamento12Meses(rec.clientId, rec.competencia);
     if(detalhe12.length){
-      tabela('Receita bruta dos últimos 12 meses (RBT12) — detalhamento', [{label:'COMPETÊNCIA', w:0.6}, {label:'RECEITA (NOTAS + SEM NF)', w:0.4, align:'right'}],
+      tabela('Receita bruta dos 12 meses anteriores (RBT12) — detalhamento', [{label:'COMPETÊNCIA', w:0.6}, {label:'RECEITA (NOTAS + SEM NF)', w:0.4, align:'right'}],
         detalhe12.map(l=>[monthLabel(l.competencia)+'/'+l.competencia.slice(0,4), fmtBRL(l.total)]));
     }
 
     tabela('Apuração do DAS', [{label:'ITEM', w:0.6}, {label:'VALOR', w:0.4, align:'right'}], [
-      ['RBT12 — Receita bruta dos últimos 12 meses', fmtBRL(rec.rbt12)],
+      ['RBT12 — Receita bruta dos 12 meses anteriores à competência', fmtBRL(rec.rbt12)],
       ['Receita da competência', fmtBRL(rec.receitaMes)],
       ['Faixa identificada na tabela do ' + (rec.anexo||''), rec.faixaNum + 'ª faixa'],
       ['Alíquota nominal', (rec.aliqNominal*100).toFixed(2).replace('.',',') + '%'],
       ['Parcela a deduzir', fmtBRL(rec.deduz)],
       ['Alíquota efetiva — (RBT12 × Alíq. nominal − Parcela a deduzir) ÷ RBT12', (rec.aliqEfetiva*100).toFixed(2).replace('.',',') + '%'],
-      ['Valor do DAS — Alíquota efetiva × Receita da competência', fmtBRL(rec.imposto)],
+      [rec.seg ? 'DAS sem segregação — Alíquota efetiva × Receita da competência' : 'Valor do DAS — Alíquota efetiva × Receita da competência', fmtBRL(rec.seg ? rec.impostoIntegral : rec.imposto)],
     ]);
+    if(rec.seg && rec.linhasSeg){
+      tabela('Segregação de receitas (Anexo I) — DAS por categoria', [{label:'CATEGORIA', w:0.5}, {label:'RECEITA', w:0.25, align:'right'}, {label:'DAS', w:0.25, align:'right'}],
+        rec.linhasSeg.filter(l=>l.receita>0).map(l=>[l.cat, fmtBRL(l.receita), fmtBRL(l.valor)]).concat([['TOTAL DO DAS', fmtBRL(rec.receitaMes), fmtBRL(rec.imposto)]]));
+      const tr = Object.keys(rec.porTributo||{});
+      tabela('Valor do DAS por tributo (partilha do Anexo I)', [{label:'TRIBUTO', w:0.5}, {label:'VALOR', w:0.5, align:'right'}],
+        tr.map(t=>[t, fmtBRL(rec.porTributo[t])]).concat([['TOTAL', fmtBRL(rec.imposto)]]));
+    }
 
     if(y > 250){ doc.addPage(); y = 15; }
     doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Base legal', mx, y); y += 5;
@@ -19724,6 +20234,7 @@
     {k:'calculo-impostos', label:'Cálculo de Impostos'},
     {k:'declaracao', label:'Declaração de Faturamento'},
     {k:'monofasicos', label:'Separador de Produtos Monofásicos'},
+    {k:'icms-antecipado', label:'ICMS Antecipado / Fronteira (PE)'},
     {k:'reforma', label:'Reforma Tributária (EC 132/23)'},
     {k:'central-pdf', label:'Controle de Certificados Digitais'},
     {k:'certidoes-cnd', label:'Certidões Negativas de Débitos (CND)'},
@@ -19748,6 +20259,7 @@
     else if(state.fiscalTab==='calculo-impostos') tabContent = calculadoraImpostosHtml();
     else if(state.fiscalTab==='declaracao') tabContent = declaracaoFaturamentoPanelHtml();
     else if(state.fiscalTab==='monofasicos') tabContent = monofasicosPanelHtml();
+    else if(state.fiscalTab==='icms-antecipado') tabContent = icmsAntecipadoPanelHtml();
     else if(state.fiscalTab==='reforma') tabContent = reformaTributariaPanelHtml();
     else if(state.fiscalTab==='central-pdf') tabContent = centralPdfOfxPanelHtml();
     else if(state.fiscalTab==='certidoes-cnd') tabContent = certidoesPanelHtml();
@@ -21055,6 +21567,7 @@
       ${state.modal==='baixaDocumento' ? baixaDocumentoModalHtml() : ''}
       ${state.modal==='reciboHonorario' ? reciboHonorarioModalHtml() : ''}
       ${state.modal==='monoItem' ? monoItemModalHtml() : ''}
+      ${state.modal==='iaNota' ? iaNotaModalHtml() : ''}
       ${state.modal==='monoColar' ? monoColarModalHtml() : ''}
       ${state.modal==='monoRegra' ? monoRegraModalHtml() : ''}
       ${state.modal==='tabelaFolha' ? tabelaFolhaModalHtml() : ''}
@@ -21731,7 +22244,10 @@
         const dos12Meses = faturamentoNotas12Meses(clientId, competencia);
         document.getElementById('calcReceitaMes').value = doMes.total.toFixed(2);
         document.getElementById('calcRbt12').value = dos12Meses.toFixed(2);
-        document.getElementById('calcNotasResumo').innerHTML = `
+        const sg = monoSegregacaoCompetencia(clientId, competencia);
+        const setV = (id, v)=>{ const el = document.getElementById(id); if(el) el.value = v ? v.toFixed(2) : ''; };
+        setV('calcRecMono', sg.mono); setV('calcRecSt', sg.st); setV('calcRecAmbos', sg.ambos);
+        document.getElementById('calcNotasResumo').innerHTML = (sg.tem ? `<div class="form-hint" style="margin:-8px 0 8px;">Separador de Produtos Monofásicos de ${monthLabel(competencia)}/${competencia.slice(0,4)}: monofásica ${fmtBRL(sg.mono)} · ICMS-ST ${fmtBRL(sg.st)} · ambas ${fmtBRL(sg.ambos)} (de ${fmtBRL(sg.total)} importados).</div>` : `<div class="form-hint" style="margin:-8px 0 8px;">Sem dados no Separador de Produtos Monofásicos para esta competência — o DAS será calculado sem segregação.</div>`) + `
           <div class="form-hint" style="margin:-8px 0 12px;">${doMes.quantidade} nota(s) de Saída/Serviços encontrada(s) em ${monthLabel(competencia)}/${competencia.slice(0,4)}, somando ${fmtBRL(doMes.notas)}${doMes.manual ? ' + ' + fmtBRL(doMes.manual) + ' lançado sem nota fiscal (Relatório de Faturamento Mensal) = ' + fmtBRL(doMes.total) : ''}. RBT12 (12 meses até essa competência) calculado a partir das notas${doMes.manual || (state.faturamentosManuais||[]).some(d=>d.clientId===clientId) ? ' e do faturamento lançado sem nota fiscal' : ''}: ${fmtBRL(dos12Meses)}.</div>
         `;
       };
@@ -21758,7 +22274,15 @@
         const rbt12 = parseFloat(document.getElementById('calcRbt12').value) || 0;
         const receitaMes = parseFloat(document.getElementById('calcReceitaMes').value) || 0;
         if(rbt12 <= 0 || receitaMes <= 0){ alert('Preencha RBT12 e receita do mês.'); return; }
-        const r = calcSimples(anexo, rbt12, receitaMes);
+        const nv = id=>{ const el = document.getElementById(id); return el ? (parseFloat(el.value)||0) : 0; };
+        const segIn = { mono:nv('calcRecMono'), st:nv('calcRecSt'), ambos:nv('calcRecAmbos') };
+        if(segIn.mono + segIn.st + segIn.ambos > receitaMes + 0.005){ alert('A soma das receitas segregadas (monofásica + ICMS-ST + ambas) não pode passar da receita do mês.'); return; }
+        const r = calcSimplesSegregado(anexo, rbt12, receitaMes, segIn);
+        const segHtml = r.segregado ? `
+            <div class="cr-line"><span>DAS sem segregação</span><span>${fmtBRL(r.impostoIntegral)}</span></div>
+            ${r.linhasSeg.filter(l=>l.receita>0).map(l=>`<div class="cr-line"><span>${escapeHtml(l.cat)} — ${fmtBRL(l.receita)}</span><span>${fmtBRL(l.valor)}</span></div>`).join('')}
+            <div class="cr-line"><span>Por tributo</span><span>${Object.keys(r.porTributo).map(t=>t+' '+fmtBRL(r.porTributo[t])).join(' · ')}</span></div>` :
+          ((segIn.mono+segIn.st+segIn.ambos)>0 ? `<div class="cr-line"><span>Segregação</span><span>Só disponível para o Anexo I — Comércio (cálculo sem segregação)</span></div>` : '');
         document.getElementById('calcSimplesResult').innerHTML = `
           <div class="calc-result">
             <div class="cr-line"><span>Anexo usado</span><span>${escapeHtml(anexo)}</span></div>
@@ -21766,6 +22290,7 @@
             <div class="cr-line"><span>Alíquota nominal</span><span>${(r.aliqNominal*100).toFixed(2).replace('.',',')}%</span></div>
             <div class="cr-line"><span>Parcela a deduzir</span><span>${fmtBRL(r.deduz)}</span></div>
             <div class="cr-line"><span>Alíquota efetiva</span><span>${(r.aliqEfetiva*100).toFixed(2).replace('.',',')}%</span></div>
+            ${segHtml}
             <div class="cr-line total"><span>Valor estimado do DAS</span><span>${fmtBRL(r.imposto)}</span></div>
           </div>
         `;
@@ -21778,6 +22303,7 @@
             clientId, tipo:'simples', competencia, anexo,
             fatorRAtivo: !!cliente.fatorRAtivo, rbt12, receitaMes,
             faixaNum:r.faixaNum, aliqNominal:r.aliqNominal, deduz:r.deduz, aliqEfetiva:r.aliqEfetiva, imposto:r.imposto,
+            ...calcSegCampos(r),
           });
           render();
         }
@@ -21973,6 +22499,7 @@
         const skippedNames = [];
         const chavesNesteLote = new Set();
         const paresSync = [];
+        const paraSeparador = {};
         const hashesNesteLote = new Set();
         for(const file of files){
           if(!isXml(file)){ naoXml++; continue; }
@@ -22007,11 +22534,16 @@
             observacoes: 'Importado em lote via XML (' + file.name + ')',
           });
           paresSync.push({clientId:m.client.id, comp:String(result.dataEmissao||'').slice(0,7)});
+          if(m.tipoOperacao==='Saída' && /<infNFe/i.test(text)){ (paraSeparador[m.client.id] = paraSeparador[m.client.id] || []).push({ name:file.name, text:async()=>text }); }
           ok++;
         }
         await loadNotasFiscais();
         let contabTxt = '';
         if(ok){ try{ const rc = await contabilizarNotas(Array.from(new Set(paresSync.map(p=>p.clientId))), {silent:true}); contabTxt = nfResumoContabil(rc); }catch(err){ console.error(err); } }
+        let monoTxt = '';
+        for(const cid of Object.keys(paraSeparador)){
+          try{ const rm = await importarXmlsMonofasico(paraSeparador[cid], cid, {registrarNota:false}); if(rm.notas) monoTxt += (monoTxt?'; ':'') + clientName(cid) + ': ' + rm.notas + ' nota(s) / ' + rm.itens + ' linha(s) de produto'; }catch(err){ console.error(err); }
+        }
         let sincTxt = '';
         if(paresSync.length){
           showMsg('Notas importadas. Vinculando às declarações e calculando impostos...', 'info');
@@ -22024,6 +22556,7 @@
         if(failed) parts.push(failed + ' com erro de leitura/formato');
         if(sincTxt) parts.push('Declarações e impostos: ' + sincTxt);
         if(contabTxt) parts.push('Contabilidade: ' + contabTxt);
+        if(monoTxt) parts.push('Separador de Produtos Monofásicos/ICMS-ST: ' + monoTxt);
         showMsg('Importação em lote concluída: ' + parts.join(' · ') + '.', ok > 0 ? 'success' : 'error');
         updateNfResults();
       };
@@ -22500,7 +23033,7 @@
     if(monoCompetencia) monoCompetencia.onchange = (e)=>{ if(e.target.value){ state.monofasicoCompetencia = e.target.value; render(); } };
     const monoCompAtual = ()=> state.monofasicoCompetencia || state.competenciaAtiva;
     const monoNovoItemBtn = document.getElementById('monoNovoItemBtn');
-    if(monoNovoItemBtn) monoNovoItemBtn.onclick = ()=>{ state.monoItemModalData = { ncm:'', descricao:'', valor:'', ovr:'' }; state.modal='monoItem'; render(); };
+    if(monoNovoItemBtn) monoNovoItemBtn.onclick = ()=>{ state.monoItemModalData = { ncm:'', descricao:'', valor:'', ovr:'', ovrSt:'' }; state.modal='monoItem'; render(); };
     const monoColarBtn = document.getElementById('monoColarBtn');
     if(monoColarBtn) monoColarBtn.onclick = ()=>{ state.monoColarModalData = {}; state.modal='monoColar'; render(); };
     const monoNovaRegraBtn = document.getElementById('monoNovaRegraBtn');
@@ -22537,14 +23070,90 @@
           '• Notas de venda lidas: ' + r.notas + ' (' + r.itens + ' linhas de produto)\n' +
           (comps.length ? '• Competência(s): ' + comps.map(c=>monthLabel(c)+'/'+c.slice(0,4)).join(', ') + '\n' : '') +
           (r.itensForaDeVenda ? '• Itens ignorados por CFOP que não é de venda (devolução, remessa etc.): ' + r.itensForaDeVenda + '\n' : '') +
+          (r.notasRegistradas ? '• Notas fiscais novas cadastradas no Departamento Fiscal: ' + r.notasRegistradas + '\n' : '') +
+          (r.contab ? '• Contabilidade: ' + r.contab + '\n' : '') +
           (ignoradas.length ? '• Arquivos ignorados: ' + ignoradas.join('; ') + '\n' : ''));
         render();
       };
     }
 
+    // ===== ICMS Antecipado / Fronteira =====
+    const iaMsg = (txt, tipo)=>{ const m = document.getElementById('iaMsg'); if(m){ m.textContent = txt; m.className = 'lookup-msg ' + (tipo||'success'); m.style.display='block'; } };
+    const iaComp = document.getElementById('iaCompetencia');
+    if(iaComp) iaComp.onchange = ()=>{ if(iaComp.value){ state.iaCompetencia = iaComp.value; render(); } };
+    root.querySelectorAll('[data-ia-campo]').forEach(el=>{
+      el.onchange = async ()=>{ const emp = deptOneSelectedClient(); if(!emp) return; const d = iaCopia(emp, iaCompAtual()); d[el.getAttribute('data-ia-campo')] = el.value; await iaSalvar(d); };
+    });
+    const iaPdfBtn = document.getElementById('iaPdfBtn'), iaPdfInput = document.getElementById('iaPdfInput');
+    if(iaPdfBtn && iaPdfInput){
+      iaPdfBtn.onclick = ()=> iaPdfInput.click();
+      iaPdfInput.onchange = async (e)=>{
+        const f = (e.target.files||[])[0]; const emp = deptOneSelectedClient(); if(!f || !emp) return;
+        iaPdfBtn.disabled = true; iaPdfBtn.textContent = 'Lendo o extrato...';
+        try{
+          const r = parseExtratoIcmsAntecipado(await extractPdfText(f));
+          if(!r.notas.length){ alert('Não encontrei notas neste PDF. Use o "Extrato de Notas Fiscais relativas a Operações Interestaduais sujeitas ao ICMS Antecipado" da SEFAZ-PE.'); render(); return; }
+          const comp = r.competencia || iaCompAtual();
+          const d = iaCopia(emp, comp);
+          d.notas = r.notas; d.totalExtrato = r.total; if(r.ie) d.ie = r.ie; if(r.extrato) d.extrato = r.extrato; if(r.vencimento) d.vencimento = r.vencimento;
+          state.iaCompetencia = comp;
+          if(await iaSalvar(d)){
+            const tot = iaTotais(d);
+            setTimeout(()=>iaMsg(r.notas.length + ' nota(s) importada(s) do extrato — ICMS a recolher ' + fmtBRL(tot.icms) + (r.total!=null && Math.abs(tot.icms - r.total)>=0.005 ? ' (ATENÇÃO: o total do extrato é ' + fmtBRL(r.total) + ')' : ' (confere com o total do extrato)') + '.'), 50);
+          }
+        }catch(err){ alert('Não foi possível ler o PDF.\n\nDetalhe técnico: ' + (err && err.message ? err.message : 'erro desconhecido')); render(); }
+      };
+    }
+    const iaNovaBtn = document.getElementById('iaNovaBtn');
+    if(iaNovaBtn) iaNovaBtn.onclick = ()=>{ state.iaNotaModalData = { numero:'', uf:'', cnpjEmit:'', registro:'', dataPassagem:'', valor:'', icms:'' }; state.modal='iaNota'; render(); };
+    root.querySelectorAll('[data-ia-editar]').forEach(el=>{
+      el.onclick = ()=>{ const emp = deptOneSelectedClient(); const d = emp && iaDocDe(emp, iaCompAtual()); const n = d && d.notas.find(x=>x.id===el.getAttribute('data-ia-editar')); if(!n) return; state.iaNotaModalData = Object.assign({}, n); state.modal='iaNota'; render(); };
+    });
+    root.querySelectorAll('[data-ia-excluir]').forEach(el=>{
+      el.onclick = async ()=>{ const emp = deptOneSelectedClient(); if(!emp || !confirm('Excluir esta nota?')) return; const d = iaCopia(emp, iaCompAtual()); d.notas = d.notas.filter(x=>x.id!==el.getAttribute('data-ia-excluir')); await iaSalvar(d); };
+    });
+    const iaNotaCancel = document.getElementById('iaNotaCancel');
+    if(iaNotaCancel) iaNotaCancel.onclick = ()=>{ state.modal=null; state.iaNotaModalData=null; render(); };
+    const iaNUf = document.getElementById('iaNUf');
+    if(iaNUf) iaNUf.oninput = ()=>{ const i = document.getElementById('iaNInter'); if(i && iaNUf.value.length===2) i.value = iaAliqInterestadual(iaNUf.value); };
+    const iaNEstimarBtn = document.getElementById('iaNEstimarBtn');
+    if(iaNEstimarBtn) iaNEstimarBtn.onclick = ()=>{
+      const v = parseFloat(document.getElementById('iaNValor').value) || 0;
+      document.getElementById('iaNIcms').value = iaEstimar(v, document.getElementById('iaNMva').value, document.getElementById('iaNInterna').value, document.getElementById('iaNInter').value).toFixed(2);
+    };
+    const iaNotaForm = document.getElementById('iaNotaForm');
+    if(iaNotaForm) iaNotaForm.onsubmit = async (e)=>{
+      e.preventDefault();
+      const emp = deptOneSelectedClient(); if(!emp){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
+      const d = iaCopia(emp, iaCompAtual());
+      const dados = { numero: document.getElementById('iaNNumero').value.trim(), uf: document.getElementById('iaNUf').value.trim().toUpperCase(), cnpjEmit: document.getElementById('iaNCnpj').value.trim(),
+        registro: document.getElementById('iaNRegistro').value.trim(), dataPassagem: document.getElementById('iaNData').value,
+        valor: round2(parseFloat(document.getElementById('iaNValor').value)||0), icms: round2(parseFloat(document.getElementById('iaNIcms').value)||0) };
+      const idEd = state.iaNotaModalData && state.iaNotaModalData.id;
+      if(idEd){ const n = d.notas.find(x=>x.id===idEd); if(n) Object.assign(n, dados); } else d.notas.push(Object.assign({ id: uid() }, dados));
+      if(await iaSalvar(d)){ state.modal=null; state.iaNotaModalData=null; render(); }
+    };
+    const iaGuiaBtn = document.getElementById('iaGuiaBtn');
+    if(iaGuiaBtn) iaGuiaBtn.onclick = async ()=>{ const emp = deptOneSelectedClient(); if(!emp) return; if(await iaGerarGuia(emp, iaCompAtual())) setTimeout(()=>iaMsg('Guia gerada em Impostos & Guias (' + IA_TIPO + ').'), 50); };
+    const iaContabBtn = document.getElementById('iaContabBtn');
+    if(iaContabBtn) iaContabBtn.onclick = async ()=>{
+      const emp = deptOneSelectedClient(); if(!emp) return;
+      iaContabBtn.disabled = true;
+      const r = await iaLancarContabil(emp, iaCompAtual());
+      render();
+      setTimeout(()=>iaMsg(r.ok ? (r.mantido ? 'Lançamento já existente e editado à mão — mantido.' : 'Lançamento contábil ' + (r.atualizado?'atualizado':'criado') + ': débito em "' + r.debito + '" e crédito em "' + r.credito + '".') : (r.motivo||'Não foi possível lançar.'), r.ok ? 'success' : 'error'), 50);
+    };
+    const iaPdfRelBtn = document.getElementById('iaPdfRelBtn');
+    if(iaPdfRelBtn) iaPdfRelBtn.onclick = ()=>{ const emp = deptOneSelectedClient(); if(emp) gerarRelatorioIcmsAntecipadoPDF(emp, iaCompAtual()); };
+    const iaLimparBtn = document.getElementById('iaLimparBtn');
+    if(iaLimparBtn) iaLimparBtn.onclick = async ()=>{ const emp = deptOneSelectedClient(); if(!emp || !confirm('Apagar todas as notas desta competência?')) return; try{ await Store.delete('icmsantecipado:'+iaDocId(emp, iaCompAtual()), true); }catch(e){} await loadIcmsAntecipado(); render(); };
+
     // ajuste manual de classificação, editar e excluir linhas
     root.querySelectorAll('[data-mono-ajuste]').forEach(el=>{
       el.onchange = ()=>{ const emp = deptOneSelectedClient(); if(emp) monoDefinirAjuste(emp, monoCompAtual(), el.getAttribute('data-mono-ajuste'), el.value); };
+    });
+    root.querySelectorAll('[data-mono-st]').forEach(el=>{
+      el.onchange = ()=>{ const emp = deptOneSelectedClient(); if(emp) monoDefinirSt(emp, monoCompAtual(), el.getAttribute('data-mono-st'), el.value); };
     });
     root.querySelectorAll('[data-mono-editar]').forEach(el=>{
       el.onclick = ()=>{
@@ -22593,6 +23202,7 @@
           descricao: document.getElementById('monoItemDescricao').value,
           valor: document.getElementById('monoItemValor').value,
           ovr: document.getElementById('monoItemOvr').value,
+          ovrSt: document.getElementById('monoItemOvrSt').value,
         };
         const btn = monoItemForm.querySelector('button[type="submit"]');
         if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
@@ -22779,6 +23389,24 @@
     });
 
     // ===== Obrigações Acessórias =====
+    const obrRegimeSel = document.getElementById('obrRegimeSel');
+    if(obrRegimeSel) obrRegimeSel.onchange = ()=>{ state.obrRegimeVer = obrRegimeSel.value; render(); };
+    root.querySelectorAll('[data-obr-lancar]').forEach(el=>{
+      el.onclick = ()=>{ if(!deptOneSelectedClient()) return; state.obrigacaoAcessoriaModalData = { nome: el.getAttribute('data-obr-lancar'), periodicidade: el.getAttribute('data-obr-per') }; state.modal='obrigacaoAcessoria'; render(); };
+    });
+    const spedForcarBtn = document.getElementById('spedForcarBtn');
+    if(spedForcarBtn) spedForcarBtn.onclick = ()=>{ state.spedForcar = true; render(); };
+    const obrNomeSel = document.getElementById('obrNome');
+    if(obrNomeSel){
+      const avisa = ()=>{
+        const av = document.getElementById('obrAviso'); if(!av) return;
+        const regime = (state.clients.find(c=>c.id===deptOneSelectedClient())||{}).regimeTributario;
+        const i = obrigRegimeInfo(regime, obrNomeSel.value);
+        av.textContent = i && i.sit==='dispensada' ? '⚠️ Dispensada para o regime ' + regime + ': ' + i.nota : (i ? i.nota : '');
+        av.style.color = i && i.sit==='dispensada' ? 'var(--danger,#b3261e)' : '';
+      };
+      obrNomeSel.onchange = avisa; avisa();
+    }
     const novaObrigacaoBtn = document.getElementById('novaObrigacaoBtn');
     if(novaObrigacaoBtn) novaObrigacaoBtn.onclick = ()=>{
       if(!deptOneSelectedClient()){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
@@ -25806,11 +26434,21 @@
     const clIeIsentoEl = document.getElementById('clIEIsento');
     const atualizarAvisoIE = ()=>{
       const sp = document.getElementById('clIeObrig');
-      if(sp && state.clientModalData) sp.textContent = clienteExigeIE(state.clientModalData) ? '— obrigatória (atividade de comércio/indústria)' : '';
+      const gv = id=>{ const el = document.getElementById(id); return el ? el.value : ''; };
+      const dados = Object.assign({}, state.clientModalData, { mainActivity: gv('clMainActivity'), secondaryActivities: gv('clSecondaryActivities') });
+      const exige = !!state.clientModalData && clienteExigeIE(dados);
+      if(sp) sp.textContent = exige ? '— obrigatória (atividade de comércio/indústria)' : '';
+      const iso = document.getElementById('clIEIsento');
+      if(iso && exige && iso.checked){ iso.checked = false; if(clIeEl) clIeEl.disabled = false; if(state.clientModalData) state.clientModalData.ieIsento = false; }
     };
     if(clIeEl) clIeEl.oninput = (e)=>{ if(state.clientModalData) state.clientModalData.ie = e.target.value; };
     if(clIeIsentoEl) clIeIsentoEl.onchange = (e)=>{
       if(!state.clientModalData) return;
+      if(e.target.checked && clienteExigeIE(Object.assign({}, state.clientModalData, { mainActivity: (document.getElementById('clMainActivity')||{}).value, secondaryActivities: (document.getElementById('clSecondaryActivities')||{}).value }))){
+        e.target.checked = false;
+        alert('Empresa de comércio/indústria precisa ter Inscrição Estadual. Informe o número da IE.');
+        return;
+      }
       state.clientModalData.ieIsento = e.target.checked;
       if(clIeEl){ clIeEl.disabled = e.target.checked; if(e.target.checked){ clIeEl.value=''; state.clientModalData.ie=''; } }
     };
@@ -26000,8 +26638,8 @@
         if(cepDig && cepDig.length!==8){ alert('CEP inválido: informe os 8 dígitos (ex.: 53439-000).'); document.getElementById('clCep').focus(); return; }
         const ieDigitos = (document.getElementById('clIE').value||'').replace(/\D/g,'');
         const ieIsento = document.getElementById('clIEIsento').checked;
-        if(clienteExigeIE(c) && !ieDigitos && !ieIsento){
-          alert('Esta empresa tem atividade de comércio/indústria: a Inscrição Estadual é obrigatória no cadastro.\n\nInforme o número da IE ou, se realmente não for contribuinte de ICMS, marque "Isento / não contribuinte de ICMS".');
+        if(clienteExigeIE(c) && ieDigitos.length < 8){
+          alert('Esta empresa tem atividade de comércio/indústria: a Inscrição Estadual é obrigatória no cadastro.\n\nInforme o número da IE (somente números, conforme a SEFAZ).');
           document.getElementById('clIE').focus();
           return;
         }
