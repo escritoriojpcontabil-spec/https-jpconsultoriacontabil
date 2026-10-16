@@ -318,8 +318,8 @@
   .portal-links{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;}
 
   /* ---------- DP - PESSOAL (FOLHA, FÉRIAS, RESCISÃO) ---------- */
-  .dp-tabs{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-bottom:18px;max-width:480px;}
-  .dp-tabs .dp-tab-btn{text-align:left;}
+  .dp-tabs{display:block;column-gap:10px;margin-bottom:18px;}
+  .dp-tabs .dp-tab-btn{display:block;width:100%;margin:0 0 6px;text-align:left;break-inside:avoid;}
   .dp-tab-btn{padding:9px 15px;border-radius:9px;border:1.5px solid var(--line);background:#fff;font-size:12.5px;font-weight:700;cursor:pointer;color:var(--ink-soft);transition:all .15s;}
   .dp-tab-btn:hover{border-color:var(--gold);}
   .dp-tab-btn.active{background:var(--navy);border-color:var(--navy);color:#fff;}
@@ -359,8 +359,8 @@
   .spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(15,39,64,.25);border-top-color:var(--navy-deep);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;}
   @keyframes spin{to{transform:rotate(360deg);}}
 
-  .dept-tabs{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-bottom:20px;max-width:480px;}
-  .dept-tabs .dept-tab-btn{text-align:left;}
+  .dept-tabs{display:block;column-gap:10px;margin-bottom:20px;}
+  .dept-tabs .dept-tab-btn{display:block;width:100%;margin:0 0 6px;text-align:left;break-inside:avoid;}
   .dept-tab-btn{padding:9px 16px;border-radius:9px;border:1.5px solid var(--line);background:#fff;font-size:13px;font-weight:700;cursor:pointer;color:var(--ink-soft);transition:all .15s;}
   .dept-tab-btn:hover{border-color:var(--gold);}
   .dept-tab-btn.active{background:var(--navy);border-color:var(--navy);color:#fff;}
@@ -1834,7 +1834,7 @@
     modoImpressao = true;
     try{ acao(); } finally { modoImpressao = false; }
   }
-  // Abas/botões de seção de todos os departamentos: ordem alfabética, em coluna (um abaixo do outro).
+  // Abas/botões de seção de todos os departamentos: ordem alfabética, em colunas (alfabética de cima para baixo em cada coluna).
   // "Todos/Todas" (filtros) ficam sempre no início; símbolos/emojis no começo do rótulo são ignorados na ordenação.
   function ordenarAbasAlfabeticamente(root){
     const chave = (b)=> (b.textContent||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/^[^A-Za-z0-9]+/,'').toLowerCase();
@@ -1845,6 +1845,10 @@
       const ordenados = botoes.slice().sort((a,b)=> fixo(a)-fixo(b) || chave(a).localeCompare(chave(b), 'pt-BR', {numeric:true}));
       if(ordenados.every((b,i)=>b===botoes[i])) return;
       ordenados.forEach(b=>box.appendChild(b));
+    });
+    root.querySelectorAll('.dp-tabs, .dept-tabs').forEach(box=>{
+      const n = Array.from(box.children).filter(el=>el.tagName==='BUTTON').length;
+      box.style.columnCount = String(Math.max(1, Math.min(3, Math.ceil(n/6)))); // ~6 botões por coluna, até 3 colunas
     });
   }
   function adicionarBotoesImprimir(root){
