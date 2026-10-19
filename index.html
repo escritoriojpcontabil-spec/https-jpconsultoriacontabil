@@ -15788,7 +15788,8 @@
     for(let i=12; i>=1; i--){
       const d = new Date(ano, mes-1-i, 1);
       const comp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
-      linhas.push({ competencia: comp, total: faturamentoNotasMes(clientId, comp).total });
+      const fm = faturamentoNotasMes(clientId, comp);
+      linhas.push({ competencia: comp, total: fm.total, notas: fm.notas, manual: fm.manual });
     }
     return linhas;
   }
@@ -16212,8 +16213,15 @@
 
     const detalhe12 = detalheFaturamento12Meses(rec.clientId, rec.competencia);
     if(detalhe12.length){
-      tabela('Receita bruta dos 12 meses anteriores (RBT12) — detalhamento', [{label:'COMPETÊNCIA', w:0.6}, {label:'RECEITA (NOTAS + SEM NF)', w:0.4, align:'right'}],
-        detalhe12.map(l=>[monthLabel(l.competencia)+'/'+l.competencia.slice(0,4), fmtBRL(l.total)]));
+      const soma12 = round2(detalhe12.reduce((a,l)=>a+l.total,0));
+      tabela('Receita bruta dos 12 meses anteriores (RBT12) — detalhamento (dados atuais do sistema)', [{label:'COMPETÊNCIA', w:0.34}, {label:'NOTAS FISCAIS', w:0.22, align:'right'}, {label:'LANÇADO SEM NF', w:0.22, align:'right'}, {label:'TOTAL', w:0.22, align:'right'}],
+        detalhe12.map(l=>[monthLabel(l.competencia)+'/'+l.competencia.slice(0,4), fmtBRL(l.notas), fmtBRL(l.manual), fmtBRL(l.total)]).concat([['SOMA ATUAL', '', '', fmtBRL(soma12)]]));
+      if(Math.abs(soma12 - round2(rec.rbt12||0)) > 0.01){
+        doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+        const av = doc.splitTextToSize('ATENÇÃO: o RBT12 usado neste cálculo (' + fmtBRL(rec.rbt12) + ') é diferente da soma atual do detalhamento acima (' + fmtBRL(soma12) + '). Isso acontece quando notas ou faturamento foram lançados/alterados depois do cálculo, ou quando o mesmo mês tem nota fiscal e lançamento sem NF (soma em dobro). Confira com o PGDAS-D e recalcule.', cw);
+        doc.text(av, mx, y); y += av.length*4.2 + 4;
+        doc.setFont('helvetica','normal');
+      }
     }
 
     tabela('Apuração do DAS', [{label:'ITEM', w:0.6}, {label:'VALOR', w:0.4, align:'right'}], [
@@ -23017,7 +23025,8 @@
         const setV = (id, v)=>{ const el = document.getElementById(id); if(el) el.value = v ? v.toFixed(2) : ''; };
         setV('calcRecMono', sg.mono); setV('calcRecSt', sg.st); setV('calcRecAmbos', sg.ambos);
         document.getElementById('calcNotasResumo').innerHTML = (sg.tem ? `<div class="form-hint" style="margin:-8px 0 8px;">Separador de Produtos Monofásicos de ${monthLabel(competencia)}/${competencia.slice(0,4)}: monofásica ${fmtBRL(sg.mono)} · ICMS-ST ${fmtBRL(sg.st)} · ambas ${fmtBRL(sg.ambos)} (de ${fmtBRL(sg.total)} importados).</div>` : `<div class="form-hint" style="margin:-8px 0 8px;">Sem dados no Separador de Produtos Monofásicos para esta competência — o DAS será calculado sem segregação.</div>`) + `
-          <div class="form-hint" style="margin:-8px 0 12px;">${doMes.quantidade} nota(s) de Saída/Serviços encontrada(s) em ${monthLabel(competencia)}/${competencia.slice(0,4)}, somando ${fmtBRL(doMes.notas)}${doMes.manual ? ' + ' + fmtBRL(doMes.manual) + ' lançado sem nota fiscal (Relatório de Faturamento Mensal) = ' + fmtBRL(doMes.total) : ''}. RBT12 (12 meses até essa competência) calculado a partir das notas${doMes.manual || (state.faturamentosManuais||[]).some(d=>d.clientId===clientId) ? ' e do faturamento lançado sem nota fiscal' : ''}: ${fmtBRL(dos12Meses)}.</div>
+          <div class="form-hint" style="margin:-8px 0 12px;">${doMes.quantidade} nota(s) de Saída/Serviços encontrada(s) em ${monthLabel(competencia)}/${competencia.slice(0,4)}, somando ${fmtBRL(doMes.notas)}${doMes.manual ? ' + ' + fmtBRL(doMes.manual) + ' lançado sem nota fiscal (Relatório de Faturamento Mensal) = ' + fmtBRL(doMes.total) : ''}. ${(()=>{ const dup = detalheFaturamento12Meses(clientId, competencia).concat([{competencia}]).filter(l=>{ const f=faturamentoNotasMes(clientId,l.competencia); return f.notas>0 && f.manual>0; }); return dup.length ? '<br><strong style="color:#b45309;">Atenção: ' + dup.map(l=>monthLabel(l.competencia)+'/'+l.competencia.slice(0,4)).join(', ') + ' tem nota fiscal E faturamento lançado sem NF — confira se não está somando em dobro (Relatório de Faturamento Mensal).</strong>' : ''; })()}
+          RBT12 (12 meses até essa competência) calculado a partir das notas${doMes.manual || (state.faturamentosManuais||[]).some(d=>d.clientId===clientId) ? ' e do faturamento lançado sem nota fiscal' : ''}: ${fmtBRL(dos12Meses)}.</div>
         `;
       };
     }
@@ -23047,6 +23056,10 @@
         const segIn = { mono:nv('calcRecMono'), st:nv('calcRecSt'), ambos:nv('calcRecAmbos') };
         if(segIn.mono + segIn.st + segIn.ambos > receitaMes + 0.005){ alert('A soma das receitas segregadas (monofásica + ICMS-ST + ambas) não pode passar da receita do mês.'); return; }
         const r = calcSimplesSegregado(anexo, rbt12, receitaMes, segIn);
+        let avisoSeg = '';
+        if(/Anexo I\b/.test(anexo) && !/Anexo II|III|IV|V/.test(anexo.replace(/Anexo I\b/,'')) && (segIn.mono+segIn.st+segIn.ambos)===0){
+          avisoSeg = '<div class="form-hint" style="margin:8px 0;color:#b45309;"><strong>Atenção:</strong> nenhuma receita foi segregada (monofásica / ICMS-ST). Se a empresa vendeu mercadoria com ICMS-ST (CST 60 / CSOSN 500 / CFOP 5.405) ou monofásica, preencha esses campos (ou importe os XMLs no Separador de Produtos Monofásicos) — senão o DAS sai maior que o do PGDAS-D, pois o ICMS (ou PIS/COFINS) é cobrado sobre essa receita.</div>';
+        }
         const segHtml = r.segregado ? `
             <div class="cr-line"><span>DAS sem segregação</span><span>${fmtBRL(r.impostoIntegral)}</span></div>
             ${r.linhasSeg.filter(l=>l.receita>0).map(l=>`<div class="cr-line"><span>${escapeHtml(l.cat)} — ${fmtBRL(l.receita)}</span><span>${fmtBRL(l.valor)}</span></div>`).join('')}
@@ -23061,7 +23074,7 @@
             <div class="cr-line"><span>Alíquota efetiva</span><span>${(r.aliqEfetiva*100).toFixed(2).replace('.',',')}%</span></div>
             ${segHtml}
             <div class="cr-line total"><span>Valor estimado do DAS</span><span>${fmtBRL(r.imposto)}</span></div>
-          </div>
+          </div>${avisoSeg}
         `;
         // Em modo automático (uma empresa no Simples Nacional selecionada no topo), salva no histórico.
         const clientId = deptOneSelectedClient();
