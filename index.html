@@ -17018,17 +17018,20 @@
     const contra = document.getElementById('siContra').value;
     if(!data){ show('Informe a data do saldo.', 'error'); return; }
     if(!contra){ show('Escolha a conta de contrapartida (Patrimônio Líquido).', 'error'); return; }
-    const novos = [];
+    const novos = [], iguais = [];
     document.querySelectorAll('.si-valor').forEach(inp=>{
       const v = Math.round((parseFloat(inp.value)||0)*100)/100;
       if(v<=0) return;
       const cid = inp.getAttribute('data-conta');
-      if(cid===contra) return;
+      const cc = state.planoContas.find(x=>x.id===cid), ct = state.planoContas.find(x=>x.id===contra);
+      if(cid===contra || (cc && ct && cc.codigo===ct.codigo)){ iguais.push(cc ? cc.codigo+' — '+cc.nome : cid); return; }
       const dc = document.querySelector('.si-dc[data-conta="'+cid+'"]').value;
       novos.push({ id: siIdLanc(empresa,cid), clientId: empresa, data, valor: v,
         contaDebito: dc==='D' ? cid : contra, contaCredito: dc==='D' ? contra : cid,
         historico: 'Saldo inicial em ' + fmtDate(data), aberturaSaldo: true });
     });
+    if(iguais.length){ show('A conta ' + iguais[0] + ' é a própria contrapartida — o saldo se anularia e nada seria lançado. Troque a "Contrapartida" por outra conta do Patrimônio Líquido (ex.: Lucros/Prejuízos Acumulados) ou use outra conta no saldo.', 'error'); return; }
+    if(!novos.length && !siAberturas(empresa).length){ show('Nenhum valor informado: digite o saldo (maior que zero) em pelo menos uma conta.', 'error'); return; }
     const manter = {}; novos.forEach(n=>manter[n.id]=1);
     const apagar = siAberturas(empresa).filter(l=>!manter[l.id]).map(l=>l.id);
     const btn = document.getElementById('siSalvarBtn'); if(btn) btn.disabled = true;
@@ -17051,7 +17054,9 @@
       if(dc==='D') d+=v; else c+=v;
     });
     const dif = Math.round((d-c)*100)/100;
-    el.innerHTML = 'Devedores: <b>'+fmtBRL(d)+'</b> · Credores: <b>'+fmtBRL(c)+'</b> · A diferença <b>'+fmtBRL(Math.abs(dif))+'</b> '+(dif>0?'vai a crédito':dif<0?'vai a débito':'(zerada)')+' na conta de contrapartida (Patrimônio Líquido).';
+    const ctEl = document.getElementById('siContra'); const ct = ctEl && state.planoContas.find(x=>x.id===ctEl.value);
+    const mesma = ct && [...document.querySelectorAll('.si-valor')].some(inp=>{ if(!(parseFloat(inp.value)>0)) return false; const cc = state.planoContas.find(x=>x.id===inp.getAttribute('data-conta')); return cc && cc.codigo===ct.codigo; });
+    el.innerHTML = (mesma ? '<span style="color:#b45309;font-weight:700;">Atenção: uma das contas é a própria contrapartida — troque a contrapartida, senão o saldo se anula.</span><br>' : '') + 'Devedores: <b>'+fmtBRL(d)+'</b> · Credores: <b>'+fmtBRL(c)+'</b> · A diferença <b>'+fmtBRL(Math.abs(dif))+'</b> '+(dif>0?'vai a crédito':dif<0?'vai a débito':'(zerada)')+' na conta de contrapartida (Patrimônio Líquido).';
   }
 
 
@@ -26575,7 +26580,7 @@
     if(state.si && state.si.foco){ const f = document.querySelector('.si-valor[data-conta="'+state.si.foco+'"]'); state.si.foco = null; if(f) setTimeout(()=>{ f.focus(); f.scrollIntoView({block:'center'}); },50); }
     const siBtn = document.getElementById('siSalvarBtn');
     if(siBtn){ siBtn.onclick = siSalvar;
-      root.querySelectorAll('.si-valor, .si-dc').forEach(el=>{ el.oninput = siAtualizarResumo; el.onchange = siAtualizarResumo; });
+      root.querySelectorAll('.si-valor, .si-dc, #siContra').forEach(el=>{ el.oninput = siAtualizarResumo; el.onchange = siAtualizarResumo; });
       siAtualizarResumo(); }
     const ofxAplicarRegrasBtn = document.getElementById('ofxAplicarRegrasBtn');
     if(ofxAplicarRegrasBtn) ofxAplicarRegrasBtn.onclick = async ()=>{
