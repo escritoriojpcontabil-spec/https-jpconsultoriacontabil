@@ -8995,13 +8995,24 @@
   // saldo anterior ao período + movimento do período + saldo atual.
   function montarBalancete(clientId, dataInicio, dataFim){
     const contas = state.planoContas.filter(c=>c.clientId===clientId).sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'', undefined, {numeric:true}));
+    // Sem "data inicial": os saldos de abertura (Saldos Iniciais) entram como "Saldo anterior", não como movimento.
+    const semIni = !dataInicio;
+    const movAb = (id)=>{ let d=0, cr=0; if(semIni) state.lancamentosContabeis.forEach(l=>{ if(l.clientId!==clientId || l.aberturaSaldo!==true) return; if(dataFim && l.data>dataFim) return; if(l.contaDebito===id) d+=Number(l.valor)||0; if(l.contaCredito===id) cr+=Number(l.valor)||0; }); return {d, cr}; };
+    const saldoAb = (c)=>{
+      if(!semIni) return 0;
+      const ids = c.tipo==='Analítica' ? [c.id] : state.planoContas.filter(x=>x.clientId===clientId && x.tipo==='Analítica' && x.codigo.startsWith(c.codigo+'.')).map(x=>x.id);
+      const nat = c.natureza || 'Devedora'; let t = 0;
+      ids.forEach(id=>{ const m = movAb(id); const f = state.planoContas.find(x=>x.id===id); const natF = c.tipo==='Analítica' ? c.natureza : nat; t += natF==='Devedora' ? (m.d-m.cr) : (m.cr-m.d); });
+      return t;
+    };
+    const movSem = (id)=>{ const m = movimentoConta(id, clientId, dataInicio, dataFim); const a = movAb(id); return {debitos: m.debitos-a.d, creditos: m.creditos-a.cr}; };
     return contas.map(c=>{
-      const saldoAnterior = dataInicio ? saldoConta(c, clientId, null, dataAnterior(dataInicio)) : 0;
+      const saldoAnterior = dataInicio ? saldoConta(c, clientId, null, dataAnterior(dataInicio)) : saldoAb(c);
       const saldoAtual = saldoConta(c, clientId, null, dataFim);
-      const mov = c.tipo==='Analítica' ? movimentoConta(c.id, clientId, dataInicio, dataFim) : (()=>{
+      const mov = c.tipo==='Analítica' ? movSem(c.id) : (()=>{
         const prefix = c.codigo + '.';
         const filhas = state.planoContas.filter(x=>x.clientId===clientId && x.tipo==='Analítica' && x.codigo.startsWith(prefix));
-        return filhas.reduce((s,f)=>{ const m = movimentoConta(f.id, clientId, dataInicio, dataFim); return {debitos: s.debitos+m.debitos, creditos: s.creditos+m.creditos}; }, {debitos:0, creditos:0});
+        return filhas.reduce((s,f)=>{ const m = movSem(f.id); return {debitos: s.debitos+m.debitos, creditos: s.creditos+m.creditos}; }, {debitos:0, creditos:0});
       })();
       return { conta: c, saldoAnterior, debitosPeriodo: mov.debitos, creditosPeriodo: mov.creditos, saldoAtual };
     });
@@ -16948,6 +16959,13 @@
       state.si.rasc[cid] = { valor: inp.value, dc: dcEl ? dcEl.value : 'D' };
     });
   }
+  function siListaGravadosHtml(empresa, ab){
+    const nm = id=>{ const c = state.planoContas.find(x=>x.id===id); return c ? c.codigo+' — '+c.nome : '(conta inexistente)'; };
+    if(!ab.length) return `<div class="form-hint" style="margin:0 0 14px; padding:8px 10px; background:#FFF8E1; border-left:4px solid #B26A00;">Nenhum saldo inicial gravado para esta empresa ainda.</div>`;
+    return `<div class="attach-box" style="margin:0 0 14px;"><label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:6px;">Saldos iniciais gravados (${ab.length})</label>
+      ${ab.map(l=>`<div style="display:flex; justify-content:space-between; gap:12px; padding:3px 0; border-bottom:1px solid #e6eaf0; font-size:13px;"><span>${fmtDate(l.data)} · D ${escapeHtml(nm(l.contaDebito))} / C ${escapeHtml(nm(l.contaCredito))}</span><b>${fmtBRL(l.valor)}</b></div>`).join('')}
+      <div class="form-hint" style="margin:6px 0 0;">Para aparecer como "Saldo anterior" no Balancete, o período do relatório deve começar depois da data do saldo (ou deixe "Data inicial" vazia).</div></div>`;
+  }
   function saldosIniciaisPanelHtml(){
     const empresa = state.contabilEmpresaAtiva;
     const cab = `<div class="panel-head"><h3>Saldos Iniciais das Contas</h3></div>
@@ -16970,6 +16988,7 @@
     const disponiveis = contas.filter(c=>!E.ids.includes(c.id) && (!contaEhPL(empresa, c.codigo) || c.id!==cpPadrao));
     return cab + `
       <div class="form-hint" style="margin:-4px 0 14px; font-weight:700;">Empresa selecionada: ${escapeHtml(clientName(empresa))}</div>
+      ${siListaGravadosHtml(empresa, ab)}
       <div class="form-row">
         <div class="field"><label>Data do saldo (dia anterior ao 1º lançamento)</label><input type="date" id="siData" value="${dataAb}"/></div>
         <div class="field"><label>Contrapartida (Patrimônio Líquido)</label>
@@ -17040,9 +17059,14 @@
       for(const id of apagar){ await Store.delete('lancamentoscontabeis:'+id, true); }
       await loadLancamentosContabeis();
       state.si = null;
+      const gravados = siAberturas(empresa); const gravIds = new Set(gravados.map(l=>l.id));
+      const naoGravou = novos.filter(n=>!gravIds.has(n.id));
       render();
       const m2 = document.getElementById('siMsg');
-      if(m2){ m2.textContent = novos.length + ' saldo(s) inicial(is) salvo(s)' + (apagar.length? ', '+apagar.length+' removido(s)':'') + '.'; m2.className='lookup-msg success'; m2.style.display='inline-block'; }
+      if(m2){
+        if(naoGravou.length){ m2.textContent = 'ATENÇÃO: ' + naoGravou.length + ' saldo(s) NÃO foram gravados no banco de dados (confira a conexão/permissão e tente de novo).'; m2.className='lookup-msg error'; }
+        else { m2.textContent = novos.length + ' saldo(s) inicial(is) gravado(s) e conferido(s) — veja a lista "Saldos iniciais gravados" acima' + (apagar.length? ' ('+apagar.length+' removido(s))':'') + '.'; m2.className='lookup-msg success'; }
+        m2.style.display='inline-block'; }
     }catch(e){ show('Falha ao salvar: '+((e&&(e.code||e.message))||'erro'), 'error'); if(btn) btn.disabled=false; }
   }
   function siAtualizarResumo(){
