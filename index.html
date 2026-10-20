@@ -10447,22 +10447,17 @@
   }
 
   async function gerarLancamentosProLabore(pl){
-    const partidas = [
-      { contaDebito:'6.5.05.001.0001', contaCredito:'2.1.02.001.0001', valor: Number(pl.liquido)||0, rotulo:'Pró-labore líquido a pagar — ' + (pl.socioNome||'') },
-      { contaDebito:'6.5.05.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(pl.inss)||0, rotulo:'INSS sobre pró-labore a recolher' },
-      { contaDebito:'6.5.05.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(pl.irrf)||0, rotulo:'IRRF sobre pró-labore a recolher' },
-    ];
-    return gerarLancamentosAutomaticos(pl.clientId, partidas, '015', 'Pró-labore — ' + (pl.socioNome||'') + ' — ' + monthLabel(pl.competencia) + '/' + pl.competencia.slice(0,4));
+    const r = await sincronizarFolhaContabil([pl.clientId], { plId: pl.id, silent:false });
+    if(r.semPlano.length) return { ok:false, motivo:'sem-plano-de-contas', faltando:[] };
+    const falt = Object.keys(r.semConta).reduce((a,k)=>a.concat(r.semConta[k]),[]);
+    return { ok: r.criados>0, geradas: r.criados, faltando: falt };
   }
 
   async function gerarLancamentosFolha(folha, funcionario){
-    const partidas = [
-      { contaDebito:'6.5.01.001.0001', contaCredito:'2.1.02.001.0001', valor: Number(folha.liquido)||0, rotulo:'Salário líquido a pagar' },
-      { contaDebito:'6.5.01.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(folha.inss)||0, rotulo:'INSS retido a recolher' },
-      { contaDebito:'6.5.01.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(folha.irrf)||0, rotulo:'IRRF retido a recolher' },
-      { contaDebito:'6.5.04.001.0001', contaCredito:'2.1.03.001.0001', valor: Number(folha.fgts)||0, rotulo:'FGTS patronal a recolher' },
-    ];
-    return gerarLancamentosAutomaticos(folha.clientId, partidas, '011', 'Folha de pagamento — ' + (funcionario?funcionario.nome:'') + ' — ' + monthLabel(folha.competencia) + '/' + folha.competencia.slice(0,4));
+    const r = await sincronizarFolhaContabil([folha.clientId], { folhaId: folha.id, silent:false });
+    if(r.semPlano.length) return { ok:false, motivo:'sem-plano-de-contas', faltando:[] };
+    const falt = Object.keys(r.semConta).reduce((a,k)=>a.concat(r.semConta[k]),[]);
+    return { ok: r.criados>0, geradas: r.criados, faltando: falt };
   }
 
   async function gerarLancamentosFerias(ferias, funcionario){
@@ -16912,6 +16907,7 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       ${notasContabilCardHtml()}
+      ${folhaContabilCardHtml()}
       ${lancMesesSeletorHtml()}${lancBuscaBarHtml()}${((state.lancBusca||'').trim() || state.lancDiaDe || state.lancDiaAte) ? '' : lancApagarBarHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
   }
@@ -17287,6 +17283,109 @@
     if(res.semPlano.length) txt += ' — sem plano de contas: ' + res.semPlano.map(clientName).join(', ');
     return txt;
   }
+  // ===== Lançamentos contábeis da FOLHA (salários e pró-labore) — idempotentes, datados no fim da competência =====
+  // Cada folha/pró-labore gera partidas com id fixo (fp-/pl-) → rodar de novo nunca duplica. Lançamentos antigos gerados
+  // na época do cálculo (data = dia do cálculo) são trocados pelos novos, datados no último dia da competência.
+  function folhaPartidasDe(f, func){
+    const nome = func ? func.nome : '';
+    const SAL='6.5.01.001.0001', OBR='2.1.02.001.0001', TRIB='2.1.03.001.0001', ENC='6.5.04.001.0001';
+    return [
+      { k:'sal',  d:SAL, c:OBR,  v:Number(f.liquido)||0,        rot:'Salário líquido a pagar' },
+      { k:'inss', d:SAL, c:TRIB, v:Number(f.inss)||0,           rot:'INSS retido a recolher' },
+      { k:'irrf', d:SAL, c:TRIB, v:Number(f.irrf)||0,           rot:'IRRF retido a recolher' },
+      { k:'desc', d:SAL, c:OBR,  v:Number(f.descontosExtra)||0, rot:'Descontos diversos a repassar' },
+      { k:'fgts', d:ENC, c:TRIB, v:Number(f.fgts)||0,           rot:'FGTS patronal a recolher' },
+    ];
+  }
+  function plPartidasDe(p){
+    const PL='6.5.05.001.0001', OBR='2.1.02.001.0001', TRIB='2.1.03.001.0001';
+    return [
+      { k:'liq',  d:PL, c:OBR,  v:Number(p.liquido)||0, rot:'Pró-labore líquido a pagar' },
+      { k:'inss', d:PL, c:TRIB, v:Number(p.inss)||0,    rot:'INSS sobre pró-labore a recolher' },
+      { k:'irrf', d:PL, c:TRIB, v:Number(p.irrf)||0,    rot:'IRRF sobre pró-labore a recolher' },
+    ];
+  }
+  function folhaItensContabeis(clientIds, opts){
+    opts = opts || {};
+    const itens = [];
+    const ok = cid => (!clientIds || !clientIds.length || clientIds.includes(cid));
+    (state.folhas||[]).filter(f=>ok(f.clientId) && f.competencia && (!opts.folhaId || f.id===opts.folhaId)).forEach(f=>{
+      const func = (state.funcionarios||[]).find(x=>x.id===f.funcionarioId);
+      itens.push({ tipo:'folha', clientId:f.clientId, ref:f.id, comp:f.competencia, nome: func?func.nome:'', partidas: folhaPartidasDe(f, func), prefixo:'fp-', hist:'Folha de pagamento', histCod:'011', legado:'Folha de pagamento — ' });
+    });
+    (state.prolabores||[]).filter(p=>ok(p.clientId) && p.competencia && (!opts.plId || p.id===opts.plId)).forEach(p=>{
+      itens.push({ tipo:'prolabore', clientId:p.clientId, ref:p.id, comp:p.competencia, nome:p.socioNome||'', partidas: plPartidasDe(p), prefixo:'pl-', hist:'Pró-labore', histCod:'015', legado:'Pró-labore — ' });
+    });
+    return itens;
+  }
+  function folhaLancamentoLegado(it){
+    const alvo = it.legado + it.nome + ' — ' + monthLabel(it.comp) + '/' + it.comp.slice(0,4);
+    return state.lancamentosContabeis.filter(l=>l.clientId===it.clientId && l.origemAutomatica && !l.origemFolha && !l.origemNota && !l.editadoManual && String(l.historico||'').indexOf(alvo)>=0);
+  }
+  async function sincronizarFolhaContabil(clientIds, opts){
+    opts = opts || {};
+    const res = { criados:0, migrados:0, jaLancados:0, itens:0, semPlano:[], semConta:{} };
+    const escrever = [], apagar = [];
+    for(const it of folhaItensContabeis(clientIds, opts)){
+      if(!state.planoContas.some(c=>c.clientId===it.clientId)){ if(!res.semPlano.includes(it.clientId)) res.semPlano.push(it.clientId); continue; }
+      res.itens++;
+      const existentes = {}; state.lancamentosContabeis.filter(l=>l.clientId===it.clientId && l.origemFolha===it.ref).forEach(l=>{ existentes[l.id] = l; });
+      const legado = folhaLancamentoLegado(it);
+      const novos = [];
+      let falta = false;
+      for(const p of it.partidas){
+        if(!(p.v>0)) continue;
+        const dId = contaIdByCodigo(p.d, it.clientId), cId = contaIdByCodigo(p.c, it.clientId);
+        if(!dId || !cId){ (res.semConta[it.clientId] = res.semConta[it.clientId] || new Set()).add(!dId?p.d:p.c); falta = true; continue; }
+        novos.push({ id: it.prefixo+it.ref+'-'+p.k, clientId:it.clientId, data: fimDoMes(it.comp), valor: round2(p.v), contaDebito:dId, contaCredito:cId,
+          historico: historicoCatalogoTexto(it.histCod, it.hist+' — '+it.nome+' — '+monthLabel(it.comp)+'/'+it.comp.slice(0,4)+' — '+p.rot, it.clientId) + ' (lançamento automático da folha)',
+          origemAutomatica:true, origemFolha:it.ref });
+      }
+      if(falta) continue;
+      if(legado.length){ legado.forEach(l=>apagar.push(l.id)); res.migrados += legado.length; }
+      novos.forEach(n=>{ if(existentes[n.id]) res.jaLancados++; else { escrever.push(n); res.criados++; } });
+    }
+    Object.keys(res.semConta).forEach(k=>{ res.semConta[k] = Array.from(res.semConta[k]); });
+    for(let i=0;i<escrever.length;i+=15){ await Promise.all(escrever.slice(i,i+15).map(l=>saveLancamentoContabilSilent(l))); }
+    for(let i=0;i<apagar.length;i+=15){ await Promise.all(apagar.slice(i,i+15).map(id=>Store.delete('lancamentoscontabeis:'+id, true).catch(()=>{}))); }
+    if(escrever.length || apagar.length){ await loadLancamentosContabeis(); if(!opts.silent) render(); }
+    return res;
+  }
+  function folhaResumoContabil(r){
+    const p = [];
+    if(r.criados) p.push(r.criados + ' lançamento(s) criado(s)');
+    if(r.migrados) p.push(r.migrados + ' lançamento(s) antigo(s) da folha reorganizado(s) na data da competência');
+    if(r.jaLancados) p.push(r.jaLancados + ' já estavam lançados e foram mantidos');
+    if(!r.criados && !r.migrados) p.unshift('nada novo para lançar');
+    let t = p.join(' · ');
+    const falt = Object.keys(r.semConta).map(cid=>clientName(cid)+': falta a conta '+r.semConta[cid].join(', '));
+    if(falt.length) t += ' — ATENÇÃO: ' + falt.join('; ');
+    if(r.semPlano.length) t += ' — sem plano de contas: ' + r.semPlano.map(clientName).join(', ');
+    return t;
+  }
+  function folhaContabilCardHtml(){
+    const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? state.clients.map(c=>c.id) : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
+    const itens = folhaItensContabeis(ids).filter(it=>it.partidas.some(p=>p.v>0));
+    if(!itens.length) return '';
+    const feitos = new Set(state.lancamentosContabeis.filter(l=>l.origemFolha).map(l=>l.origemFolha));
+    const pend = itens.filter(it=>!feitos.has(it.ref) || folhaLancamentoLegado(it).length).length;
+    const meses = {};
+    itens.forEach(it=>{ const o = meses[it.comp] = meses[it.comp] || {t:0, l:0}; o.t++; if(feitos.has(it.ref) && !folhaLancamentoLegado(it).length) o.l++; });
+    const linhas = Object.keys(meses).sort().reverse().slice(0,24).map(m=>{ const o=meses[m]; const ok=o.l===o.t;
+      return `<div style="display:flex; justify-content:space-between; gap:12px; padding:4px 0; border-bottom:1px solid #e6eaf0; font-size:13px;"><span>${escapeHtml(lancMesNome(m+'-01'))}</span><span style="${ok?'color:#2E7D32;':'color:#B26A00;font-weight:700;'}">${ok?'✓ '+o.t+' de '+o.t+' folhas/pró-labores já lançados':o.l+' de '+o.t+' lançados — faltam '+(o.t-o.l)}</span></div>`; }).join('');
+    const acao = pend===0
+      ? `<div style="padding:10px 12px; background:#E8F5E9; border-left:4px solid #2E7D32; border-radius:4px;">✓ <b>Toda a folha (${itens.length} cálculo(s)) já está lançada na contabilidade.</b> Não há risco de duplicar.</div>`
+      : `<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;"><button type="button" class="btn-add" id="folhaContabilizarBtn">Gerar lançamentos da folha de pagamento</button><span class="form-hint" style="margin:0;">${itens.length} cálculo(s) no escopo · <b>${pend}</b> a lançar</span></div>`;
+    return `
+      <div class="attach-box" style="margin:0 0 14px;">
+        <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Lançamento automático da folha de pagamento</label>
+        <div class="form-hint" style="margin:0 0 10px;">Cada folha calculada (e pró-labore) vira lançamentos <b>no último dia da competência</b>: <b>D Salários e Ordenados / C Obrigações Trabalhistas</b> (líquido), <b>C Obrigações Tributárias</b> (INSS e IRRF retidos) e <b>D Encargos Sociais / C Obrigações Tributárias</b> (FGTS). Pró-labore usa a conta Pró-labore. O sistema só lança o que ainda não foi lançado.</div>
+        ${acao}
+        ${linhas ? `<div style="margin-top:10px; max-height:150px; overflow:auto;">${linhas}</div>` : ''}
+        <div id="folhaContabilMsg" class="lookup-msg" style="display:none; margin-top:10px;"></div>
+      </div>`;
+  }
+
   function notasContabilCardHtml(){
     const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? state.clients.map(c=>c.id) : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
     const notas = state.notasFiscais.filter(n=>ids.includes(n.clientId) && n.status!=='Cancelada' && n.dataEmissao && Number(n.valor)>0);
@@ -26202,6 +26301,17 @@
         if(m2){ m2.textContent = nfResumoContabil(r); m2.className = 'lookup-msg ' + (Object.keys(r.semConta).length || r.semPlano.length ? 'error' : 'success'); m2.style.display='block'; }
       }catch(e){ console.error(e); if(msg){ msg.textContent = 'Falha ao gerar: ' + ((e&&(e.code||e.message))||'erro'); msg.className='lookup-msg error'; msg.style.display='block'; } nfContabilizarBtn.disabled=false; nfContabilizarBtn.textContent='Gerar lançamentos das notas fiscais'; }
     };
+    const folhaContabilizarBtn = document.getElementById('folhaContabilizarBtn');
+    if(folhaContabilizarBtn) folhaContabilizarBtn.onclick = async ()=>{
+      folhaContabilizarBtn.disabled = true; folhaContabilizarBtn.textContent = 'Gerando…';
+      try{
+        const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? null : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
+        const r = await sincronizarFolhaContabil(ids, {silent:true});
+        render();
+        const m2 = document.getElementById('folhaContabilMsg');
+        if(m2){ m2.textContent = folhaResumoContabil(r); m2.className = 'lookup-msg ' + (Object.keys(r.semConta).length || r.semPlano.length ? 'error' : 'success'); m2.style.display='block'; }
+      }catch(e){ console.error(e); alert('Falha ao gerar: ' + ((e&&(e.code||e.message))||'erro')); folhaContabilizarBtn.disabled=false; folhaContabilizarBtn.textContent='Gerar lançamentos da folha de pagamento'; }
+    };
     const nfSincronizarBtn = document.getElementById('nfSincronizarBtn');
     if(nfSincronizarBtn) nfSincronizarBtn.onclick = async ()=>{
       if(!confirm('Remover os lançamentos de notas fiscais que foram canceladas ou excluídas?')) return;
@@ -26234,7 +26344,7 @@
     const lancMesSel = document.getElementById('lancMesSel');
     if(lancMesSel) lancMesSel.onchange = ()=>{ state.lancMes = lancMesSel.value; render(); };
     const novoLancContabilBtn = document.getElementById('novoLancContabilBtn');
-    if(novoLancContabilBtn) novoLancContabilBtn.onclick = ()=>{ state.lancContabilModalData = {}; state.modal='lancContabil'; render(); };
+    if(novoLancContabilBtn) novoLancContabilBtn.onclick = ()=>{ state.lancContabilModalData = { clientId: deptOneSelectedClient() || '' }; state.modal='lancContabil'; render(); };
     const lcCancel = document.getElementById('lcCancel');
     if(lcCancel) lcCancel.onclick = ()=>{ state.modal=null; state.lancContabilModalData=null; render(); };
     aplicarBuscaSelects(root);
@@ -26391,7 +26501,7 @@
           // Transferência entre contas do banco: o mesmo texto aparece nos dois extratos (entrada num, saída no outro)
           if(bancoDeb && bancoCred) regraPedida.extra = { clientId: cid, padrao: pad, conta: contaDebito, sentido: 'saida' };
         }
-        const l = Object.assign({}, base, base.origemNota ? {editadoManual:true} : {}, {
+        const l = Object.assign({}, base, (base.origemNota||base.origemFolha) ? {editadoManual:true} : {}, {
           clientId: document.getElementById('lcCliente').value,
           data: document.getElementById('lcData').value,
           valor: document.getElementById('lcValor').value,
