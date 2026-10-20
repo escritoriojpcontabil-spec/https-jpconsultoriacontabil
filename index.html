@@ -16947,7 +16947,7 @@
   function siEstado(empresa, porConta){
     if(!state.si || state.si.empresa!==empresa){
       let ids = Object.keys(porConta);
-      if(!ids.length) ids = contasBancoDaEmpresa(empresa).map(c=>c.id);
+      contasBancoDaEmpresa(empresa).forEach(c=>{ if(!ids.includes(c.id)) ids.push(c.id); }); // bancos sempre aparecem na tabela
       state.si = { empresa, ids, rasc:{} };
     }
     return state.si;
