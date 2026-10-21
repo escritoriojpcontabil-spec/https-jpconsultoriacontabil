@@ -10343,6 +10343,15 @@
     return null;
   }
   // Compara o extrato com o que já foi lançado: quais transações já existem e quais lançamentos estão a mais (repetidos).
+  // Ano(s) e período cobertos por um extrato OFX (para mostrar antes de importar).
+  function ofxPeriodoInfo(transacoes){
+    const ds = (transacoes||[]).map(t=>t.data).filter(Boolean).sort();
+    if(!ds.length) return null;
+    const anos = {}; ds.forEach(d=>{ const a = d.slice(0,4); anos[a] = (anos[a]||0)+1; });
+    const lista = Object.keys(anos).sort();
+    return { min:ds[0], max:ds[ds.length-1], anos, anosTxt: lista.join(' e '), multiplos: lista.length>1,
+      detalhe: lista.map(a=>a+' ('+anos[a]+' mov.)').join(' · ') };
+  }
   function ofxAnalisar(clientId, transacoes){
     const banco = ofxBancoSelecionado(clientId);
     const out = { jaExiste: transacoes.map(()=>false), excessoIds: [] };
@@ -18168,7 +18177,7 @@
         <div class="attach-box">
           <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Arquivo OFX</label>
           <div class="field" style="margin-bottom:0;"><label>Arquivo .ofx</label><input type="file" id="ofxInput" accept=".ofx,.qfx,.OFX,.QFX,*/*"/></div>
-          ${prev && prev.transacoes && prev.transacoes.length ? `<div id="ofxCarregado" style="margin-top:10px; padding:10px 12px; background:#E8F5E9; border-left:4px solid #2E7D32; border-radius:4px;">✓ Arquivo carregado: <b>${escapeHtml(state.ofxNomeArquivo||'extrato.ofx')}</b> — ${prev.transacoes.length} movimentação(ões)${prev.ignoradas?' ('+prev.ignoradas+' linha(s) de saldo ignorada(s))':''}. Confira a lista abaixo e clique em <b>Importar</b>. Para trocar o arquivo, escolha outro neste campo.</div>` : ''}
+          ${prev && prev.transacoes && prev.transacoes.length ? `<div id="ofxCarregado" style="margin-top:10px; padding:10px 12px; background:#E8F5E9; border-left:4px solid #2E7D32; border-radius:4px;">✓ Arquivo carregado: <b>${escapeHtml(state.ofxNomeArquivo||'extrato.ofx')}</b> — ${prev.transacoes.length} movimentação(ões)${(()=>{ const pi = ofxPeriodoInfo(prev.transacoes); return pi ? `<div style="margin:8px 0 2px; font-size:15px;">📅 <b>Ano do extrato: ${escapeHtml(pi.anosTxt)}</b> · período de ${fmtDate(pi.min)} a ${fmtDate(pi.max)}${pi.multiplos ? ' — <span style="color:#B26A00;font-weight:700;">atenção: o arquivo tem mais de um ano ('+escapeHtml(pi.detalhe)+')</span>' : ''}</div>` : ''; })()}${prev.ignoradas?' ('+prev.ignoradas+' linha(s) de saldo ignorada(s))':''}. Confira a lista abaixo e clique em <b>Importar</b>. Para trocar o arquivo, escolha outro neste campo.</div>` : ''}
         </div>
         ${(()=>{
           const bancos = contasBancoDaEmpresa(empresa);
@@ -18205,7 +18214,7 @@
             <div class="cc-row"><div class="cr-main"><div class="cr-title">${fmtDate(t.data)} — ${escapeHtml(t.memo)}${prev._an && prev._an.jaExiste[i] ? ' <span class="tag sit-outra">já lançado</span>' : ''}</div><div class="cr-meta">${t.tipo||'—'}${(()=>{ const r = state.contabilEmpresaAtiva ? ofxContraDe(state.contabilEmpresaAtiva, t) : null; return r ? ' · → ' + escapeHtml(r.conta.codigo + ' ' + r.conta.nome) : ' · → Conta a Classificar'; })()}</div></div><span class="tag ${t.valor<0?'sit-baixada':'sit-ativa'}">${fmtBRL(t.valor)}</span></div>
           `).join('')}
         </div>
-        <button type="button" class="btn-add" id="ofxConfirmImportBtn" style="margin-top:14px;">Importar ${prev.transacoes.length - (prev._an ? prev._an.jaExiste.filter(Boolean).length : 0)} lançamento(s) novo(s) para a contabilidade</button>
+        <button type="button" class="btn-add" id="ofxConfirmImportBtn" style="margin-top:14px;">Importar ${prev.transacoes.length - (prev._an ? prev._an.jaExiste.filter(Boolean).length : 0)} lançamento(s) novo(s) de ${(()=>{ const pi = ofxPeriodoInfo(prev.transacoes); return pi ? pi.anosTxt : ''; })()} para a contabilidade</button>
       ` : ''}
     `;
   }
@@ -26819,6 +26828,8 @@
       ofxConfirmImportBtn.onclick = async ()=>{
         const clientId = state.contabilEmpresaAtiva;
         if(!clientId){ alert('Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página.'); return; }
+        { const pi = ofxPeriodoInfo(state.ofxPreview && state.ofxPreview.transacoes);
+          if(pi && !confirm('Importar o extrato de ' + pi.anosTxt + ' (' + fmtDate(pi.min) + ' a ' + fmtDate(pi.max) + ') para a empresa "' + clientName(clientId) + '"?' + (pi.multiplos ? '\n\nAtenção: o arquivo tem mais de um ano: ' + pi.detalhe + '.' : ''))) return; }
         const bancosOfx = contasBancoDaEmpresa(clientId);
         const selBanco = document.getElementById('ofxContaBanco');
         let contaBanco = (selBanco && bancosOfx.find(b=>b.id===selBanco.value)) || null;
@@ -26836,6 +26847,21 @@
         const contaClassificar = state.planoContas.find(c=>c.clientId===clientId && c.tipo==='Analítica' && (c.papel==='classificar' || c.nome==='Conta a Classificar (Importação OFX)'));
         if(!contaBanco || !contaClassificar){ alert('Esta empresa ainda não tem plano de contas cadastrado (ou não tem as contas "Bancos Conta Movimento" e "Conta a Classificar"). Vá em Plano de Contas, selecione a empresa e crie o plano de contas padrão antes de importar o OFX.'); return; }
         const prev = state.ofxPreview;
+        // Já importado antes? Pergunta se quer reimportar (apagando os anteriores) ou só lançar o que é novo.
+        { const an0 = ofxAnalisar(clientId, prev.transacoes); const jaN = an0.jaExiste.filter(Boolean).length;
+          if(jaN > 0){
+            const ds = prev.transacoes.map(t=>t.data).sort();
+            const antigos = ofxImportadosNoPeriodo(clientId, ds[0], ds[ds.length-1]);
+            const novos = prev.transacoes.length - jaN;
+            if(confirm('Este extrato JÁ FOI IMPORTADO: ' + jaN + ' de ' + prev.transacoes.length + ' transações já estão lançadas.\n\nDeseja REIMPORTAR e APAGAR os lançamentos importados anteriormente deste período (' + fmtDate(ds[0]) + ' a ' + fmtDate(ds[ds.length-1]) + ')? Serão apagados ' + antigos.length + ' lançamento(s) — inclusive classificações feitas à mão neles (as regras aprendidas continuam).\n\nOK = apagar e reimportar tudo.\nCancelar = não apagar nada.')){
+              const resDel = await apagarLancamentosEmLote(antigos.map(l=>l.id), ofxConfirmImportBtn);
+              await loadLancamentosContabeis();
+              if(resDel.falhas){ ofxConfirmImportBtn.disabled = false; render(); alert((resDel.total - resDel.falhas) + ' apagado(s); ' + resDel.falhas + ' não puderam ser apagados (' + resDel.ultimoErro + '). A reimportação foi cancelada — tente de novo.'); return; }
+            } else {
+              if(novos <= 0){ alert('Nada foi apagado nem importado: todas as transações deste extrato já estavam lançadas.'); return; }
+              if(!confirm('Importar apenas as ' + novos + ' transação(ões) NOVA(s), mantendo as ' + jaN + ' já importadas?')) return;
+            }
+          } }
         let classificados = 0, ignorados = 0;
         const analise = ofxAnalisar(clientId, prev.transacoes);
         const lote = [];
