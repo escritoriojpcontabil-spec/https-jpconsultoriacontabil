@@ -16934,7 +16934,7 @@
     return `
       <div class="panel-head">
         <h3>Lançamentos Contábeis</h3>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;"><button type="button" class="btn-sm" id="cpMesBtn" title="Copiar lançamentos (ex.: provisão do Simples e do ICMS) de um mês para os seguintes, mudando só dia e valor">Copiar lançamentos de um mês (provisões)</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;"><button type="button" class="btn-sm" id="lancPdfBtn" title="Gera um PDF (paisagem) dos lançamentos que estão na tela, para imprimir">🖨 PDF para impressão</button><button type="button" class="btn-sm" id="cpMesBtn" title="Copiar lançamentos (ex.: provisão do Simples e do ICMS) de um mês para os seguintes, mudando só dia e valor">Copiar lançamentos de um mês (provisões)</button>
         <button type="button" class="btn-add" id="novoLancContabilBtn">+ Novo lançamento</button></div>
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
@@ -18111,6 +18111,77 @@
     document.querySelectorAll('.cp-valor').forEach(el=>{ el.oninput = el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {valor:el.value}); atualiza(); }; });
     por('cpCancel','onclick',()=>{ state.modal=null; state.cpMes=null; render(); });
     const f = document.getElementById('cpForm'); if(f) f.onsubmit = (e)=>{ e.preventDefault(); cpCriar(); };
+  }
+
+  // ===== PDF para impressão dos lançamentos contábeis (respeita empresa, mês, dias e busca na tela) =====
+  function lancListaImpressao(){
+    let list = lancListaEscopo();
+    if(state.lancMes) list = list.filter(l=>String(l.data||'').slice(0,7)===state.lancMes);
+    const dDe = parseInt(state.lancDiaDe,10) || 0, dAte = parseInt(state.lancDiaAte,10) || 0;
+    if(dDe || dAte){ const a = Math.min(dDe||1, dAte||31), b = Math.max(dDe||1, dAte||31);
+      list = list.filter(l=>{ const dia = parseInt(String(l.data||'').slice(8,10),10)||0; return dia>=a && dia<=b; }); }
+    const termos = lancTermosBusca();
+    if(termos.length){ const mapa = {}; state.planoContas.forEach(c=>{ mapa[c.id] = c; }); list = list.filter(l=>lancCombinaBusca(l, termos, mapa)); }
+    return list.slice().sort((x,y)=>String(x.data||'').localeCompare(String(y.data||'')) || String(x.historico||'').localeCompare(String(y.historico||'')));
+  }
+  function gerarPdfLancamentos(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const list = lancListaImpressao();
+    if(!list.length){ alert('Não há lançamentos para imprimir com o filtro atual.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const mx = 12;
+    const empresas = Array.from(new Set(list.map(l=>l.clientId)));
+    const nomeEmp = empresas.length===1 ? clientName(empresas[0]) : empresas.length + ' empresas';
+    const filtros = [];
+    filtros.push(state.lancMes ? lancMesNome(state.lancMes+'-01') : 'todo o período');
+    const dDe = parseInt(state.lancDiaDe,10)||0, dAte = parseInt(state.lancDiaAte,10)||0;
+    if(dDe||dAte) filtros.push('dias ' + (dDe||1) + ' a ' + (dAte||31));
+    if((state.lancBusca||'').trim()) filtros.push('busca "' + String(state.lancBusca).trim() + '"');
+    let y = pdfHeader(doc, 'Lançamentos Contábeis', nomeEmp);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Período: ' + filtros.join(' · ') + ' — ' + list.length + ' lançamento(s)', 14, y-2);
+    doc.setTextColor(20,25,30);
+    y += 3;
+    const cols = [ {t:'DATA', w:20}, {t:'CONTA DÉBITO', w:68}, {t:'CONTA CRÉDITO', w:68}, {t:'HISTÓRICO', w:87}, {t:'VALOR (R$)', w:30, r:true} ];
+    let xs = []; { let x = mx; cols.forEach(c=>{ xs.push(x); x += c.w; }); }
+    const cab = ()=>{
+      doc.setFillColor(30,100,175); doc.rect(mx, y, cols.reduce((a,c)=>a+c.w,0), 6.5, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      cols.forEach((c,i)=>doc.text(c.t, c.r ? xs[i]+c.w-1.5 : xs[i]+1.5, y+4.5, c.r?{align:'right'}:undefined));
+      doc.setTextColor(20,25,30); y += 6.5;
+    };
+    cab();
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+    let total = 0, zebra = false;
+    const multi = empresas.length>1;
+    list.forEach(l=>{
+      const cel = [
+        l.data ? fmtDate(l.data) : '—',
+        contaNomeById(l.contaDebito), contaNomeById(l.contaCredito),
+        (multi ? clientName(l.clientId) + ' — ' : '') + (l.historico||'') + (l.complemento ? ' — ' + l.complemento : ''),
+        fmtBRL(l.valor).replace('R$','').trim(),
+      ];
+      const linhas = cel.map((t,i)=> i===4 ? [t] : doc.splitTextToSize(String(t), cols[i].w-3));
+      const n = Math.min(4, Math.max(...linhas.map(a=>a.length)));
+      const h = n*3.3 + 2;
+      if(y + h > pageH - 14){ doc.addPage(); y = 14; cab(); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); }
+      if(zebra){ doc.setFillColor(243,246,250); doc.rect(mx, y, cols.reduce((a,c)=>a+c.w,0), h, 'F'); }
+      zebra = !zebra;
+      linhas.forEach((ls,i)=>{ ls.slice(0,n).forEach((ln,k)=>{ doc.text(ln, cols[i].r ? xs[i]+cols[i].w-1.5 : xs[i]+1.5, y+3.3+k*3.3, cols[i].r?{align:'right'}:undefined); }); });
+      y += h; total += Number(l.valor)||0;
+    });
+    if(y + 10 > pageH - 14){ doc.addPage(); y = 14; }
+    doc.setDrawColor(30,100,175); doc.setLineWidth(0.4); doc.line(mx, y+1, mx+cols.reduce((a,c)=>a+c.w,0), y+1);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9);
+    doc.text('TOTAL — ' + list.length + ' lançamento(s)', mx+1.5, y+6.5);
+    doc.text(fmtBRL(Math.round(total*100)/100), mx+cols.reduce((a,c)=>a+c.w,0)-1.5, y+6.5, {align:'right'});
+    const np = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+    for(let p=1;p<=np;p++){ if(doc.setPage) doc.setPage(p); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120,130,140);
+      doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil — ' + new Date().toLocaleString('pt-BR'), mx, pageH-6);
+      doc.text('Página ' + p + ' de ' + np, pageW-mx, pageH-6, {align:'right'}); }
+    pdfSalvar(doc, 'lancamentos-contabeis-' + String(nomeEmp).replace(/[^a-z0-9]+/gi,'-').toLowerCase() + (state.lancMes ? '-' + state.lancMes : '') + '.pdf');
   }
 
   function lancContabilModalHtml(){
@@ -26715,6 +26786,7 @@
     });
     if(document.getElementById('dupForm')) dupLigar();
     if(document.getElementById('cpForm')) cpLigar();
+    const lancPdfBtn = document.getElementById('lancPdfBtn'); if(lancPdfBtn) lancPdfBtn.onclick = gerarPdfLancamentos;
     const cpMesBtn = document.getElementById('cpMesBtn'); if(cpMesBtn) cpMesBtn.onclick = cpAbrir;
     root.querySelectorAll('[data-edit-lanc]').forEach(el=>{
       el.onclick = ()=>{
