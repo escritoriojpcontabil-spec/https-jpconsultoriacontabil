@@ -21235,6 +21235,8 @@
     else if(state.contabilTab==='trocar') tabContent = tcPainelHtml();
     else if(state.contabilTab==='ofx') tabContent = ofxImportPanelHtml();
     else if(state.contabilTab==='relatorios') tabContent = relatoriosContabeisPanelHtml();
+    // A contabilidade é sempre de UMA empresa: sem empresa marcada (ou com "Todos"), não mostra nada.
+    if(!state.contabilEmpresaAtiva) tabContent = `<div class="empty" style="padding:28px 16px;"><b>Marque uma empresa</b> no painel "Selecionar cliente", acima, para ver a contabilidade dela.<br><span class="form-hint">A contabilidade (lançamentos, plano de contas, balancete…) é feita empresa por empresa — por isso não é exibida com "Todos os clientes" marcado.</span></div>`;
     return `
       <div class="panel">
         <div class="panel-head"><h3>Departamento Contábil — Escrituração</h3></div>
