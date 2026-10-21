@@ -17991,11 +17991,20 @@
     return state.lancamentosContabeis.filter(l=>l.clientId===emp && l.aberturaSaldo!==true && String(l.data||'').slice(0,7)===ym)
       .sort((a,b)=>String(a.data).localeCompare(String(b.data)) || String(a.historico||'').localeCompare(String(b.historico||'')));
   }
+  function cpEhProvisao(l){
+    const txt = (l.historico||'')+' '+contaNomeById(l.contaDebito)+' '+contaNomeById(l.contaCredito);
+    return /provis|aprop|simples|icms|\bdas\b/i.test(txt) && !l.origemNota && !/OFX|PAGTO|PAGAMENTO/i.test(l.historico||'');
+  }
+  function cpMesesComProvisao(emp){
+    const m = {}; state.lancamentosContabeis.forEach(l=>{ if(l.clientId===emp && l.aberturaSaldo!==true && l.data && cpEhProvisao(l)) m[String(l.data).slice(0,7)] = true; });
+    return Object.keys(m).sort();
+  }
   function cpAbrir(){
     const emp = deptOneSelectedClient();
     if(!emp){ alert('Marque uma única empresa no seletor "Selecionar cliente", no topo da página.'); return; }
     const meses = Array.from(new Set(state.lancamentosContabeis.filter(l=>l.clientId===emp && l.aberturaSaldo!==true && l.data).map(l=>String(l.data).slice(0,7)))).sort();
-    const origem = state.lancMes && state.lancMes.length===7 ? state.lancMes : (meses[meses.length-1] || todayStr().slice(0,7));
+    const comProv = cpMesesComProvisao(emp);
+    const origem = (state.lancMes && state.lancMes.length===7 && comProv.includes(state.lancMes)) ? state.lancMes : (comProv[comProv.length-1] || meses[meses.length-1] || todayStr().slice(0,7));
     state.cpMes = { emp, origem, sel:null, meses:1, inicio:cpSomaYm(origem,1), preencher:false, dados:{} };
     state.modal = 'cpMes'; render();
   }
@@ -18003,7 +18012,7 @@
     const lancs = cpLancsDoMes(d.emp, d.origem);
     if(!d.sel){
       d.sel = {};
-      lancs.forEach(l=>{ const txt = (l.historico||'')+' '+contaNomeById(l.contaDebito)+' '+contaNomeById(l.contaCredito); if(/provis|aprop|simples|icms|\bdas\b/i.test(txt) && !l.origemNota && !/OFX|PAGTO|PAGAMENTO/i.test(l.historico||'')) d.sel[l.id] = true; });
+      lancs.forEach(l=>{ if(cpEhProvisao(l)) d.sel[l.id] = true; });
     }
     return lancs;
   }
@@ -18053,7 +18062,8 @@
               <div class="field"><label>Começar a gerar em</label><input type="month" id="cpInicio" value="${d.inicio}"/></div>
               <div class="field"><label>Quantidade de meses</label><input type="number" id="cpQtd" min="1" max="24" value="${d.meses}"/></div>
             </div>
-            ${pl.lancs.length ? '' : '<div class="empty" style="margin:8px 0;">Não há lançamento de provisão (Simples, ICMS, DAS, apropriação) no mês de origem escolhido. Escolha outro mês de origem.</div>'}
+            ${pl.lancs.length ? '' : (()=>{ const cm = cpMesesComProvisao(d.emp); const ant = cm.filter(m=>m<d.origem).pop() || cm[cm.length-1];
+              return '<div class="empty" style="margin:8px 0;">Não há lançamento de provisão (Simples, ICMS, DAS, apropriação) em ' + escapeHtml(lancMesNome(d.origem+'-01')) + '.' + (ant ? ' <button type="button" class="btn-sm" id="cpUsarMes" data-mes="'+ant+'">Usar ' + escapeHtml(lancMesNome(ant+'-01')) + ' como origem</button>' : ' Faça antes o lançamento da provisão em algum mês.') + '</div>'; })()}
             <label style="display:flex; gap:8px; align-items:center; margin:6px 0;"><input type="checkbox" id="cpPreencher" ${d.preencher?'checked':''}/> Já preencher os valores com os do mês de origem (depois é só alterar o que mudar)</label>
             ${pl.lancs.length ? blocos : ''}
             <div class="form-hint" style="margin:10px 0;"><b>Prévia:</b> ${nCria} lançamento(s) a criar, total ${fmtBRL(total)}${mesesTxt.length? ' · '+mesesTxt.join(', '):''}. Linhas sem valor não são criadas. O mês citado no histórico (ex.: "09/2026" ou "Setembro/2026") é trocado pelo mês de destino.</div>
@@ -18087,6 +18097,7 @@
     document.querySelectorAll('.cp-sel').forEach(el=>{ el.onchange = ()=>{ d.sel = d.sel || {}; d.sel[el.dataset.id] = el.checked; render(); }; });
     document.querySelectorAll('.cp-dia').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {dia:el.value}); render(); }; });
     document.querySelectorAll('.cp-valor').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {valor:el.value}); render(); }; });
+    por('cpUsarMes','onclick',(x)=>{ d.origem = x.target.dataset.mes; d.sel = null; d.dados = {}; d.inicio = cpSomaYm(state.cpMesInicioPedido || d.inicio, 0); render(); });
     por('cpCancel','onclick',()=>{ state.modal=null; state.cpMes=null; render(); });
     const f = document.getElementById('cpForm'); if(f) f.onsubmit = (e)=>{ e.preventDefault(); cpCriar(); };
   }
