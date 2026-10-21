@@ -18053,13 +18053,7 @@
               <div class="field"><label>Começar a gerar em</label><input type="month" id="cpInicio" value="${d.inicio}"/></div>
               <div class="field"><label>Quantidade de meses</label><input type="number" id="cpQtd" min="1" max="24" value="${d.meses}"/></div>
             </div>
-            <div class="field"><label>Lançamentos do mês de origem a copiar</label>
-              <div style="max-height:170px; overflow:auto; border:1px solid #e6eaf0; border-radius:6px; padding:6px 8px;">
-              ${(todas.length && !d.mostrarTodos && !todas.some(l=>d.sel[l.id])) ? '<div class="empty">Nenhum lançamento de provisão encontrado neste mês — clique em "Mostrar todos" para escolher.</div>' : ''}
-              ${todas.length ? todas.filter(l=>d.mostrarTodos || d.sel[l.id]).map(l=>`<label style="display:flex; gap:8px; align-items:flex-start; padding:3px 0; font-size:12.5px;"><input type="checkbox" class="cp-sel" data-id="${l.id}" ${d.sel[l.id]?'checked':''} style="margin-top:3px;"/><span>${fmtDate(l.data)} · D ${escapeHtml(contaNomeById(l.contaDebito))} · C ${escapeHtml(contaNomeById(l.contaCredito))} · <b>${fmtBRL(l.valor)}</b><br><span style="color:var(--ink-soft);">${escapeHtml(l.historico||'')}</span></span></label>`).join('') : '<div class="empty">Esta empresa não tem lançamentos no mês de origem.</div>'}
-              </div>
-              <div class="form-hint" style="margin:4px 0 0;">${d.mostrarTodos ? 'Mostrando todos os lançamentos do mês.' : 'Só aparecem os lançamentos de provisão (Simples, ICMS, DAS, apropriação), sem pagamentos importados do banco.'} <button type="button" class="btn-sm" id="cpMostrarTodos" style="margin-left:6px;">${d.mostrarTodos ? 'Mostrar só os marcados' : 'Mostrar todos (para marcar outros)'}</button></div>
-            </div>
+            ${pl.lancs.length ? '' : '<div class="empty" style="margin:8px 0;">Não há lançamento de provisão (Simples, ICMS, DAS, apropriação) no mês de origem escolhido. Escolha outro mês de origem.</div>'}
             <label style="display:flex; gap:8px; align-items:center; margin:6px 0;"><input type="checkbox" id="cpPreencher" ${d.preencher?'checked':''}/> Já preencher os valores com os do mês de origem (depois é só alterar o que mudar)</label>
             ${pl.lancs.length ? blocos : ''}
             <div class="form-hint" style="margin:10px 0;"><b>Prévia:</b> ${nCria} lançamento(s) a criar, total ${fmtBRL(total)}${mesesTxt.length? ' · '+mesesTxt.join(', '):''}. Linhas sem valor não são criadas. O mês citado no histórico (ex.: "09/2026" ou "Setembro/2026") é trocado pelo mês de destino.</div>
@@ -18093,7 +18087,6 @@
     document.querySelectorAll('.cp-sel').forEach(el=>{ el.onchange = ()=>{ d.sel = d.sel || {}; d.sel[el.dataset.id] = el.checked; render(); }; });
     document.querySelectorAll('.cp-dia').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {dia:el.value}); render(); }; });
     document.querySelectorAll('.cp-valor').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {valor:el.value}); render(); }; });
-    por('cpMostrarTodos','onclick',()=>{ d.mostrarTodos = !d.mostrarTodos; render(); });
     por('cpCancel','onclick',()=>{ state.modal=null; state.cpMes=null; render(); });
     const f = document.getElementById('cpForm'); if(f) f.onsubmit = (e)=>{ e.preventDefault(); cpCriar(); };
   }
