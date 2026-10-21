@@ -9304,6 +9304,12 @@
     if((r.tiposServico||[]).includes('Outro') && r.tiposServicoOutro) lista.push(r.tiposServicoOutro);
     return lista.join(', ') || '—';
   }
+  function reciboHonorariosServicosCompleto(r){
+    const base = reciboHonorariosServicosTexto(r);
+    const det = String(r.descricaoServico||'').trim().replace(/\s*\n+\s*/g,' ');
+    if(!det) return base;
+    return (base==='—' ? '' : base + ' — ') + det.replace(/[.;]+$/,'');
+  }
 
   function reciboHonorariosPanelHtml(){
     const lista = state.recibosHonorarios.slice();
@@ -9377,6 +9383,7 @@
               </div>
             </div>
             <div class="field" id="rhOutroWrap" style="${(d.tiposServico||[]).includes('Outro')?'':'display:none;'}"><label>Especifique o outro serviço</label><input type="text" id="rhTiposServicoOutro" value="${escapeHtml(d.tiposServicoOutro||'')}"/></div>
+            <div class="field"><label>Detalhamento do serviço prestado (opcional)</label><textarea id="rhDescricaoServico" rows="4" maxlength="900" placeholder="Ex.: Elaboração e transmissão da Declaração de Imposto de Renda Pessoa Física 2026, ano-calendário 2025, incluindo organização dos informes de rendimentos e orientação sobre deduções.">${escapeHtml(d.descricaoServico||'')}</textarea><div class="form-hint" style="margin:4px 0 0;">Aparece no recibo logo após os serviços marcados. Se não marcar nenhum serviço acima, a descrição basta.</div></div>
             <div class="field"><label>Local de emissão</label><input type="text" id="rhLocalEmissao" value="${escapeHtml(d.localEmissao||'Recife/PE')}"/></div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="rhCancel">Cancelar</button>
@@ -9408,7 +9415,7 @@
     const documento = reciboHonorariosDoc(r);
     const valorExtenso = valorPorExtenso(Number(r.valor)||0);
     const formaDetalhe = r.formaPagamentoDetalhe ? ' (' + r.formaPagamentoDetalhe + ')' : '';
-    const servicos = reciboHonorariosServicosTexto(r);
+    const servicos = reciboHonorariosServicosCompleto(r);
 
     const dig = String(documento||'').replace(/\D/g,'');
     const ehPF = dig.length===11 || (!r.clientId && dig.length!==14 && !/\b(ltda|eireli|s\/?a|me|epp|mei)\b/i.test(nome));
@@ -23897,7 +23904,8 @@
         e.preventDefault();
         const clientId = document.getElementById('rhClienteSelect').value;
         const tiposServico = Array.from(root.querySelectorAll('.rh-servico-check:checked')).map(el=>el.value);
-        if(!tiposServico.length){ alert('Marque ao menos um serviço executado.'); return; }
+        const descricaoServico = (document.getElementById('rhDescricaoServico') ? document.getElementById('rhDescricaoServico').value : '').trim();
+        if(!tiposServico.length && !descricaoServico){ alert('Marque ao menos um serviço executado ou descreva o serviço prestado.'); return; }
         const r = {
           id: (state.reciboHonorarioModalData && state.reciboHonorarioModalData.id) || undefined,
           clientId: clientId || null,
@@ -23907,7 +23915,7 @@
           dataPagamento: document.getElementById('rhDataPagamento').value,
           formaPagamento: document.getElementById('rhFormaPagamento').value,
           formaPagamentoDetalhe: document.getElementById('rhFormaPagamentoDetalhe').value,
-          tiposServico,
+          tiposServico, descricaoServico,
           tiposServicoOutro: document.getElementById('rhTiposServicoOutro') ? document.getElementById('rhTiposServicoOutro').value : '',
           localEmissao: document.getElementById('rhLocalEmissao').value,
         };
