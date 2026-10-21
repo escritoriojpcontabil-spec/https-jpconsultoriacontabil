@@ -9312,7 +9312,7 @@
         <h3>Recibo de Pagamento de Honorários Contábeis</h3>
         <button type="button" class="btn-add" id="novoReciboHonorariosBtn">+ Novo recibo</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 16px;">Recibo de quitação de honorários, válido tanto para empresas já cadastradas no sistema quanto para empresas avulsas (fora do Cadastro de Clientes) — basta digitar o nome e o CNPJ/CPF na hora.</div>
+      <div class="form-hint" style="margin:-4px 0 16px;">Recibo de quitação de honorários, válido para empresas já cadastradas, empresas avulsas ou <b>pessoa física</b> (fora do Cadastro de Clientes): clique em "+ Novo recibo", deixe "Avulso", digite o nome completo e o CPF.</div>
       ${!lista.length ? `<div class="empty">Nenhum recibo emitido ainda.</div>` : `
         <table>
           <thead><tr><th>Empresa/Pessoa</th><th>CNPJ/CPF</th><th style="text-align:right">Valor</th><th>Data pagto.</th><th>Forma</th><th></th></tr></thead>
@@ -9349,12 +9349,12 @@
           <form id="reciboHonorarioForm">
             <div class="field"><label>Empresa</label>
               <select id="rhClienteSelect">
-                <option value="" ${ehAvulsa?'selected':''}>— Empresa avulsa (não cadastrada) —</option>
+                <option value="" ${ehAvulsa?'selected':''}>— Avulso: pessoa física ou empresa não cadastrada —</option>
                 ${clientesOrdenados.map(c=>`<option value="${c.id}" ${d.clientId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
               </select>
             </div>
             <div class="form-row" id="rhAvulsaWrap" style="${ehAvulsa?'':'display:none;'}">
-              <div class="field"><label>Nome da empresa/pessoa</label><input type="text" id="rhNomeAvulso" value="${escapeHtml(d.nomeAvulso||'')}" ${ehAvulsa?'required':''}/></div>
+              <div class="field"><label>Nome completo (pessoa física) ou da empresa</label><input type="text" id="rhNomeAvulso" value="${escapeHtml(d.nomeAvulso||'')}" ${ehAvulsa?'required':''}/></div>
               <div class="field"><label>CNPJ ou CPF</label><input type="text" id="rhDocAvulso" value="${escapeHtml(d.docAvulso||'')}" placeholder="00.000.000/0000-00 ou 000.000.000-00"/></div>
             </div>
             <div class="form-row">
@@ -9410,7 +9410,11 @@
     const formaDetalhe = r.formaPagamentoDetalhe ? ' (' + r.formaPagamentoDetalhe + ')' : '';
     const servicos = reciboHonorariosServicosTexto(r);
 
-    const texto = 'Recebi da empresa ' + nome + ', inscrita no CNPJ ou CPF sob o nº ' + (documento||'não informado') +
+    const dig = String(documento||'').replace(/\D/g,'');
+    const ehPF = dig.length===11 || (!r.clientId && dig.length!==14 && !/\b(ltda|eireli|s\/?a|me|epp|mei)\b/i.test(nome));
+    const quem = ehPF ? ('Recebi de ' + nome + ', inscrito(a) no CPF sob o nº ' + (documento||'não informado'))
+                      : ('Recebi da empresa ' + nome + ', inscrita no CNPJ sob o nº ' + (documento||'não informado'));
+    const texto = quem +
       ', o valor de ' + fmtBRL(r.valor) + ' (' + valorExtenso + ') referente aos serviços de ' + servicos +
       ', pago(s) via ' + (r.formaPagamento||'—') + formaDetalhe +
       ', pelo qual damos plena, geral e irrevogável quitação da importância ora recebida, para nada mais reclamar a esse título, nos termos do art. 320 e seguintes do Código Civil Brasileiro (Lei nº 10.406/2002).';
