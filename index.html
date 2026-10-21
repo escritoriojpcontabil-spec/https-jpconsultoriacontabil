@@ -16925,7 +16925,8 @@
     return `
       <div class="panel-head">
         <h3>Lançamentos Contábeis</h3>
-        <button type="button" class="btn-add" id="novoLancContabilBtn">+ Novo lançamento</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;"><button type="button" class="btn-sm" id="cpMesBtn" title="Copiar lançamentos (ex.: provisão do Simples e do ICMS) de um mês para os seguintes, mudando só dia e valor">Copiar lançamentos de um mês (provisões)</button>
+        <button type="button" class="btn-add" id="novoLancContabilBtn">+ Novo lançamento</button></div>
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       ${notasContabilCardHtml()}
@@ -17969,6 +17970,130 @@
     por('dpCancel','onclick',()=>{ state.modal=null; state.dupLancData=null; render(); });
     const f = document.getElementById('dupForm');
     if(f) f.onsubmit = (e)=>{ e.preventDefault(); dupCriar(); };
+  }
+
+  // ===== Copiar lançamentos de um mês para os meses seguintes (provisões: Simples Nacional, ICMS...) =====
+  // Pega os lançamentos do mês de origem que o usuário marcar e cria o mesmo conjunto em cada mês de destino,
+  // alterando só o DIA e o VALOR (e o mês citado no histórico). Cada cópia guarda "copiadoDe" para não duplicar.
+  function cpSomaYm(ym, n){ const [y,m] = ym.split('-').map(Number); const d = new Date(Date.UTC(y, m-1+n, 1)); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); }
+  function cpDataEm(ym, dia){ const [y,m] = ym.split('-').map(Number); const ult = new Date(Date.UTC(y, m, 0)).getUTCDate(); return ym+'-'+String(Math.max(1,Math.min(+dia||1, ult))).padStart(2,'0'); }
+  function cpHistorico(h, de, para){
+    let t = String(h||'');
+    const [y1,m1] = de.split('-').map(Number), [y2,m2] = para.split('-').map(Number);
+    t = t.replace(new RegExp('\\b0?'+m1+'\\/'+y1+'\\b','g'), String(m2).padStart(2,'0')+'/'+y2);
+    const nomes = (i)=>[MESES_NOME[i-1], monthLabel(y1+'-'+String(i).padStart(2,'0'))];
+    nomes(m1).forEach(nm=>{
+      t = t.replace(new RegExp('\\b'+nm+'(\\s*\\/\\s*|\\s+de\\s+|\\s+)'+y1+'\\b','gi'), (mm, sep)=> MESES_NOME[m2-1]+sep+y2);
+    });
+    return t;
+  }
+  function cpLancsDoMes(emp, ym){
+    return state.lancamentosContabeis.filter(l=>l.clientId===emp && l.aberturaSaldo!==true && String(l.data||'').slice(0,7)===ym)
+      .sort((a,b)=>String(a.data).localeCompare(String(b.data)) || String(a.historico||'').localeCompare(String(b.historico||'')));
+  }
+  function cpAbrir(){
+    const emp = deptOneSelectedClient();
+    if(!emp){ alert('Marque uma única empresa no seletor "Selecionar cliente", no topo da página.'); return; }
+    const meses = Array.from(new Set(state.lancamentosContabeis.filter(l=>l.clientId===emp && l.aberturaSaldo!==true && l.data).map(l=>String(l.data).slice(0,7)))).sort();
+    const origem = state.lancMes && state.lancMes.length===7 ? state.lancMes : (meses[meses.length-1] || todayStr().slice(0,7));
+    state.cpMes = { emp, origem, sel:null, meses:1, inicio:cpSomaYm(origem,1), preencher:false, dados:{} };
+    state.modal = 'cpMes'; render();
+  }
+  function cpSelecao(d){
+    const lancs = cpLancsDoMes(d.emp, d.origem);
+    if(!d.sel){
+      d.sel = {};
+      lancs.forEach(l=>{ const txt = (l.historico||'')+' '+contaNomeById(l.contaDebito)+' '+contaNomeById(l.contaCredito); if(/provis|simples|icms|\bdas\b/i.test(txt) && !l.origemNota) d.sel[l.id] = true; });
+    }
+    return lancs;
+  }
+  function cpPlano(d){
+    const lancs = cpSelecao(d).filter(l=>d.sel[l.id]);
+    const n = Math.max(1, Math.min(24, parseInt(d.meses,10)||1));
+    const meses = []; for(let i=0;i<n;i++) meses.push(cpSomaYm(d.inicio, i));
+    const linhas = [];
+    meses.forEach(ym=>{
+      lancs.forEach(l=>{
+        const k = ym+'|'+l.id; const x = d.dados[k] || {};
+        const diaPad = parseInt(String(l.data).slice(8,10),10);
+        const dia = x.dia!=null && x.dia!=='' ? parseInt(x.dia,10) : diaPad;
+        let vBruto = x.valor!=null ? x.valor : (d.preencher ? String(l.valor).replace('.',',') : '');
+        const v = pesqNumero(vBruto);
+        const valor = v!=null ? Math.round(v*100)/100 : 0;
+        const existe = state.lancamentosContabeis.some(z=>z.copiadoDe===l.id && String(z.data).slice(0,7)===ym);
+        linhas.push({ ym, l, k, dia, vBruto, valor, data: cpDataEm(ym, dia), existe });
+      });
+    });
+    return { lancs, meses, linhas };
+  }
+  function cpModalHtml(){
+    const d = state.cpMes; if(!d) return '';
+    const todas = cpSelecao(d);
+    const pl = cpPlano(d);
+    const mesesTxt = pl.meses.map(ym=>lancMesNome(ym+'-01'));
+    const blocos = pl.meses.map(ym=>{
+      const ls = pl.linhas.filter(x=>x.ym===ym);
+      return `<div style="margin:10px 0 4px; font-weight:700;">${escapeHtml(lancMesNome(ym+'-01'))}</div>
+        <table><thead><tr><th>Lançamento</th><th style="width:70px">Dia</th><th style="width:140px; text-align:right">Valor (R$)</th></tr></thead><tbody>
+        ${ls.map(x=>`<tr style="${x.existe?'opacity:.55;':''}"><td style="font-size:12px;">D ${escapeHtml(contaNomeById(x.l.contaDebito))} · C ${escapeHtml(contaNomeById(x.l.contaCredito))}<br><span class="form-hint" style="margin:0;">${escapeHtml(cpHistorico(x.l.historico, d.origem, ym))}</span>${x.existe?' <b>(já existe cópia neste mês — será ignorada)</b>':''}</td>
+          <td><input type="number" min="1" max="31" class="cp-dia" data-k="${x.k}" value="${x.dia}" style="width:60px;"/></td>
+          <td style="text-align:right"><input type="text" inputmode="decimal" class="cp-valor" data-k="${x.k}" value="${escapeHtml(x.vBruto||'')}" placeholder="0,00" style="width:120px; text-align:right;"/></td></tr>`).join('')}
+        </tbody></table>`;
+    }).join('');
+    const total = Math.round(pl.linhas.filter(x=>!x.existe && x.valor>0).reduce((a,x)=>a+x.valor,0)*100)/100;
+    const nCria = pl.linhas.filter(x=>!x.existe && x.valor>0).length;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:860px; width:96%; max-height:92vh; overflow:auto;">
+          <h3>Copiar lançamentos de um mês (provisões mensais)</h3>
+          <div class="form-hint" style="margin:-4px 0 12px;">Empresa: <b>${escapeHtml(clientName(d.emp))}</b>. Marque os lançamentos do mês de origem (ex.: provisão do Simples Nacional e do ICMS); o sistema cria o mesmo conjunto nos meses seguintes — você só muda o <b>dia</b> e o <b>valor</b>.</div>
+          <form id="cpForm">
+            <div class="form-row">
+              <div class="field"><label>Mês de origem</label><input type="month" id="cpOrigem" value="${d.origem}"/></div>
+              <div class="field"><label>Começar a gerar em</label><input type="month" id="cpInicio" value="${d.inicio}"/></div>
+              <div class="field"><label>Quantidade de meses</label><input type="number" id="cpQtd" min="1" max="24" value="${d.meses}"/></div>
+            </div>
+            <div class="field"><label>Lançamentos do mês de origem a copiar</label>
+              <div style="max-height:170px; overflow:auto; border:1px solid #e6eaf0; border-radius:6px; padding:6px 8px;">
+              ${todas.length ? todas.map(l=>`<label style="display:flex; gap:8px; align-items:flex-start; padding:3px 0; font-size:12.5px;"><input type="checkbox" class="cp-sel" data-id="${l.id}" ${d.sel[l.id]?'checked':''} style="margin-top:3px;"/><span>${fmtDate(l.data)} · D ${escapeHtml(contaNomeById(l.contaDebito))} · C ${escapeHtml(contaNomeById(l.contaCredito))} · <b>${fmtBRL(l.valor)}</b><br><span style="color:var(--ink-soft);">${escapeHtml(l.historico||'')}</span></span></label>`).join('') : '<div class="empty">Esta empresa não tem lançamentos no mês de origem.</div>'}
+              </div>
+              <div class="form-hint" style="margin:4px 0 0;">Já vêm marcados os que citam "provisão", "Simples", "ICMS" ou "DAS". Ajuste como quiser.</div>
+            </div>
+            <label style="display:flex; gap:8px; align-items:center; margin:6px 0;"><input type="checkbox" id="cpPreencher" ${d.preencher?'checked':''}/> Já preencher os valores com os do mês de origem (depois é só alterar o que mudar)</label>
+            ${pl.lancs.length ? blocos : ''}
+            <div class="form-hint" style="margin:10px 0;"><b>Prévia:</b> ${nCria} lançamento(s) a criar, total ${fmtBRL(total)}${mesesTxt.length? ' · '+mesesTxt.join(', '):''}. Linhas sem valor não são criadas. O mês citado no histórico (ex.: "09/2026" ou "Setembro/2026") é trocado pelo mês de destino.</div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="cpCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Criar lançamentos</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  }
+  async function cpCriar(){
+    const d = state.cpMes; if(!d) return;
+    const pl = cpPlano(d);
+    const novos = pl.linhas.filter(x=>!x.existe && x.valor>0).map(x=>({
+      id: uid(), clientId:d.emp, data:x.data, valor:x.valor, contaDebito:x.l.contaDebito, contaCredito:x.l.contaCredito,
+      historico: cpHistorico(x.l.historico, d.origem, x.ym), complemento: x.l.complemento||'', copiadoDe:x.l.id,
+    }));
+    if(!novos.length){ alert('Nada a criar: informe o valor (maior que zero) em pelo menos uma linha.'); return; }
+    state.modal = null; state.cpMes = null; render();
+    for(let i=0;i<novos.length;i+=15){ await Promise.all(novos.slice(i,i+15).map(x=>saveLancamentoContabilSilent(x))); }
+    await loadLancamentosContabeis(); render();
+  }
+  function cpLigar(){
+    const d = state.cpMes; if(!d) return;
+    const por = (id, ev, fn)=>{ const el = document.getElementById(id); if(el) el[ev] = fn; };
+    por('cpOrigem','onchange',(x)=>{ if(!x.target.value) return; d.origem = x.target.value; d.sel = null; d.dados = {}; d.inicio = cpSomaYm(d.origem,1); render(); });
+    por('cpInicio','onchange',(x)=>{ if(!x.target.value) return; d.inicio = x.target.value; d.dados = {}; render(); });
+    por('cpQtd','onchange',(x)=>{ d.meses = x.target.value; render(); });
+    por('cpPreencher','onchange',(x)=>{ d.preencher = x.target.checked; d.dados = {}; render(); });
+    document.querySelectorAll('.cp-sel').forEach(el=>{ el.onchange = ()=>{ d.sel = d.sel || {}; d.sel[el.dataset.id] = el.checked; render(); }; });
+    document.querySelectorAll('.cp-dia').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {dia:el.value}); render(); }; });
+    document.querySelectorAll('.cp-valor').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {valor:el.value}); render(); }; });
+    por('cpCancel','onclick',()=>{ state.modal=null; state.cpMes=null; render(); });
+    const f = document.getElementById('cpForm'); if(f) f.onsubmit = (e)=>{ e.preventDefault(); cpCriar(); };
   }
 
   function lancContabilModalHtml(){
@@ -22492,6 +22617,7 @@
       ${state.modal==='planoModelo' ? pmModalHtml() : ''}
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='dupLanc' ? dupModalHtml() : ''}
+      ${state.modal==='cpMes' ? cpModalHtml() : ''}
       ${state.modal==='honorario' ? honorarioModalHtml() : ''}
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
@@ -26568,6 +26694,8 @@
       };
     });
     if(document.getElementById('dupForm')) dupLigar();
+    if(document.getElementById('cpForm')) cpLigar();
+    const cpMesBtn = document.getElementById('cpMesBtn'); if(cpMesBtn) cpMesBtn.onclick = cpAbrir;
     root.querySelectorAll('[data-edit-lanc]').forEach(el=>{
       el.onclick = ()=>{
         const l = state.lancamentosContabeis.find(x=>x.id===el.getAttribute('data-edit-lanc'));
@@ -27416,7 +27544,7 @@
 
     const modalBg = document.getElementById('modalBg');
     if(modalBg){
-      modalBg.addEventListener('mousedown', (e)=>{ if(e.target.id==='modalBg'){ state.modal=null; state.clientModalData=null; state.viewClientId=null; state.obrigacaoModalData=null; state.avisoModalData=null; state.msgTemplateData=null; state.msgSendData=null; state.sitFiscalModalData=null; state.userAccessModalData=null; state.nfModalData=null; state.funcModalData=null; state.parcModalData=null; state.relatorioViewClientId=null; state.contaModalData=null; state.historicoModalData=null; state.lancContabilModalData=null; state.dupLancData=null; render(); } });
+      modalBg.addEventListener('mousedown', (e)=>{ if(e.target.id==='modalBg'){ state.modal=null; state.clientModalData=null; state.viewClientId=null; state.obrigacaoModalData=null; state.avisoModalData=null; state.msgTemplateData=null; state.msgSendData=null; state.sitFiscalModalData=null; state.userAccessModalData=null; state.nfModalData=null; state.funcModalData=null; state.parcModalData=null; state.relatorioViewClientId=null; state.contaModalData=null; state.historicoModalData=null; state.lancContabilModalData=null; state.dupLancData=null; state.cpMes=null; render(); } });
     }
     const txCancel = document.getElementById('txCancel');
     if(txCancel) txCancel.onclick = ()=>{ state.modal=null; render(); };
