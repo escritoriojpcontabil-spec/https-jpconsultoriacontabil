@@ -18004,29 +18004,27 @@
     if(!emp){ alert('Marque uma única empresa no seletor "Selecionar cliente", no topo da página.'); return; }
     const meses = Array.from(new Set(state.lancamentosContabeis.filter(l=>l.clientId===emp && l.aberturaSaldo!==true && l.data).map(l=>String(l.data).slice(0,7)))).sort();
     const comProv = cpMesesComProvisao(emp);
-    const origem = (state.lancMes && state.lancMes.length===7 && comProv.includes(state.lancMes)) ? state.lancMes : (comProv[comProv.length-1] || meses[meses.length-1] || todayStr().slice(0,7));
-    state.cpMes = { emp, origem, sel:null, meses:1, inicio:cpSomaYm(origem,1), preencher:false, dados:{} };
+    const origem = comProv[comProv.length-1] || meses[meses.length-1] || todayStr().slice(0,7);
+    const de = cpSomaYm(origem,1);
+    state.cpMes = { emp, origem, sel:null, de, ate:cpSomaYm(de,11), preencher:false, dados:{} };
     state.modal = 'cpMes'; render();
   }
   function cpSelecao(d){
     const lancs = cpLancsDoMes(d.emp, d.origem);
-    if(!d.sel){
-      d.sel = {};
-      lancs.forEach(l=>{ if(cpEhProvisao(l)) d.sel[l.id] = true; });
-    }
+    if(!d.sel){ d.sel = {}; lancs.forEach(l=>{ if(cpEhProvisao(l)) d.sel[l.id] = true; }); }
     return lancs;
   }
   function cpPlano(d){
     const lancs = cpSelecao(d).filter(l=>d.sel[l.id]);
-    const n = Math.max(1, Math.min(24, parseInt(d.meses,10)||1));
-    const meses = []; for(let i=0;i<n;i++) meses.push(cpSomaYm(d.inicio, i));
+    const meses = []; let ym = d.de;
+    while(ym <= d.ate && meses.length < 60){ meses.push(ym); ym = cpSomaYm(ym,1); }
     const linhas = [];
     meses.forEach(ym=>{
       lancs.forEach(l=>{
         const k = ym+'|'+l.id; const x = d.dados[k] || {};
         const diaPad = parseInt(String(l.data).slice(8,10),10);
         const dia = x.dia!=null && x.dia!=='' ? parseInt(x.dia,10) : diaPad;
-        let vBruto = x.valor!=null ? x.valor : (d.preencher ? String(l.valor).replace('.',',') : '');
+        const vBruto = x.valor!=null ? x.valor : (d.preencher ? String(l.valor).replace('.',',') : '');
         const v = pesqNumero(vBruto);
         const valor = v!=null ? Math.round(v*100)/100 : 0;
         const existe = state.lancamentosContabeis.some(z=>z.copiadoDe===l.id && String(z.data).slice(0,7)===ym);
@@ -18035,41 +18033,43 @@
     });
     return { lancs, meses, linhas };
   }
+  function cpPreviaTxt(d){
+    const pl = cpPlano(d);
+    const cria = pl.linhas.filter(x=>!x.existe && x.valor>0);
+    const total = Math.round(cria.reduce((a,x)=>a+x.valor,0)*100)/100;
+    const ign = pl.linhas.filter(x=>x.existe && x.valor>0).length;
+    return cria.length + ' lançamento(s) a criar em ' + new Set(cria.map(x=>x.ym)).size + ' mês(es), total ' + fmtBRL(total) + (ign ? ' · ' + ign + ' já existe(m) e será(ão) ignorado(s)' : '') + '. Linhas sem valor não são criadas.';
+  }
   function cpModalHtml(){
     const d = state.cpMes; if(!d) return '';
-    const todas = cpSelecao(d);
     const pl = cpPlano(d);
-    const mesesTxt = pl.meses.map(ym=>lancMesNome(ym+'-01'));
-    const blocos = pl.meses.map(ym=>{
-      const ls = pl.linhas.filter(x=>x.ym===ym);
-      return `<div style="margin:10px 0 4px; font-weight:700;">${escapeHtml(lancMesNome(ym+'-01'))}</div>
-        <table><thead><tr><th>Lançamento</th><th style="width:70px">Dia</th><th style="width:140px; text-align:right">Valor (R$)</th></tr></thead><tbody>
-        ${ls.map(x=>`<tr style="${x.existe?'opacity:.55;':''}"><td style="font-size:12px;">D ${escapeHtml(contaNomeById(x.l.contaDebito))} · C ${escapeHtml(contaNomeById(x.l.contaCredito))}<br><span class="form-hint" style="margin:0;">${escapeHtml(cpHistorico(x.l.historico, d.origem, ym))}</span>${x.existe?' <b>(já existe cópia neste mês — será ignorada)</b>':''}</td>
-          <td><input type="number" min="1" max="31" class="cp-dia" data-k="${x.k}" value="${x.dia}" style="width:60px;"/></td>
-          <td style="text-align:right"><input type="text" inputmode="decimal" class="cp-valor" data-k="${x.k}" value="${escapeHtml(x.vBruto||'')}" placeholder="0,00" style="width:120px; text-align:right;"/></td></tr>`).join('')}
-        </tbody></table>`;
-    }).join('');
-    const total = Math.round(pl.linhas.filter(x=>!x.existe && x.valor>0).reduce((a,x)=>a+x.valor,0)*100)/100;
-    const nCria = pl.linhas.filter(x=>!x.existe && x.valor>0).length;
+    const cm = cpMesesComProvisao(d.emp);
+    const vazio = pl.lancs.length ? '' : (()=>{ const ant = cm.filter(m=>m<=d.de).pop() || cm[cm.length-1];
+      return '<div class="empty" style="margin:8px 0;">Não há lançamento de provisão (Simples, ICMS, DAS, apropriação) em ' + escapeHtml(lancMesNome(d.origem+'-01')) + '.' + (ant && ant!==d.origem ? ' <button type="button" class="btn-sm" id="cpUsarMes" data-mes="'+ant+'">Usar ' + escapeHtml(lancMesNome(ant+'-01')) + ' como modelo</button>' : (ant ? '' : ' Faça antes o lançamento da provisão em algum mês.')) + '</div>'; })();
+    const cab = pl.lancs.map(l=>`<th colspan="2" style="text-align:center; font-size:11.5px; border-left:1px solid #e6eaf0; min-width:210px;">${escapeHtml(String(l.historico||'').replace(/\s*\(.*$/,'').slice(0,46))}<br><span class="form-hint" style="margin:0; font-weight:400;">D ${escapeHtml(contaNomeById(l.contaDebito).slice(0,34))}<br>C ${escapeHtml(contaNomeById(l.contaCredito).slice(0,34))}</span></th>`).join('');
+    const sub = pl.lancs.map(()=>`<th style="font-size:11px; border-left:1px solid #e6eaf0; width:64px;">Dia</th><th style="font-size:11px; text-align:right;">Valor (R$)</th>`).join('');
+    const grade = pl.lancs.length ? `<div style="overflow:auto; max-height:46vh; border:1px solid #e6eaf0; border-radius:6px;"><table style="margin:0;"><thead style="position:sticky; top:0; background:#fff; z-index:1;"><tr><th rowspan="2" style="min-width:130px;">Mês</th>${cab}</tr><tr>${sub}</tr></thead><tbody>
+      ${pl.meses.map(ym=>`<tr><td><b>${escapeHtml(lancMesNome(ym+'-01'))}</b></td>${pl.lancs.map(l=>{ const x = pl.linhas.find(z=>z.ym===ym && z.l.id===l.id);
+        return `<td style="border-left:1px solid #e6eaf0;"><input type="number" min="1" max="31" class="cp-dia" data-k="${x.k}" value="${x.dia}" style="width:58px;"/></td><td style="text-align:right;"><input type="text" inputmode="decimal" class="cp-valor" data-k="${x.k}" value="${escapeHtml(x.vBruto||'')}" placeholder="0,00" style="width:110px; text-align:right; ${x.existe?'background:#fff7e6;':''}" title="${x.existe?'Já existe cópia neste mês — será ignorada':''}"/></td>`; }).join('')}</tr>`).join('')}
+      </tbody></table></div>` : '';
     return `
       <div class="modal-bg" id="modalBg">
-        <div class="modal" style="max-width:860px; width:96%; max-height:92vh; overflow:auto;">
+        <div class="modal" style="max-width:min(1100px,96vw); width:96%; max-height:92vh; overflow:auto;">
           <h3>Copiar lançamentos de um mês (provisões mensais)</h3>
-          <div class="form-hint" style="margin:-4px 0 12px;">Empresa: <b>${escapeHtml(clientName(d.emp))}</b>. Marque os lançamentos do mês de origem (ex.: provisão do Simples Nacional e do ICMS); o sistema cria o mesmo conjunto nos meses seguintes — você só muda o <b>dia</b> e o <b>valor</b>.</div>
+          <div class="form-hint" style="margin:-4px 0 12px;">Empresa: <b>${escapeHtml(clientName(d.emp))}</b>. Escolha o período, preencha o <b>dia</b> e o <b>valor</b> de todos os meses na grade e salve tudo de uma vez. Use <b>Tab</b> para ir de campo em campo.</div>
           <form id="cpForm">
             <div class="form-row">
-              <div class="field"><label>Mês de origem</label><input type="month" id="cpOrigem" value="${d.origem}"/></div>
-              <div class="field"><label>Começar a gerar em</label><input type="month" id="cpInicio" value="${d.inicio}"/></div>
-              <div class="field"><label>Quantidade de meses</label><input type="number" id="cpQtd" min="1" max="24" value="${d.meses}"/></div>
+              <div class="field"><label>Mês modelo (de onde copiar)</label><input type="month" id="cpOrigem" value="${d.origem}"/></div>
+              <div class="field"><label>Gerar de</label><input type="month" id="cpDe" value="${d.de}"/></div>
+              <div class="field"><label>Até</label><input type="month" id="cpAte" value="${d.ate}"/></div>
             </div>
-            ${pl.lancs.length ? '' : (()=>{ const cm = cpMesesComProvisao(d.emp); const ant = cm.filter(m=>m<d.origem).pop() || cm[cm.length-1];
-              return '<div class="empty" style="margin:8px 0;">Não há lançamento de provisão (Simples, ICMS, DAS, apropriação) em ' + escapeHtml(lancMesNome(d.origem+'-01')) + '.' + (ant ? ' <button type="button" class="btn-sm" id="cpUsarMes" data-mes="'+ant+'">Usar ' + escapeHtml(lancMesNome(ant+'-01')) + ' como origem</button>' : ' Faça antes o lançamento da provisão em algum mês.') + '</div>'; })()}
-            <label style="display:flex; gap:8px; align-items:center; margin:6px 0;"><input type="checkbox" id="cpPreencher" ${d.preencher?'checked':''}/> Já preencher os valores com os do mês de origem (depois é só alterar o que mudar)</label>
-            ${pl.lancs.length ? blocos : ''}
-            <div class="form-hint" style="margin:10px 0;"><b>Prévia:</b> ${nCria} lançamento(s) a criar, total ${fmtBRL(total)}${mesesTxt.length? ' · '+mesesTxt.join(', '):''}. Linhas sem valor não são criadas. O mês citado no histórico (ex.: "09/2026" ou "Setembro/2026") é trocado pelo mês de destino.</div>
+            ${vazio}
+            <label style="display:flex; gap:8px; align-items:center; margin:6px 0;"><input type="checkbox" id="cpPreencher" ${d.preencher?'checked':''}/> Já preencher os valores com os do mês modelo (depois é só alterar o que mudar)</label>
+            ${grade}
+            <div class="form-hint" style="margin:10px 0;"><b>Prévia:</b> <span id="cpPrevia">${escapeHtml(cpPreviaTxt(d))}</span> O mês citado no histórico (ex.: "09/2026" ou "Setembro/2026") é trocado pelo mês de cada linha.</div>
             <div class="modal-actions">
               <button type="button" class="btn-sm" id="cpCancel">Cancelar</button>
-              <button type="submit" class="btn-add">Criar lançamentos</button>
+              <button type="submit" class="btn-add">Salvar todos os lançamentos</button>
             </div>
           </form>
         </div>
@@ -18086,18 +18086,20 @@
     state.modal = null; state.cpMes = null; render();
     for(let i=0;i<novos.length;i+=15){ await Promise.all(novos.slice(i,i+15).map(x=>saveLancamentoContabilSilent(x))); }
     await loadLancamentosContabeis(); render();
+    alert(novos.length + ' lançamento(s) de provisão criado(s).');
   }
   function cpLigar(){
     const d = state.cpMes; if(!d) return;
     const por = (id, ev, fn)=>{ const el = document.getElementById(id); if(el) el[ev] = fn; };
-    por('cpOrigem','onchange',(x)=>{ if(!x.target.value) return; d.origem = x.target.value; d.sel = null; d.mostrarTodos = false; d.dados = {}; d.inicio = cpSomaYm(d.origem,1); render(); });
-    por('cpInicio','onchange',(x)=>{ if(!x.target.value) return; d.inicio = x.target.value; d.dados = {}; render(); });
-    por('cpQtd','onchange',(x)=>{ d.meses = x.target.value; render(); });
+    por('cpOrigem','onchange',(x)=>{ if(!x.target.value) return; d.origem = x.target.value; d.sel = null; d.dados = {}; render(); });
+    por('cpDe','onchange',(x)=>{ if(!x.target.value) return; d.de = x.target.value; if(d.ate < d.de) d.ate = d.de; render(); });
+    por('cpAte','onchange',(x)=>{ if(!x.target.value) return; d.ate = x.target.value; if(d.ate < d.de) d.de = d.ate; render(); });
     por('cpPreencher','onchange',(x)=>{ d.preencher = x.target.checked; d.dados = {}; render(); });
-    document.querySelectorAll('.cp-sel').forEach(el=>{ el.onchange = ()=>{ d.sel = d.sel || {}; d.sel[el.dataset.id] = el.checked; render(); }; });
-    document.querySelectorAll('.cp-dia').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {dia:el.value}); render(); }; });
-    document.querySelectorAll('.cp-valor').forEach(el=>{ el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {valor:el.value}); render(); }; });
-    por('cpUsarMes','onclick',(x)=>{ d.origem = x.target.dataset.mes; d.sel = null; d.dados = {}; d.inicio = cpSomaYm(state.cpMesInicioPedido || d.inicio, 0); render(); });
+    por('cpUsarMes','onclick',(x)=>{ d.origem = x.target.dataset.mes; d.sel = null; d.dados = {}; render(); });
+    // dia e valor: guarda sem redesenhar a tela (para o Tab seguir de campo em campo)
+    const atualiza = ()=>{ const p = document.getElementById('cpPrevia'); if(p) p.textContent = cpPreviaTxt(d); };
+    document.querySelectorAll('.cp-dia').forEach(el=>{ el.oninput = el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {dia:el.value}); atualiza(); }; });
+    document.querySelectorAll('.cp-valor').forEach(el=>{ el.oninput = el.onchange = ()=>{ d.dados[el.dataset.k] = Object.assign({}, d.dados[el.dataset.k], {valor:el.value}); atualiza(); }; });
     por('cpCancel','onclick',()=>{ state.modal=null; state.cpMes=null; render(); });
     const f = document.getElementById('cpForm'); if(f) f.onsubmit = (e)=>{ e.preventDefault(); cpCriar(); };
   }
@@ -18333,8 +18335,9 @@
     }
     if(d.problemas){
       const li = [];
-      if(d.dataRuim.length) li.push(`<li><b>${d.dataRuim.length}</b> com data em formato inválido (os relatórios ignoram esses lançamentos).</li>`);
-      if(d.valorRuim.length) li.push(`<li><b>${d.valorRuim.length}</b> com valor gravado como texto.</li>`);
+      const exL = (arr)=> escapeHtml(arr.slice(0,4).map(l=>'data "'+String(l.data||'')+'", valor "'+String(l.valor)+'", '+String(l.historico||'').slice(0,50)).join(' · '));
+      if(d.dataRuim.length) li.push(`<li><b>${d.dataRuim.length}</b> com data em formato inválido (os relatórios ignoram esses lançamentos) — ex.: ${exL(d.dataRuim)}</li>`);
+      if(d.valorRuim.length) li.push(`<li><b>${d.valorRuim.length}</b> com valor gravado como texto (ex.: "1.234,56" em vez do número 1234.56), por isso não soma nos relatórios — ex.: ${exL(d.valorRuim)}</li>`);
       const reaponta = d.contaOutraEmpresa.filter(x=>x.destino).length;
       if(d.contaOutraEmpresa.length) li.push(`<li><b>${d.contaOutraEmpresa.length}</b> lado(s) de lançamento ligado(s) a conta de <b>outra empresa</b> — ${reaponta} podem ser religados pelo código da conta ao plano desta empresa.</li>`);
       if(d.contaInexistente.length){
