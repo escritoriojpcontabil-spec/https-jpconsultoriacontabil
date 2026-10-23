@@ -449,18 +449,25 @@
         // deixa claro se travar ou der erro no meio.
         const m = new Map();
         let ultimo = null, total = 0;
-        const PAG = 300;
+        const t0 = Date.now(); let paginas = 0;
+        const PAG = 1000; // páginas maiores = menos idas e vindas ao servidor (antes: 300)
         for(;;){
           let q = this.db.collection(FIREBASE_COLLECTION).orderBy(firebase.firestore.FieldPath.documentId()).limit(PAG);
           if(ultimo) q = q.startAfter(ultimo);
           const snap = await q.get();
           let n = 0;
           snap.forEach(doc=>{ n++; ultimo = doc; this.reads++; const d = doc.data(); if(d && d.key) m.set(d.key, d.value); });
-          total += n;
+          total += n; paginas++;
           bootProgresso(total);
           if(n < PAG) break;
         }
         this._cache = m; this._cacheT = Date.now();
+        // Diagnóstico: quanto tempo levou e quem pesa mais (registros e tamanho por tipo de dado).
+        try{
+          const por = {};
+          m.forEach((v,k)=>{ const pf = String(k).split(':')[0]; const o = por[pf] = por[pf] || { n:0, bytes:0 }; o.n++; o.bytes += String(v==null?'':v).length; });
+          this.stats = { total, paginas, ms: Date.now()-t0, quando: new Date().toISOString(), por };
+        }catch(e){}
       })().catch(e=>{ BOOT_ERR = String((e && (e.code||e.message)) || e).slice(0,160); if(!BOOT_OK) mostrarFalhaConexao(); throw e; }).finally(()=>{ this._cacheP = null; });
       return this._cacheP;
     },
@@ -22346,7 +22353,20 @@
     if(state.user.role!=='admin'){
       return `<div class="panel"><div class="empty">Acesso restrito a administradores.</div></div>`;
     }
-    return `
+    const st = (typeof FirebaseStore!=='undefined') ? FirebaseStore.stats : null;
+    const diagCarga = st ? (()=>{
+      const lin = Object.keys(st.por).map(k=>({k, n:st.por[k].n, mb:st.por[k].bytes/1048576})).sort((a,b)=>b.mb-a.mb).slice(0,8);
+      const totMb = lin.reduce((a,x)=>a+x.mb,0);
+      return `<div class="panel">
+        <div class="panel-head"><h3>Velocidade de carregamento</h3></div>
+        <div class="form-hint" style="margin:-4px 0 10px;">Na última leitura do banco foram lidos <b>${st.total}</b> registros em <b>${(st.ms/1000).toFixed(1)} s</b> (${st.paginas} página(s)). O que mais pesa:</div>
+        <table><thead><tr><th>Tipo de dado</th><th style="text-align:right">Registros</th><th style="text-align:right">Tamanho (MB)</th></tr></thead><tbody>
+        ${lin.map(x=>`<tr><td>${escapeHtml(x.k)}</td><td style="text-align:right" class="mono">${x.n}</td><td style="text-align:right" class="mono">${x.mb.toFixed(2).replace('.',',')}</td></tr>`).join('')}
+        </tbody></table>
+        <div class="form-hint" style="margin:8px 0 0;">Se um tipo tiver muitos MB (por exemplo notas fiscais com XML dentro), é ele que deixa a abertura lenta — me mande este quadro que eu ajusto só esse ponto.</div>
+      </div>`;
+    })() : '';
+    return diagCarga + `
       <div class="panel">
         <div class="panel-head"><h3>Criar novo usuário</h3></div>
         <form id="newUserForm">
