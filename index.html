@@ -17877,14 +17877,24 @@
     const clientId = state.contabilEmpresaAtiva;
     const e = tcEstado();
     const erro = document.getElementById('tcErro');
-    const falha = (t)=>{ if(erro){ erro.textContent = t; erro.style.display='inline-block'; } };
+    const falha = (t, campo)=>{
+      if(erro){ erro.textContent = t; erro.style.display='inline-block'; }
+      const el = campo && document.getElementById(campo);
+      if(el){
+        try{ el.scrollIntoView({behavior:'smooth', block:'center'}); }catch(_){}
+        el.style.outline = '3px solid #d32f2f'; el.style.borderColor = '#d32f2f';
+        setTimeout(()=>{ el.focus(); }, 300);
+        setTimeout(()=>{ el.style.outline=''; el.style.borderColor=''; }, 4000);
+      }
+      alert(t);
+    };
     if(erro) erro.style.display = 'none';
-    if(!e.de) return falha('Escolha a conta de origem.');
-    if(!e.para) return falha('Escolha a conta de destino.');
+    if(!e.de) return falha('Escolha a conta de origem (campo no topo da tela).', 'tcDe');
+    if(!e.para) return falha('Escolha a conta de destino (campo no topo da tela, ao lado da origem). É a conta para onde os lançamentos vão.', 'tcPara');
     let destino = state.planoContas.find(c=>c.id===e.para);
     if(e.para==='__nova'){
       const nome = (e.novoNome||'').replace(/\s+/g,' ').trim();
-      if(nome.length<2) return falha('Digite o nome da nova conta.');
+      if(nome.length<2) return falha('Digite o nome da nova conta.', 'tcNovoNome');
       const origem = state.planoContas.find(c=>c.id===e.de);
       const partes = String(origem.codigo).split('.'); partes.pop();
       const pai = partes.join('.');
