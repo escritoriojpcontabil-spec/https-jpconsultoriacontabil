@@ -18184,6 +18184,21 @@
     pdfSalvar(doc, 'lancamentos-contabeis-' + String(nomeEmp).replace(/[^a-z0-9]+/gi,'-').toLowerCase() + (state.lancMes ? '-' + state.lancMes : '') + '.pdf');
   }
 
+  // Abre o e-mail já preenchido. Padrão: Gmail na web (nova aba) — funciona sem programa de e-mail instalado.
+  // Se o texto for grande demais para a URL, usa o programa de e-mail do computador (mailto) e copia a mensagem.
+  function abrirEmail(para, assunto, corpo, bcc){
+    const q = (o)=>Object.keys(o).filter(k=>o[k]).map(k=>k+'='+encodeURIComponent(o[k])).join('&');
+    const gmail = 'https://mail.google.com/mail/?view=cm&fs=1&' + q({ to:para||'', bcc:bcc||'', su:assunto||'', body:corpo||'' });
+    if(gmail.length <= 7500){
+      const w = window.open(gmail, '_blank');
+      if(!w) window.location.href = gmail;
+      return;
+    }
+    try{ if(navigator.clipboard) navigator.clipboard.writeText(String(corpo||'')); }catch(e){}
+    alert('A mensagem é grande demais para abrir direto no Gmail. Vou abrir o seu programa de e-mail; se o texto vier cortado, ele já foi copiado — é só colar (Ctrl+V) no corpo do e-mail.');
+    window.location.href = 'mailto:' + encodeURIComponent(para||'') + '?' + q({ bcc:bcc||'', subject:assunto||'', body:corpo||'' });
+  }
+
   function lancContabilModalHtml(){
     const d = state.lancContabilModalData;
     if(!d) return '';
@@ -23060,7 +23075,7 @@
         const phone = waPhoneDigits(client.phone);
         window.open('https://wa.me/'+phone+'?text='+encodeURIComponent(text), '_blank');
       } else {
-        window.location.href = 'mailto:'+encodeURIComponent(client.email)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(text);
+        abrirEmail(client.email, subject, text);
       }
 
       const banner = document.getElementById('sendConfirmBanner');
@@ -23124,7 +23139,7 @@
         const texto = certificadoMensagemRenovacao({certificado:cert, cliente, dias, janela});
         const assunto = 'Renovação de Certificado Digital — ' + (cert.nome||'');
         await saveEnvio({ clientId: cliente.id, canal:'email', texto, assunto, isComunicado:true, sentAt:new Date().toISOString(), sentBy: state.user?state.user.username:'' });
-        window.location.href = 'mailto:'+encodeURIComponent(cliente.email)+'?subject='+encodeURIComponent(assunto)+'&body='+encodeURIComponent(texto);
+        abrirEmail(cliente.email, assunto, texto);
       };
     });
     root.querySelectorAll('[data-cert-notif-copiar]').forEach(el=>{
@@ -23157,7 +23172,7 @@
         if(state.comunicadoCanal==='whatsapp'){
           window.open('https://wa.me/'+waPhoneDigits(client.phone)+'?text='+encodeURIComponent(texto), '_blank');
         } else {
-          window.location.href = 'mailto:'+encodeURIComponent(client.email)+'?subject='+encodeURIComponent(assunto)+'&body='+encodeURIComponent(texto);
+          abrirEmail(client.email, assunto, texto);
         }
         render();
       };
@@ -23171,7 +23186,7 @@
           await saveEnvio({ clientId: client.id, canal:'email', texto: comunicadoRenderTexto(state.comunicadoCorpo, client), assunto: state.comunicadoAssunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.username:'' });
         }
         const bcc = elegiveis.map(c=>c.email).join(',');
-        window.location.href = 'mailto:?bcc='+encodeURIComponent(bcc)+'&subject='+encodeURIComponent(state.comunicadoAssunto)+'&body='+encodeURIComponent(state.comunicadoCorpo);
+        abrirEmail('', state.comunicadoAssunto, state.comunicadoCorpo, bcc);
         render();
       };
     }
@@ -24660,7 +24675,7 @@
       const f = dtFiltro(); const c = state.clients.find(x=>x.id===f.empresa); if(!c || !c.email) return;
       const assunto = 'Declarações transmitidas' + (f.ano ? ' — ' + f.ano : '') + ' — ' + (c.name||'');
       const corpo = 'Prezado(a) cliente,\n\nSegue em anexo o relatório das declarações transmitidas' + (f.ano ? ' referentes a ' + f.ano : '') + '.\n\nAtenciosamente,\nJP Consultoria Contábil';
-      window.location.href = 'mailto:' + encodeURIComponent(c.email) + '?subject=' + encodeURIComponent(assunto) + '&body=' + encodeURIComponent(corpo);
+      abrirEmail(c.email, assunto, corpo);
     };
 
     // ===== SPED Fiscal =====
