@@ -16898,6 +16898,18 @@
 
   const MESES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
   function lancMesNome(ym){ const p=String(ym||'').split('-'); return p.length>=2 && MESES_NOME[+p[1]-1] ? MESES_NOME[+p[1]-1]+' de '+p[0] : 'Sem data'; }
+  // Período em meses (de/até) e filtro por contas marcadas
+  function lancMesRange(){ let de = state.lancMesDe||'', ate = state.lancMesAte||''; if(de && ate && de>ate){ const t=de; de=ate; ate=t; } return [de, ate]; }
+  function lancNoPeriodo(l){ const [de,ate] = lancMesRange(); const m = String(l.data||'').slice(0,7); return (!de || m>=de) && (!ate || m<=ate); }
+  function lancPeriodoTxt(){
+    const [de,ate] = lancMesRange();
+    if(!de && !ate) return '';
+    if(de && ate) return de===ate ? lancMesNome(de) : lancMesNome(de)+' a '+lancMesNome(ate);
+    return de ? 'a partir de '+lancMesNome(de) : 'até '+lancMesNome(ate);
+  }
+  function lancContasMarcadas(){ return Object.keys(state.lancContas||{}).filter(k=>state.lancContas[k]); }
+  function lancNasContas(l){ const m = lancContasMarcadas(); if(!m.length) return true; return m.indexOf(l.contaDebito)>=0 || m.indexOf(l.contaCredito)>=0; }
+  function lancContasTxt(){ const n = lancContasMarcadas().length; return n ? n+' conta(s) marcada(s)' : ''; }
   function lancListaEscopo(){
     let list = state.lancamentosContabeis.slice();
     if(!state.deptAllClients) list = list.filter(l=>isClientInScope(l.clientId));
@@ -16907,21 +16919,21 @@
   function lancParaApagar(){
     const emp = deptOneSelectedClient(); if(!emp) return null;
     let l = state.lancamentosContabeis.filter(x=>x.clientId===emp && x.aberturaSaldo!==true);
-    if(state.lancMes) l = l.filter(x=>String(x.data||'').slice(0,7)===state.lancMes);
+    l = l.filter(lancNoPeriodo);
     return {emp, lista:l};
   }
   function lancApagarBarHtml(){
     const r = lancParaApagar();
     if(!r) return `<div class="form-hint" style="margin:0 0 10px;">Para apagar lançamentos em lote, marque uma única empresa no seletor "Selecionar cliente" no topo.</div>`;
     if(!r.lista.length) return '';
-    const txt = state.lancMes ? 'Apagar os '+r.lista.length+' lançamentos de '+lancMesNome(state.lancMes) : 'Apagar todos os '+r.lista.length+' lançamentos desta empresa';
+    const txt = lancPeriodoTxt() ? 'Apagar os '+r.lista.length+' lançamentos de '+lancPeriodoTxt() : 'Apagar todos os '+r.lista.length+' lançamentos desta empresa';
     return `<div style="margin:0 0 12px;"><button type="button" class="btn-sm danger" id="lancApagarLoteBtn">${escapeHtml(txt)}</button> <span class="form-hint" style="margin:0 0 0 6px;">Saldos iniciais não são apagados. Faça um backup antes.</span></div>`;
   }
   async function lancApagarLote(){
     const r = lancParaApagar(); if(!r || !r.lista.length) return;
-    const quem = clientName(r.emp), onde = state.lancMes ? lancMesNome(state.lancMes) : 'TODOS os meses';
+    const quem = clientName(r.emp), onde = lancPeriodoTxt() || 'TODOS os meses';
     if(!confirm('Apagar '+r.lista.length+' lançamento(s) contábil(is) de "'+quem+'" — '+onde+'?\n\nEsta ação não pode ser desfeita. Os saldos iniciais não serão apagados.')) return;
-    if(!state.lancMes){
+    if(!lancPeriodoTxt() || lancMesRange()[0]!==lancMesRange()[1]){
       const t = prompt('Para confirmar, digite APAGAR:');
       if(!t || t.trim().toUpperCase()!=='APAGAR') return;
     }
@@ -16932,23 +16944,31 @@
       const res = await Promise.all(r.lista.slice(i, i+25).map(l=>Store.delete('lancamentoscontabeis:'+l.id, true).then(()=>true, ()=>false)));
       res.forEach(ok=>{ if(ok) feitos++; else falhas++; });
     }
-    state.lancMes = '';
+    state.lancMesDe = ''; state.lancMesAte = '';
     await loadLancamentosContabeis(); render();
     alert(feitos+' lançamento(s) apagado(s).' + (falhas ? ' '+falhas+' não puderam ser apagados — clique no botão de novo para tentar outra vez.' : ''));
   }
   function lancMesesSeletorHtml(){
     const list = lancListaEscopo();
-    const meses = Array.from(new Set(list.map(l=>String(l.data||'').slice(0,7)))).sort().reverse();
+    const meses = Array.from(new Set(list.map(l=>String(l.data||'').slice(0,7)))).sort();
     if(!meses.length) return '';
-    const sel = state.lancMes||'';
-    const diasOpts = (v)=> '<option value="">'+(v===undefined?'':'')+'—</option>' + Array.from({length:31},(_,i)=>`<option value="${i+1}" ${String(v)===String(i+1)?'selected':''}>${i+1}</option>`).join('');
-    return `<div style="display:flex; align-items:center; gap:8px; margin:0 0 12px; flex-wrap:wrap;">
-      <label style="font-weight:600;">Mês:</label>
-      <select id="lancMesSel" class="input" style="min-width:200px;">
-        <option value="">Todos os meses (agrupado)</option>
-        ${meses.map(m=>`<option value="${m}" ${m===sel?'selected':''}>${escapeHtml(lancMesNome(m))}</option>`).join('')}
-      </select>
-      <label style="font-weight:600; margin-left:8px;">Dias:</label>
+    const [de, ate] = lancMesRange();
+    const diasOpts = (v)=> '<option value="">—</option>' + Array.from({length:31},(_,i)=>`<option value="${i+1}" ${String(v)===String(i+1)?'selected':''}>${i+1}</option>`).join('');
+    const mOpts = (sel, vazio)=> `<option value="">${vazio}</option>` + meses.slice().reverse().map(m=>`<option value="${m}" ${m===sel?'selected':''}>${escapeHtml(lancMesNome(m))}</option>`).join('');
+    const ano = (meses[meses.length-1]||'').slice(0,4);
+    const anos = Array.from(new Set(meses.map(m=>m.slice(0,4)))).sort().reverse();
+    return `<div style="display:flex; align-items:center; gap:8px; margin:0 0 8px; flex-wrap:wrap;">
+      <label style="font-weight:600;">Meses:</label>
+      <span>de</span>
+      <select id="lancMesDeSel" class="input" style="min-width:170px;">${mOpts(state.lancMesDe||'', 'Desde o início')}</select>
+      <span>até</span>
+      <select id="lancMesAteSel" class="input" style="min-width:170px;">${mOpts(state.lancMesAte||'', 'Até o último')}</select>
+      <span class="form-hint" style="margin:0;">Ano inteiro:</span>
+      ${anos.map(a=>`<button type="button" class="btn-sm ${(de===a+'-01'&&ate===a+'-12')?'primary':''}" data-lanc-ano="${a}">${a}</button>`).join('')}
+      ${(state.lancMesDe||state.lancMesAte) ? '<button type="button" class="btn-sm" id="lancMesesLimpar">Todos os meses</button>' : ''}
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; margin:0 0 12px; flex-wrap:wrap;">
+      <label style="font-weight:600;">Dias:</label>
       <span>de</span>
       <select id="lancDiaDe" data-nobusca="1" class="input">${diasOpts(state.lancDiaDe)}</select>
       <span>até</span>
@@ -16956,6 +16976,30 @@
       ${(state.lancDiaDe||state.lancDiaAte) ? '<button type="button" class="btn-sm" id="lancDiasLimpar">Todos os dias</button>' : ''}
       <span class="form-hint" style="margin:0;">Cada lançamento aparece no mês da sua própria data. Para um único dia, escolha o mesmo dia nos dois campos.</span>
     </div>`;
+  }
+  // Contas que aparecem nos lançamentos do período — marque as que quer ver.
+  function lancContasFiltroHtml(){
+    let list = lancListaEscopo().filter(lancNoPeriodo);
+    if(!list.length) return '';
+    const ids = new Set(); list.forEach(l=>{ if(l.contaDebito) ids.add(l.contaDebito); if(l.contaCredito) ids.add(l.contaCredito); });
+    const mapa = {}; state.planoContas.forEach(c=>{ mapa[c.id] = c; });
+    const contas = Array.from(ids).map(id=>mapa[id]).filter(Boolean).sort((x,y)=>String(x.codigo).localeCompare(String(y.codigo), undefined, {numeric:true}));
+    if(!contas.length) return '';
+    const marc = lancContasMarcadas();
+    const varias = new Set(contas.map(c=>c.clientId)).size > 1;
+    const aberto = state.lancContasAberto || marc.length>0;
+    return `<details id="lancContasBox" ${aberto?'open':''} style="margin:0 0 12px; border:1px solid var(--line,#d0d5dd); border-radius:8px; padding:8px 12px; background:#fafbfd;">
+      <summary style="cursor:pointer; font-weight:600;">Contas a ver ${marc.length ? '<span class="tag sit-outra">'+marc.length+' marcada(s)</span>' : '<span style="font-weight:400; opacity:.7;">(todas)</span>'}</summary>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0;">
+        <input type="search" id="lancContasBusca" placeholder="Filtrar a lista de contas…" autocomplete="off" style="flex:1; min-width:200px; padding:6px 10px; border:1px solid var(--line,#d0d5dd); border-radius:6px;"/>
+        <button type="button" class="btn-sm" id="lancContasTodas">Marcar as visíveis</button>
+        <button type="button" class="btn-sm" id="lancContasLimpar">Limpar marcação</button>
+      </div>
+      <div class="form-hint" style="margin:0 0 6px;">Mostra os lançamentos em que alguma das contas marcadas aparece (débito ou crédito). Sem nenhuma marcada, mostra todas.</div>
+      <div id="lancContasLista" style="max-height:240px; overflow:auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:2px 14px;">
+        ${contas.map(c=>`<label class="lanc-conta-op" data-t="${escapeHtml(semAcento(c.codigo+' '+c.nome))}" style="display:flex; gap:6px; align-items:flex-start; font-size:13px; cursor:pointer;"><input type="checkbox" class="lanc-conta-chk" data-id="${c.id}" ${state.lancContas&&state.lancContas[c.id]?'checked':''}/><span>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}${varias?' <i style="opacity:.6;">('+escapeHtml(clientName(c.clientId))+')</i>':''}</span></label>`).join('')}
+      </div>
+    </details>`;
   }
   // Histórico + complemento (texto livre do usuário), usado na lista e nos relatórios.
   function lancHist(l){ const h = String(l.historico||''); const c = String(l.complemento||'').trim(); return c ? (h ? h + ' — ' + c : c) : h; }
@@ -16983,14 +17027,19 @@
   function lancamentosContabeisTableHtml(){
     let list = lancListaEscopo();
     if(!list.length) return `<div class="empty">Nenhum lançamento contábil registrado ${!state.deptAllClients?'para os clientes selecionados':''}.</div>`;
-    if(state.lancMes) list = list.filter(l=>String(l.data||'').slice(0,7)===state.lancMes);
-    if(!list.length) return `<div class="empty">Nenhum lançamento em ${escapeHtml(lancMesNome(state.lancMes))}.</div>`;
+    list = list.filter(lancNoPeriodo);
+    if(!list.length) return `<div class="empty">Nenhum lançamento ${lancPeriodoTxt()?'em '+escapeHtml(lancPeriodoTxt()):'no período'}.</div>`;
+    if(lancContasMarcadas().length){
+      list = list.filter(lancNasContas);
+      if(!list.length) return `<div class="empty">Nenhum lançamento com as contas marcadas${lancPeriodoTxt()?' em '+escapeHtml(lancPeriodoTxt()):''}.</div>`;
+      state._lancContasInfo = 'Contas marcadas: ' + list.length + ' lançamento(s) · soma ' + fmtBRL(list.reduce((a,l)=>a+(Number(l.valor)||0),0));
+    } else state._lancContasInfo = '';
     const dDe = parseInt(state.lancDiaDe,10) || 0, dAte = parseInt(state.lancDiaAte,10) || 0;
     if(dDe || dAte){
       const lo = dDe || 1, hi = dAte || 31;
       const a = Math.min(lo, hi), b = Math.max(lo, hi);
       list = list.filter(l=>{ const dia = parseInt(String(l.data||'').slice(8,10),10)||0; return dia>=a && dia<=b; });
-      if(!list.length) return `<div class="empty">Nenhum lançamento entre os dias ${a} e ${b}${state.lancMes?' de '+escapeHtml(lancMesNome(state.lancMes)):''}.</div>`;
+      if(!list.length) return `<div class="empty">Nenhum lançamento entre os dias ${a} e ${b}${lancPeriodoTxt()?' em '+escapeHtml(lancPeriodoTxt()):''}.</div>`;
       const tot = list.reduce((x,l)=>x+(Number(l.valor)||0),0);
       state._lancDiasInfo = 'Dias ' + a + ' a ' + b + ': ' + list.length + ' lançamento(s) · soma ' + fmtBRL(tot);
     } else state._lancDiasInfo = '';
@@ -17000,7 +17049,7 @@
       list = list.filter(l=>lancCombinaBusca(l, termos, mapa));
       const tot = list.reduce((a,l)=>a+(Number(l.valor)||0),0);
       state._lancBuscaInfo = list.length + ' lançamento(s) encontrado(s) · soma ' + fmtBRL(tot);
-      if(!list.length) return `<div class="empty">Nenhum lançamento encontrado para "${escapeHtml(state.lancBusca)}"${state.lancMes?' em '+escapeHtml(lancMesNome(state.lancMes)):''}.</div>`;
+      if(!list.length) return `<div class="empty">Nenhum lançamento encontrado para "${escapeHtml(state.lancBusca)}"${lancPeriodoTxt()?' em '+escapeHtml(lancPeriodoTxt()):''}.</div>`;
     } else state._lancBuscaInfo = '';
     list.sort((x,y)=>String(y.data||'').localeCompare(String(x.data||'')));
     const rowHtml = l=>`
@@ -17037,7 +17086,7 @@
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       ${notasContabilCardHtml()}
       ${folhaContabilCardHtml()}
-      ${lancMesesSeletorHtml()}${lancBuscaBarHtml()}${((state.lancBusca||'').trim() || state.lancDiaDe || state.lancDiaAte) ? '' : lancApagarBarHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
+      ${lancMesesSeletorHtml()}${lancContasFiltroHtml()}${lancBuscaBarHtml()}${((state.lancBusca||'').trim() || state.lancDiaDe || state.lancDiaAte || lancContasMarcadas().length) ? '' : lancApagarBarHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
   }
 
@@ -18223,7 +18272,7 @@
   // ===== PDF para impressão dos lançamentos contábeis (respeita empresa, mês, dias e busca na tela) =====
   function lancListaImpressao(){
     let list = lancListaEscopo();
-    if(state.lancMes) list = list.filter(l=>String(l.data||'').slice(0,7)===state.lancMes);
+    list = list.filter(lancNoPeriodo).filter(lancNasContas);
     const dDe = parseInt(state.lancDiaDe,10) || 0, dAte = parseInt(state.lancDiaAte,10) || 0;
     if(dDe || dAte){ const a = Math.min(dDe||1, dAte||31), b = Math.max(dDe||1, dAte||31);
       list = list.filter(l=>{ const dia = parseInt(String(l.data||'').slice(8,10),10)||0; return dia>=a && dia<=b; }); }
@@ -18242,7 +18291,8 @@
     const empresas = Array.from(new Set(list.map(l=>l.clientId)));
     const nomeEmp = empresas.length===1 ? clientName(empresas[0]) : empresas.length + ' empresas';
     const filtros = [];
-    filtros.push(state.lancMes ? lancMesNome(state.lancMes+'-01') : 'todo o período');
+    filtros.push(lancPeriodoTxt() || 'todo o período');
+    if(lancContasMarcadas().length){ const mp = {}; state.planoContas.forEach(c=>{ mp[c.id]=c; }); filtros.push('contas: ' + lancContasMarcadas().map(id=>mp[id]?mp[id].codigo:'').filter(Boolean).slice(0,6).join(', ') + (lancContasMarcadas().length>6?'…':'')); }
     const dDe = parseInt(state.lancDiaDe,10)||0, dAte = parseInt(state.lancDiaAte,10)||0;
     if(dDe||dAte) filtros.push('dias ' + (dDe||1) + ' a ' + (dAte||31));
     if((state.lancBusca||'').trim()) filtros.push('busca "' + String(state.lancBusca).trim() + '"');
@@ -18288,7 +18338,7 @@
     for(let p=1;p<=np;p++){ if(doc.setPage) doc.setPage(p); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120,130,140);
       doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil — ' + new Date().toLocaleString('pt-BR'), mx, pageH-6);
       doc.text('Página ' + p + ' de ' + np, pageW-mx, pageH-6, {align:'right'}); }
-    pdfSalvar(doc, 'lancamentos-contabeis-' + String(nomeEmp).replace(/[^a-z0-9]+/gi,'-').toLowerCase() + (state.lancMes ? '-' + state.lancMes : '') + '.pdf');
+    pdfSalvar(doc, 'lancamentos-contabeis-' + String(nomeEmp).replace(/[^a-z0-9]+/gi,'-').toLowerCase() + (lancPeriodoTxt() ? '-' + (lancMesRange()[0]||'ini') + (lancMesRange()[1]&&lancMesRange()[1]!==lancMesRange()[0]?'-a-'+lancMesRange()[1]:'') : '') + '.pdf');
   }
 
   // Abre o e-mail já preenchido. Padrão: Gmail na web (nova aba) — funciona sem programa de e-mail instalado.
@@ -26725,7 +26775,7 @@
     if(lancApagarLoteBtn) lancApagarLoteBtn.onclick = ()=>{ lancApagarLote(); };
     const lancBuscaEl = document.getElementById('lancBusca');
     if(lancBuscaEl){
-      const infoEl = document.getElementById('lancBuscaInfo'); if(infoEl) infoEl.textContent = [state._lancDiasInfo, state._lancBuscaInfo].filter(Boolean).join('  |  ');
+      const infoEl = document.getElementById('lancBuscaInfo'); if(infoEl) infoEl.textContent = [state._lancDiasInfo, state._lancContasInfo, state._lancBuscaInfo].filter(Boolean).join('  |  ');
       if(state.lancBuscaFoco){ state.lancBuscaFoco = false; lancBuscaEl.focus(); const n = lancBuscaEl.value.length; try{ lancBuscaEl.setSelectionRange(n,n); }catch(e){} }
       let _t = null;
       lancBuscaEl.oninput = ()=>{ clearTimeout(_t); _t = setTimeout(()=>{ state.lancBusca = lancBuscaEl.value; state.lancBuscaFoco = true; render(); }, 350); };
@@ -26738,8 +26788,23 @@
     if(lancDiaAte) lancDiaAte.onchange = ()=>{ state.lancDiaAte = lancDiaAte.value; if(state.lancDiaAte && !state.lancDiaDe) state.lancDiaDe = state.lancDiaAte; render(); };
     const lancDiasLimpar = document.getElementById('lancDiasLimpar');
     if(lancDiasLimpar) lancDiasLimpar.onclick = ()=>{ state.lancDiaDe = ''; state.lancDiaAte = ''; render(); };
-    const lancMesSel = document.getElementById('lancMesSel');
-    if(lancMesSel) lancMesSel.onchange = ()=>{ state.lancMes = lancMesSel.value; render(); };
+    const rr = ()=>{ const y = window.scrollY; render(); try{ window.scrollTo(0, y); }catch(_){} };
+    const mDe = document.getElementById('lancMesDeSel'), mAte = document.getElementById('lancMesAteSel');
+    if(mDe) mDe.onchange = ()=>{ state.lancMesDe = mDe.value; if(state.lancMesDe && !state.lancMesAte) state.lancMesAte = state.lancMesDe; rr(); };
+    if(mAte) mAte.onchange = ()=>{ state.lancMesAte = mAte.value; if(state.lancMesAte && !state.lancMesDe) state.lancMesDe = state.lancMesAte; rr(); };
+    document.querySelectorAll('[data-lanc-ano]').forEach(b=>{ b.onclick = ()=>{ state.lancMesDe = b.dataset.lancAno+'-01'; state.lancMesAte = b.dataset.lancAno+'-12'; rr(); }; });
+    const mLimpar = document.getElementById('lancMesesLimpar'); if(mLimpar) mLimpar.onclick = ()=>{ state.lancMesDe = ''; state.lancMesAte = ''; rr(); };
+    const cBox = document.getElementById('lancContasBox');
+    if(cBox){
+      cBox.ontoggle = ()=>{ state.lancContasAberto = cBox.open; };
+      document.querySelectorAll('.lanc-conta-chk').forEach(ch=>{ ch.onchange = ()=>{ state.lancContas = state.lancContas||{}; if(ch.checked) state.lancContas[ch.dataset.id] = true; else delete state.lancContas[ch.dataset.id]; state.lancContasAberto = true; rr(); }; });
+      const cb = document.getElementById('lancContasBusca');
+      if(cb) cb.oninput = ()=>{ const t = semAcento(cb.value).trim(); document.querySelectorAll('.lanc-conta-op').forEach(l=>{ l.style.display = (!t || l.dataset.t.includes(t)) ? '' : 'none'; }); };
+      const ct = document.getElementById('lancContasTodas');
+      if(ct) ct.onclick = ()=>{ state.lancContas = state.lancContas||{}; document.querySelectorAll('.lanc-conta-op').forEach(l=>{ if(l.style.display!=='none') state.lancContas[l.querySelector('input').dataset.id] = true; }); state.lancContasAberto = true; rr(); };
+      const cl = document.getElementById('lancContasLimpar');
+      if(cl) cl.onclick = ()=>{ state.lancContas = {}; rr(); };
+    }
     const novoLancContabilBtn = document.getElementById('novoLancContabilBtn');
     if(novoLancContabilBtn) novoLancContabilBtn.onclick = ()=>{ state.lancContabilModalData = { clientId: deptOneSelectedClient() || '' }; state.modal='lancContabil'; render(); };
     const lcCancel = document.getElementById('lcCancel');
