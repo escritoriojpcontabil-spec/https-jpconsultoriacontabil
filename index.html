@@ -2531,19 +2531,19 @@
     const filtroLabel = filtroStatus==='pendentes' ? 'Cobranças Pendentes (Vencidas ou A Vencer)' : filtroStatus==='pagos' ? 'Cobranças Pagas' : filtroStatus==='todas-empresas' ? 'Todas as Empresas do Cadastro' : 'Todos os Lançamentos';
     let y = pdfHeader(doc, 'Relatório Geral de Cobranças — ' + filtroLabel, 'Todas as empresas');
     doc.setFont('helvetica','bold'); doc.setFontSize(10);
-    doc.text('Empresas com pendência: ' + rel.empresasComPendencia + '   ·   Total em aberto: ' + fmtBRL(rel.totalAbertoGeral), 14, y);
+    doc.text('Empresas com pendência: ' + rel.empresasComPendencia + '   ·   Total a pagar: ' + fmtBRL(rel.totalAbertoGeral) + '   ·   Total pago: ' + fmtBRL(rel.totalPagoGeral), 14, y);
     y += 10;
 
-    const colEmpresa = 14, colCompetencia = 110, colVencimento = 145, colValor = 195, colStatus = pageW-14;
+    const colEmpresa = 14, colCompetencia = 14, colVencimento = 50, colValor = 112, colAPagar = 148, colPago = 184, colDataPgto = 196, colStatus = pageW-14;
     rel.grupos.forEach(g=>{
       if(y > 180){ doc.addPage(); y = 20; }
       doc.setFillColor(240,240,240); doc.rect(14, y-4.5, pageW-28, 6.5, 'F');
       doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
       doc.text(g.clienteNome, colEmpresa, y);
-      doc.text(g.totalAberto>0.005 ? 'Em aberto: '+fmtBRL(g.totalAberto) : 'Sem pendências no filtro', colStatus, y, {align:'right'});
+      doc.text((g.totalAberto>0.005 ? 'A pagar: '+fmtBRL(g.totalAberto) : 'Sem pendências no filtro') + '   ·   Pago: ' + fmtBRL(g.totalPago), colStatus, y, {align:'right'});
       y += 7;
       doc.setFont('helvetica','bold'); doc.setFontSize(8);
-      doc.text('Competência', colCompetencia, y); doc.text('Vencimento', colVencimento, y); doc.text('Valor', colValor, y, {align:'right'}); doc.text('Status', colStatus, y, {align:'right'});
+      doc.text('Competência', colCompetencia, y); doc.text('Vencimento', colVencimento, y); doc.text('Valor', colValor, y, {align:'right'}); doc.text('A pagar', colAPagar, y, {align:'right'}); doc.text('Pago', colPago, y, {align:'right'}); doc.text('Data do pagamento', colDataPgto, y); doc.text('Status', colStatus, y, {align:'right'});
       y += 5.5; doc.setFont('helvetica','normal');
       if(!g.itens.length){
         doc.setTextColor(140,150,160);
@@ -2556,10 +2556,15 @@
         const venc = honorarioVencimento(h);
         doc.text(monthLabel(h.competencia)+'/'+(h.competencia||'').slice(0,4), colCompetencia, y);
         doc.text(venc?fmtDate(venc):'—', colVencimento, y);
+        const pagoH = honorarioValorRecebido(h), apagarH = Math.max(0, round2((Number(h.valor)||0) - pagoH));
         doc.text(fmtBRL(h.valor), colValor, y, {align:'right'});
+        doc.text(apagarH>0.005 ? fmtBRL(apagarH) : '—', colAPagar, y, {align:'right'});
+        doc.text(pagoH>0.005 ? fmtBRL(pagoH) : '—', colPago, y, {align:'right'});
+        doc.text(h.dataPagamento ? fmtDate(h.dataPagamento) : '—', colDataPgto, y);
         doc.text(honorarioStatus(h), colStatus, y, {align:'right'});
         y += 5.5;
       });
+      if(g.itens.length){ doc.setFont('helvetica','bold'); doc.text('Total', colCompetencia, y); doc.text(fmtBRL(g.totalGeral), colValor, y, {align:'right'}); doc.text(fmtBRL(g.totalAberto), colAPagar, y, {align:'right'}); doc.text(fmtBRL(g.totalPago), colPago, y, {align:'right'}); doc.setFont('helvetica','normal'); y += 5.5; }
       y += 4;
     });
 
@@ -4315,12 +4320,14 @@
       const itens = (porCliente[cliente.id]||[]).slice().sort((a,b)=>(a.competencia||'').localeCompare(b.competencia||''));
       const totalAberto = itens.filter(h=>honorarioStatus(h)!=='Pago').reduce((s,h)=>s+((Number(h.valor)||0)-honorarioValorRecebido(h)),0);
       const totalGeral = itens.reduce((s,h)=>s+(Number(h.valor)||0),0);
-      return { clientId: cliente.id, clienteNome: cliente.name, itens, totalAberto: round2(totalAberto), totalGeral: round2(totalGeral) };
+      const totalPago = itens.reduce((s,h)=>s+honorarioValorRecebido(h),0);
+      return { clientId: cliente.id, clienteNome: cliente.name, itens, totalAberto: round2(totalAberto), totalGeral: round2(totalGeral), totalPago: round2(totalPago) };
     });
     grupos.sort((a,b)=> b.totalAberto - a.totalAberto || a.clienteNome.localeCompare(b.clienteNome));
     const totalAbertoGeral = round2(grupos.reduce((s,g)=>s+g.totalAberto,0));
+    const totalPagoGeral = round2(grupos.reduce((s,g)=>s+g.totalPago,0));
     const empresasComPendencia = grupos.filter(g=>g.totalAberto > 0.005).length;
-    return { grupos, totalAbertoGeral, empresasComPendencia };
+    return { grupos, totalAbertoGeral, totalPagoGeral, empresasComPendencia };
   }
 
   function honorariosSectionHtml(){
@@ -4365,22 +4372,25 @@
         return `
           <div class="calc-result" style="margin-bottom:16px;">
             <div class="pr-line"><span>Empresas com pendência</span><span>${rel.empresasComPendencia}</span></div>
-            <div class="pr-line total"><span>Total em aberto (todas as empresas)</span><span>${fmtBRL(rel.totalAbertoGeral)}</span></div>
+            <div class="pr-line"><span>Total pago (todas as empresas)</span><span style="color:#2E7D32;">${fmtBRL(rel.totalPagoGeral)}</span></div>
+            <div class="pr-line total"><span>Total a pagar / em aberto (todas as empresas)</span><span>${fmtBRL(rel.totalAbertoGeral)}</span></div>
           </div>
           ${rel.grupos.map(g=>`
             <div style="margin-bottom:18px;">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                 <div style="font-weight:700; font-size:13.5px; color:var(--ink);">${escapeHtml(g.clienteNome)}</div>
-                <div style="font-size:12.5px; color:${g.totalAberto>0.005?'var(--red)':'var(--ink-soft)'}; font-weight:600;">${g.totalAberto>0.005 ? 'Em aberto: '+fmtBRL(g.totalAberto) : 'Sem pendências no filtro'}</div>
+                <div style="font-size:12.5px; color:${g.totalAberto>0.005?'var(--red)':'var(--ink-soft)'}; font-weight:600;">${g.totalAberto>0.005 ? 'A pagar: '+fmtBRL(g.totalAberto) : 'Sem pendências no filtro'} · <span style="color:#2E7D32;">Pago: ${fmtBRL(g.totalPago)}</span></div>
               </div>
               <table>
-                <thead><tr><th>Competência</th><th>Vencimento</th><th style="text-align:right">Valor</th><th>Status</th></tr></thead>
+                <thead><tr><th>Competência</th><th>Vencimento</th><th style="text-align:right">Valor</th><th style="text-align:right">A pagar</th><th style="text-align:right">Pago</th><th>Data do pagamento</th><th>Status</th></tr></thead>
                 <tbody>
                   ${g.itens.length ? g.itens.map(h=>{
                     const venc = honorarioVencimento(h);
                     const status = honorarioStatus(h);
-                    return `<tr><td>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)}</td><td>${venc?fmtDate(venc):'—'}</td><td style="text-align:right" class="mono">${fmtBRLorDash(h.valor)}</td><td><span class="tag ${honorarioStatusClass(status)}">${status}</span></td></tr>`;
-                  }).join('') : `<tr><td colspan="4" style="color:var(--ink-soft);">Nenhum honorário cadastrado ainda para esta empresa.</td></tr>`}
+                    const pago = honorarioValorRecebido(h), apagar = Math.max(0, round2((Number(h.valor)||0) - pago));
+                    return `<tr><td>${monthLabel(h.competencia)}/${(h.competencia||'').slice(0,4)}</td><td>${venc?fmtDate(venc):'—'}</td><td style="text-align:right" class="mono">${fmtBRLorDash(h.valor)}</td><td style="text-align:right; ${apagar>0.005?'color:var(--red); font-weight:700;':'color:var(--ink-soft);'}" class="mono">${apagar>0.005?fmtBRL(apagar):'—'}</td><td style="text-align:right; ${pago>0.005?'color:#2E7D32; font-weight:700;':'color:var(--ink-soft);'}" class="mono">${pago>0.005?fmtBRL(pago):'—'}</td><td>${h.dataPagamento?fmtDate(h.dataPagamento):'—'}</td><td><span class="tag ${honorarioStatusClass(status)}">${status}</span></td></tr>`;
+                  }).join('') : `<tr><td colspan="7" style="color:var(--ink-soft);">Nenhum honorário cadastrado ainda para esta empresa.</td></tr>`}
+                  ${g.itens.length ? `<tr style="font-weight:700; background:#F3F6FA;"><td colspan="2">Total</td><td style="text-align:right" class="mono">${fmtBRL(g.totalGeral)}</td><td style="text-align:right; color:var(--red);" class="mono">${fmtBRL(g.totalAberto)}</td><td style="text-align:right; color:#2E7D32;" class="mono">${fmtBRL(g.totalPago)}</td><td colspan="2"></td></tr>` : ''}
                 </tbody>
               </table>
             </div>
