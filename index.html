@@ -441,26 +441,39 @@
     _cache: null, _cacheT: 0, _cacheP: null, CACHE_TTL_MS: 60000,
     _docId(key){ return encodeURIComponent(key).slice(0,1500); },
     _fresco(){ return this._cache && (Date.now() - this._cacheT) < this.CACHE_TTL_MS; },
+    XML_ID: 'notasxml%3A',
+    // Lê uma faixa de documentos (por id) em páginas. ini inclusivo, fim exclusivo (null = sem limite).
+    async _lerFaixa(m, ini, fim, onPagina){
+      const PAG = 1000; // páginas grandes = menos idas e vindas ao servidor
+      const idF = firebase.firestore.FieldPath.documentId();
+      let ultimo = null, total = 0, paginas = 0;
+      for(;;){
+        let q = this.db.collection(FIREBASE_COLLECTION).orderBy(idF);
+        if(ini != null) q = q.where(idF, '>=', ini);
+        if(fim != null) q = q.where(idF, '<', fim);
+        q = q.limit(PAG);
+        if(ultimo) q = q.startAfter(ultimo);
+        const snap = await q.get();
+        let n = 0;
+        snap.forEach(doc=>{ n++; ultimo = doc; this.reads++; const d = doc.data(); if(d && d.key) m.set(d.key, d.value); });
+        total += n; paginas++;
+        if(onPagina) onPagina(n);
+        if(n < PAG) break;
+      }
+      return { total, paginas };
+    },
     async _carregar(){
       if(this._fresco()) return;
       if(this._cacheP) return this._cacheP;
       this._cacheP = (async ()=>{
-        // Lê em páginas (em vez de uma única requisição gigante): mostra o progresso na tela e
-        // deixa claro se travar ou der erro no meio.
+        // Os XMLs das notas fiscais (chaves "notasxml:") ficam FORA da leitura inicial — são a parte mais pesada
+        // e só são necessários em segundo plano (carregarXmls). Assim o sistema abre bem mais rápido.
         const m = new Map();
-        let ultimo = null, total = 0;
-        const t0 = Date.now(); let paginas = 0;
-        const PAG = 1000; // páginas maiores = menos idas e vindas ao servidor (antes: 300)
-        for(;;){
-          let q = this.db.collection(FIREBASE_COLLECTION).orderBy(firebase.firestore.FieldPath.documentId()).limit(PAG);
-          if(ultimo) q = q.startAfter(ultimo);
-          const snap = await q.get();
-          let n = 0;
-          snap.forEach(doc=>{ n++; ultimo = doc; this.reads++; const d = doc.data(); if(d && d.key) m.set(d.key, d.value); });
-          total += n; paginas++;
-          bootProgresso(total);
-          if(n < PAG) break;
-        }
+        const t0 = Date.now(); let total = 0, paginas = 0;
+        const prog = (n)=>{ total += n; bootProgresso(total); };
+        const r1 = await this._lerFaixa(m, null, this.XML_ID, prog);
+        const r2 = await this._lerFaixa(m, this.XML_ID + '', null, prog);
+        paginas = r1.paginas + r2.paginas;
         this._cache = m; this._cacheT = Date.now();
         // Diagnóstico: quanto tempo levou e quem pesa mais (registros e tamanho por tipo de dado).
         try{
@@ -471,7 +484,21 @@
       })().catch(e=>{ BOOT_ERR = String((e && (e.code||e.message)) || e).slice(0,160); if(!BOOT_OK) mostrarFalhaConexao(); throw e; }).finally(()=>{ this._cacheP = null; });
       return this._cacheP;
     },
+    // Carrega só os XMLs das notas (em segundo plano, depois que o sistema já abriu). Devolve Map(chave → xml).
+    async carregarXmls(){
+      const m = new Map();
+      const t0 = Date.now();
+      await this._lerFaixa(m, this.XML_ID, this.XML_ID + '', null);
+      this.statsXml = { n: m.size, ms: Date.now()-t0, bytes: Array.from(m.values()).reduce((a,v)=>a+String(v||'').length,0) };
+      return m;
+    },
     async get(key){
+      if(String(key).indexOf('notasxml:') === 0){
+        this.reads++;
+        const sn = await this.db.collection(FIREBASE_COLLECTION).doc(this._docId(key)).get();
+        if(!sn.exists) throw new Error('Chave não encontrada: ' + key);
+        return { key, value: sn.data().value, shared: true };
+      }
       if(this._fresco()){
         if(this._cache.has(key)) return { key, value: this._cache.get(key), shared: true };
         throw new Error('Chave não encontrada: ' + key);
@@ -483,7 +510,7 @@
     },
     async set(key, value){
       await this.db.collection(FIREBASE_COLLECTION).doc(this._docId(key)).set({ key, value });
-      if(this._cache) this._cache.set(key, value);
+      if(this._cache && String(key).indexOf('notasxml:') !== 0) this._cache.set(key, value);
       return { key, value, shared: true };
     },
     async delete(key){
@@ -8466,13 +8493,65 @@
     await loadEnvios();
   }
 
+  // XMLs das notas ficam em chaves próprias ("notasxml:<id>"), fora da leitura inicial, e são religados às notas em
+  // segundo plano. Notas antigas (XML dentro do próprio registro) continuam funcionando até serem migradas.
+  const NF_XML = new Map(); let NF_XML_PRONTO = false, NF_XML_P = null;
+  function nfReligarXml(n){ if(!n.xmlOriginal && n.xmlRef && NF_XML.has(n.id)) n.xmlOriginal = NF_XML.get(n.id); }
+  async function carregarXmlsNotas(){
+    if(NF_XML_PRONTO) return;
+    if(NF_XML_P) return NF_XML_P;
+    state.xmlsCarregando = true;
+    NF_XML_P = (async ()=>{
+      try{
+        if(Store && typeof Store.carregarXmls === 'function'){
+          const m = await Store.carregarXmls();
+          m.forEach((v,k)=>{ NF_XML.set(String(k).slice('notasxml:'.length), v); });
+        } else {
+          const keys = await Store.list('notasxml:', true);
+          if(keys && keys.keys){ for(const k of keys.keys){ try{ const r = await Store.get(k, true); if(r) NF_XML.set(String(k).slice('notasxml:'.length), r.value); }catch(e){} } }
+        }
+        NF_XML_PRONTO = true;
+        (state.notasFiscais||[]).forEach(nfReligarXml);
+      }catch(e){ console.error('Falha ao carregar os XMLs das notas:', e); }
+      finally{ state.xmlsCarregando = false; NF_XML_P = null; try{ render(); }catch(e){} }
+    })();
+    return NF_XML_P;
+  }
+  // Grava a nota SEM o XML dentro (o XML vai para "notasxml:<id>" só se mudou).
+  async function nfGravar(nf){
+    const { xmlOriginal, ...leve } = nf;
+    if(xmlOriginal){
+      if(NF_XML.get(nf.id) !== xmlOriginal){ await Store.set('notasxml:'+nf.id, xmlOriginal, true); NF_XML.set(nf.id, xmlOriginal); }
+      leve.xmlRef = true;
+    }
+    await Store.set('notasfiscais:'+nf.id, JSON.stringify(leve), true);
+  }
+  async function migrarXmlsNotas(btn){
+    const pend = state.notasFiscais.filter(n=>n.xmlOriginal && !n.xmlRef);
+    if(!pend.length){ alert('Nenhuma nota com XML dentro do registro — nada a migrar.'); return; }
+    if(!confirm('Mover o XML de ' + pend.length + ' nota(s) fiscal(is) para fora da leitura inicial?\n\nIsso faz o sistema abrir bem mais rápido. São ' + (pend.length*2) + ' gravações no banco (uma só vez). Não feche a página durante o processo.')) return;
+    let feitos = 0; const t = btn ? btn.textContent : '';
+    if(btn) btn.disabled = true;
+    try{
+      for(let i=0;i<pend.length;i+=10){
+        if(btn) btn.textContent = 'Migrando… ' + feitos + ' de ' + pend.length;
+        await Promise.all(pend.slice(i,i+10).map(n=>nfGravar(n)));
+        feitos = Math.min(pend.length, i+10);
+      }
+    }catch(e){ alert('A migração parou em ' + feitos + ' de ' + pend.length + ': ' + ((e&&(e.code||e.message))||'erro') + '\n\nNada se perdeu: clique de novo para continuar.'); }
+    if(btn){ btn.disabled = false; btn.textContent = t; }
+    FirebaseStore._cacheT = 0;
+    await loadNotasFiscais(); render();
+    alert(feitos + ' nota(s) migrada(s). Na próxima abertura o sistema carrega mais rápido.');
+  }
+
   async function loadNotasFiscais(){
     state.notasFiscais = [];
     try{
       const keys = await Store.list('notasfiscais:', true);
       if(keys && keys.keys){
         for(const k of keys.keys){
-          try{ const r = await Store.get(k, true); if(r) state.notasFiscais.push(JSON.parse(r.value)); }catch(e){}
+          try{ const r = await Store.get(k, true); if(r){ const n = JSON.parse(r.value); nfReligarXml(n); state.notasFiscais.push(n); } }catch(e){}
         }
       }
     }catch(e){}
@@ -11876,7 +11955,7 @@
       pl.avisos.forEach(a=>{ const m = cl.name+': '+a; if(res.avisos.indexOf(m)<0) res.avisos.push(m); });
       await fsAplicar(cl, trim.slice(0,4)+'-'+fsPad((Number(trim.slice(-1))-1)*3+1), { declaracoes:[], impostos:pl.impostos, calculos:pl.calculos, resumo:{}, ctx:{} }, res);
     }
-    await loadObrigacoesAcessorias(); await loadImpostosPagar(); await loadImpostosCalculados(); await loadNotasFiscais();
+    await loadObrigacoesAcessorias(); await loadImpostosPagar(); await loadImpostosCalculados(); await loadNotasFiscais(); setTimeout(()=>{ carregarXmlsNotas(); }, 0);
     return res;
   }
   function fsResumoTexto(r){
@@ -13521,22 +13600,23 @@
       else vistosHash.set(n.xmlHash, n.id);
     }
     if(!duplicadas.length) return;
-    for(const n of duplicadas){ await Store.delete('notasfiscais:'+n.id, true); }
+    for(const n of duplicadas){ await Store.delete('notasfiscais:'+n.id, true); try{ await Store.delete('notasxml:'+n.id, true); NF_XML.delete(n.id); }catch(e){} }
     state.notasFiscais = state.notasFiscais.filter(n=>!duplicadas.some(d=>d.id===n.id));
   }
 
   async function saveNotaFiscal(nf){
     if(!nf.id) nf.id = uid();
-    await Store.set('notasfiscais:'+nf.id, JSON.stringify(nf), true);
+    await nfGravar(nf);
     await loadNotasFiscais(); render();
   }
   async function saveNotaFiscalSilent(nf){
     if(!nf.id) nf.id = uid();
-    await Store.set('notasfiscais:'+nf.id, JSON.stringify(nf), true);
+    await nfGravar(nf);
   }
   async function deleteNotaFiscal(id){
     const nf = state.notasFiscais.find(n=>n.id===id);
     await Store.delete('notasfiscais:'+id, true);
+    try{ await Store.delete('notasxml:'+id, true); NF_XML.delete(id); }catch(e){}
     await loadNotasFiscais();
     if(nf && nf.clientId){ try{ await contabilizarNotas([nf.clientId],{silent:true}); }catch(e){ console.error(e); } }
     render();
@@ -22363,7 +22443,10 @@
         <table><thead><tr><th>Tipo de dado</th><th style="text-align:right">Registros</th><th style="text-align:right">Tamanho (MB)</th></tr></thead><tbody>
         ${lin.map(x=>`<tr><td>${escapeHtml(x.k)}</td><td style="text-align:right" class="mono">${x.n}</td><td style="text-align:right" class="mono">${x.mb.toFixed(2).replace('.',',')}</td></tr>`).join('')}
         </tbody></table>
-        <div class="form-hint" style="margin:8px 0 0;">Se um tipo tiver muitos MB (por exemplo notas fiscais com XML dentro), é ele que deixa a abertura lenta — me mande este quadro que eu ajusto só esse ponto.</div>
+        ${(()=>{ const pend = (state.notasFiscais||[]).filter(n=>n.xmlOriginal && !n.xmlRef).length;
+          const sx = FirebaseStore.statsXml;
+          return pend ? `<div class="attach-box" style="margin:12px 0 0; border-color:#E0A030;"><b>${pend} nota(s) fiscal(is) ainda têm o XML dentro do registro</b> — é isso que deixa a abertura lenta. Clique para mover os XMLs para fora da leitura inicial (uma vez só; leva alguns minutos).<br><button type="button" class="btn-add" id="migrarXmlsBtn" style="margin-top:8px;">Acelerar a abertura do sistema (mover XMLs das notas)</button></div>`
+            : `<div class="form-hint" style="margin:12px 0 0; color:#2E7D32;">✓ XMLs das notas fiscais já estão fora da leitura inicial${sx ? ' — carregados em segundo plano: '+sx.n+' XML(s), '+(sx.bytes/1048576).toFixed(1).replace('.',',')+' MB, '+(sx.ms/1000).toFixed(1)+' s' : ''}.</div>`; })()}
       </div>`;
     })() : '';
     return diagCarga + `
@@ -24755,6 +24838,7 @@
     }
     const spedGerarBtn = document.getElementById('spedGerarBtn');
     if(spedGerarBtn) spedGerarBtn.onclick = async ()=>{
+      if(state.xmlsCarregando){ alert('Os XMLs das notas fiscais ainda estão carregando em segundo plano. Aguarde alguns segundos e clique de novo.'); return; }
       const comp = state.spedCompetencia || spedCompetenciaPadrao();
       spedLerEntradas();
       const {r, cl, ent} = spedMontar(spedEmp, comp);
@@ -26831,6 +26915,7 @@
     });
     if(document.getElementById('dupForm')) dupLigar();
     if(document.getElementById('cpForm')) cpLigar();
+    const migrarXmlsBtn = document.getElementById('migrarXmlsBtn'); if(migrarXmlsBtn) migrarXmlsBtn.onclick = ()=> migrarXmlsNotas(migrarXmlsBtn);
     const lancPdfBtn = document.getElementById('lancPdfBtn'); if(lancPdfBtn) lancPdfBtn.onclick = gerarPdfLancamentos;
     const cpMesBtn = document.getElementById('cpMesBtn'); if(cpMesBtn) cpMesBtn.onclick = cpAbrir;
     root.querySelectorAll('[data-edit-lanc]').forEach(el=>{
