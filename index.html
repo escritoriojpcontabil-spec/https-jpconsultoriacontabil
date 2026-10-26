@@ -14270,6 +14270,7 @@
     if(d.personType==='PF') return false;
     if(d.ieBaixada) return false; // IE baixada (ex.: mudança de atividade) — não exige nova inscrição
     if(d.regimeTributario==='MEI') return false;
+    if(d.somenteServicos) return false; // marcado manualmente: empresa só de serviços, sem IE
     if(['Comércio / Indústria','Revenda de combustíveis'].indexOf(d.atividadePresumido)>=0) return true;
     if(/^Anexo (I|II) /.test(String(d.anexoSimples||''))) return true; // Simples: Anexo I = comércio, Anexo II = indústria
     const txt = [d.mainActivity, d.secondaryActivities].join(' ');
@@ -15055,7 +15056,7 @@
       departments: Array.isArray(c.departments) ? c.departments.slice() : [], address: (c.cep ? (c.address||'') : separarCepDoEndereco(c.address).address), cep: clienteCep(c), city: c.city||'', uf: c.uf||'',
       situacao: c.situacao||'', mainActivity: c.mainActivity||'', lookupMsg:'', lookupType:'info', lookupLoading:false,
       ie: (clienteIEAtual(c.id)||{}).numero && (clienteIEAtual(c.id)||{}).numero!=='ISENTO' && (clienteIEAtual(c.id)||{}).numero!=='BAIXADA' ? clienteIEAtual(c.id).numero : '',
-      ieBaixada: !!c.ieBaixada, ieBaixaData: c.ieBaixaData||'', ieBaixaMotivo: c.ieBaixaMotivo||'Mudança de atividade', ieIsento: !!(clienteIEAtual(c.id) && clienteIEAtual(c.id).numero==='ISENTO'),
+      somenteServicos: !!c.somenteServicos, ieBaixada: !!c.ieBaixada, ieBaixaData: c.ieBaixaData||'', ieBaixaMotivo: c.ieBaixaMotivo||'Mudança de atividade', ieIsento: !!(clienteIEAtual(c.id) && clienteIEAtual(c.id).numero==='ISENTO'),
       personType: c.personType||'', porte: c.porte||'', regimeTributario: c.regimeTributario||'',
       dataAbertura: c.dataAbertura||'', secondaryActivities: c.secondaryActivities||'',
       anexoSimples: c.anexoSimples||'', fatorRAtivo: !!c.fatorRAtivo,
@@ -22799,6 +22800,7 @@
             <div class="field"><label>Inscrição Estadual (ICMS) <span id="clIeObrig" style="color:var(--danger,#b3261e); font-weight:700;">${clienteExigeIE(d)?'— obrigatória (atividade de comércio/indústria)':''}</span></label>
               <input type="text" id="clIE" value="${escapeHtml(d.ie||'')}" placeholder="Somente números, conforme a SEFAZ" ${d.ieIsento?'disabled':''}/>
               <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:6px; font-weight:400;"><input type="checkbox" id="clIEIsento" ${d.ieIsento?'checked':''}/> Isento / não contribuinte de ICMS</label>
+              <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:6px; font-weight:600;"><input type="checkbox" id="clSomenteServicos" ${d.somenteServicos?'checked':''}/> Empresa somente de serviços — não tem nem precisa de Inscrição Estadual</label>
               <div style="margin-top:8px;">
                 <button type="button" class="btn-sm" id="clIEBaixadaBtn">${d.ieBaixada ? '✓ Inscrição Estadual baixada — clique para desfazer' : 'Inscrição Estadual baixada (mudança de atividade)'}</button>
                 <div id="clIEBaixadaBox" style="display:${d.ieBaixada?'block':'none'}; margin-top:8px;">
@@ -28062,6 +28064,8 @@
       if(iso && exige && iso.checked){ iso.checked = false; if(clIeEl) clIeEl.disabled = false; if(state.clientModalData) state.clientModalData.ieIsento = false; }
     };
     if(clIeEl) clIeEl.oninput = (e)=>{ if(state.clientModalData) state.clientModalData.ie = e.target.value; };
+    const clSomServ = document.getElementById('clSomenteServicos');
+    if(clSomServ) clSomServ.onchange = (e)=>{ if(state.clientModalData) state.clientModalData.somenteServicos = e.target.checked; atualizarAvisoIE(); };
     if(clIeIsentoEl) clIeIsentoEl.onchange = (e)=>{
       if(!state.clientModalData) return;
       if(e.target.checked && clienteExigeIE(Object.assign({}, state.clientModalData, { mainActivity: (document.getElementById('clMainActivity')||{}).value, secondaryActivities: (document.getElementById('clSecondaryActivities')||{}).value }))){
@@ -28263,6 +28267,7 @@
           contractPeriodicity: document.getElementById('clContractPeriodicity').value,
           contractStatus: document.getElementById('clContractStatus').value,
           contractNotes: document.getElementById('clContractNotes').value,
+          somenteServicos: !!(document.getElementById('clSomenteServicos') && document.getElementById('clSomenteServicos').checked),
           ieBaixada: !!(state.clientModalData && state.clientModalData.ieBaixada),
           ieBaixaData: (state.clientModalData && state.clientModalData.ieBaixada) ? ((document.getElementById('clIEBaixaData')||{}).value || '') : '',
           ieBaixaMotivo: (state.clientModalData && state.clientModalData.ieBaixada) ? ((document.getElementById('clIEBaixaMotivo')||{}).value || '') : '',
