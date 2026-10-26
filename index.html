@@ -22606,7 +22606,7 @@
     const lista = state.ttrts.filter(t=> empresaId ? t.clientId===empresaId : true);
     return `
       <div class="panel-head"><h3>Transferência de Contador — TTRT</h3>
-        ${empresa ? `<button type="button" class="btn-add" id="novoTtrtBtn">+ Novo termo de transferência</button>` : ''}</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">${duplicadosDe(state.ttrts).length ? `<button type="button" class="btn-sm danger" id="ttDedupBtn">Remover ${duplicadosDe(state.ttrts).length} repetido(s)</button>` : ''}${empresa ? `<button type="button" class="btn-add" id="novoTtrtBtn">+ Novo termo de transferência</button>` : ''}</div></div>
       <div class="form-hint" style="margin:-4px 0 12px;">Gera o <b>Termo de Transferência de Responsabilidade Técnica</b> para a troca de contador da empresa, já preenchido com os dados do cadastro. Imprima, colha as assinaturas (contador anterior, contador novo e empresa) e depois registre o <b>TTRT-e</b> no site do seu CRC.</div>
       <div class="attach-box" style="margin:0 0 14px; font-size:13px; line-height:1.5;">
         <b>Como funciona a troca de contador</b><br>
@@ -22706,7 +22706,8 @@
     await loadDistratos(); render(); return true;
   }
   async function deleteDistrato(id){ await Store.delete('distratos:'+id, true); await loadDistratos(); render(); }
-  const DIS_DOCS_PADRAO = ['Livros contábeis e fiscais (Diário, Razão, Registros fiscais)','Notas fiscais e documentos que sustentam a escrituração','Arquivos digitais (SPED, recibos de entrega, XMLs)','Folha de pagamento, admissões e rescisões','Contrato social, alterações e documentos de legalização','Certificado digital e procurações eletrônicas'].join('\n');
+  const DIS_DOCS_PADRAO = ['Livros contábeis e fiscais (Diário, Razão, Registros fiscais)','Arquivos digitais (SPED e recibos de entrega)','Contrato social, alterações e documentos de legalização','Certificado digital e procurações eletrônicas'].join('\n');
+  const DIS_NAO_ENTREGUES_PADRAO_ANTIGO = 'Os documentos fiscais (notas fiscais de entrada, de saída e demais) não serão entregues, por terem sido baixados pelo próprio sistema emissor da empresa, sendo de responsabilidade fiscal da CONTRATANTE a sua guarda pelo prazo de 5 (cinco) anos, conforme a legislação fiscal em vigor. Os documentos de empregados não serão entregues, por não haver pessoas contratadas.';
   function distratoNovo(clientId){
     const c = state.clients.find(x=>x.id===clientId)||{};
     const ctr = state.contratos.filter(x=>x.clientId===clientId && /Presta[cç][aã]o de Servi[cç]os Cont/i.test(x.tipo||'')).sort((a,b)=>(b.dataAssinatura||'').localeCompare(a.dataAssinatura||''))[0];
@@ -22715,9 +22716,15 @@
     return { clientId, numero:'', data:todayStr(), dataContrato:(ctr&&ctr.dataAssinatura)||c.contractStart||'', efeito:'', inic:'Mútuo acordo', aviso:'',
       servicos:TTRT_SERVICOS.slice(0,5), repNome:soc.nome||'', repCpf:soc.cpf||'', repCargo:soc.cargo||'Sócio(a) administrador(a)',
       ctdNome:m.nome, ctdCnpj:m.cnpj, ctdEnd:m.end, ctdContador:m.contador, ctdCrc:m.crcContador,
-      demonstr:'contratada', obrig:'contratada', docs:DIS_DOCS_PADRAO, prazoDocs:'30', localDocs:'na sede da CONTRATADA ou por meio digital, a critério do CONTRATANTE', receptor:'', novoContador:'',
+      demonstr:'contratada', obrig:'contratada', docs:DIS_DOCS_PADRAO, naoEntregues:'', naoEnt:{pessoal:'',fiscal:'',contabil:'',legal:''}, prazoDocs:'30', localDocs:'na sede da CONTRATADA ou por meio digital, a critério do CONTRATANTE', receptor:'', novoContador:'',
       pendDocs:'', honorarios:'Não há honorários pendentes.', foro:(m.end.match(/,\s*([^,]+\/[A-Z]{2})\s*$/)||[])[1]||'Paulista/PE', obs:'', status:'Rascunho' };
   }
+  const DIS_MODELOS_DEP = {
+    pessoal: [['Sem empregados','Os documentos de empregados não serão entregues, por não haver pessoas contratadas.'],['Documentos de empregados não repassados','Os documentos de empregados não serão entregues porque não foram repassados pela CONTRATANTE à CONTRATADA: ']],
+    fiscal: [['Documentos fiscais baixados pelo sistema emissor','Os documentos fiscais (notas fiscais de entrada, de saída e demais) não serão entregues, por terem sido baixados pelo próprio sistema emissor da empresa, sendo de responsabilidade fiscal da CONTRATANTE a sua guarda pelo prazo de 5 (cinco) anos, conforme a legislação fiscal em vigor.'],['Documentos fiscais não repassados','Os documentos fiscais não serão entregues porque não foram repassados pela CONTRATANTE à CONTRATADA: ']],
+    contabil: [['Extratos bancários não entregues','Os livros contábeis do período não foram concluídos por falta de documentação da CONTRATANTE (extratos bancários em formato OFX/PDF), que não foram entregues à CONTRATADA.'],['Documentos não repassados','Os documentos contábeis não serão entregues porque não foram repassados pela CONTRATANTE à CONTRATADA: ']],
+    legal: [['Documentos societários com a empresa','Os documentos societários originais permanecem em poder da CONTRATANTE, não havendo o que devolver.'],['Documentos não repassados','Os documentos legais não serão entregues porque não foram repassados pela CONTRATANTE à CONTRATADA: ']],
+  };
   function distratoModalHtml(){
     const d = state.distratoModalData; if(!d) return '';
     const c = state.clients.find(x=>x.id===d.clientId)||{};
@@ -22740,6 +22747,12 @@
         <div class="form-section-title" style="margin-top:12px;">Ajustes do encerramento (art. 7º a 10 da Resolução CFC 1.590/2020)</div>
         <div class="form-row">${sel('disDemonstr','Demonstrações contábeis do período sob responsabilidade da contratada',d.demonstr,[['contratada','A contratada ELABORA (regra geral)'],['novo','NÃO elabora — fica com o novo profissional (ajustado)']])}${sel('disObrig','Obrigações acessórias com período dentro da vigência',d.obrig,[['contratada','A contratada ENTREGA, mesmo com prazo posterior (regra geral)'],['novo','Ficam com o novo profissional (ajustado)']])}</div>
         <div class="field"><label>Livros, documentos e arquivos a devolver (um por linha)</label><textarea id="disDocs" rows="5">${escapeHtml(d.docs||'')}</textarea></div>
+        <div class="form-section-title" style="margin-top:12px;">Documentos que NÃO serão entregues, por departamento (e o motivo)</div>
+        <div class="form-hint" style="margin:-4px 0 8px;">Ficam em branco por padrão. O que for escrito aparece na cláusula quinta e no recibo, separado por departamento.</div>
+        ${[['pessoal','Departamento Pessoal'],['fiscal','Departamento Fiscal'],['contabil','Departamento Contábil'],['legal','Departamento Legal']].map(([k,rot])=>`<div class="field"><label>${rot} — não será entregue / motivo</label>
+          <textarea class="dis-ne" data-k="${k}" rows="2" placeholder="Em branco = nada a ressalvar neste departamento">${escapeHtml(((d.naoEnt||{})[k])||'')}</textarea>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;"><span class="form-hint" style="margin:0;">Modelo:</span>${(DIS_MODELOS_DEP[k]||[]).map((m,ix)=>`<button type="button" class="btn-sm dis-mod" data-k="${k}" data-i="${ix}">${m[0]}</button>`).join('')}</div></div>`).join('')}
+        ${d.naoEntregues ? `<div class="field"><label>Ressalva geral (registrada antes da separação por departamento)</label><textarea id="disNaoEnt" rows="2">${escapeHtml(d.naoEntregues)}</textarea></div>` : ''}
         <div class="form-row">${f('disPrazoDocs','Prazo de devolução (dias)',d.prazoDocs)}${f('disLocalDocs','Forma / local de entrega',d.localDocs)}</div>
         <div class="form-row">${f('disReceptor','Quem receberá os documentos (se não for o próprio contratante — exige autorização por escrito)',d.receptor,'Nome e CPF/CRC do representante autorizado')}${f('disNovoContador','Novo contabilista contratado (se já souber)',d.novoContador,'Nome e CRC')}</div>
         <div class="field"><label>Documentos que o contratante deixou de entregar (pendências)</label><textarea id="disPendDocs" rows="2" placeholder="Ex.: Extratos bancários (OFX/PDF) de 01/2025 a 09/2026 não entregues.">${escapeHtml(d.pendDocs||'')}</textarea></div>
@@ -22749,13 +22762,27 @@
         <div class="modal-actions"><button type="button" class="btn-sm" id="disCancel">Cancelar</button><button type="submit" class="btn-add">Salvar distrato</button></div>
       </form></div></div>`;
   }
+  function duplicadosDe(lista){
+    const vistos = {}, dup = [];
+    lista.slice().sort((a,b)=>(a.criadoEm||'').localeCompare(b.criadoEm||'')).forEach(t=>{
+      const k = JSON.stringify(Object.keys(t).filter(x=>['id','criadoEm','atualizadoEm'].indexOf(x)<0).sort().map(x=>[x,t[x]]));
+      if(vistos[k]) dup.push(t); else vistos[k] = true;
+    });
+    return dup;
+  }
+  async function removerDuplicados(prefixo, lista, recarregar){
+    const dup = duplicadosDe(lista); if(!dup.length) return;
+    if(!confirm('Há '+dup.length+' registro(s) idêntico(s) repetido(s). Manter só um de cada e apagar os demais?')) return;
+    for(const t of dup){ try{ await Store.delete(prefixo+t.id, true); }catch(e){} }
+    await recarregar(); render();
+  }
   function distratoPanelHtml(){
     const empresaId = state.distratoEmpresaAtiva || '';
     const empresa = state.clients.find(c=>c.id===empresaId);
     const lista = state.distratos.filter(t=> empresaId ? t.clientId===empresaId : true);
     return `
       <div class="panel-head"><h3>Distrato do Contrato de Serviços Contábeis</h3>
-        ${empresa ? `<button type="button" class="btn-add" id="novoDistratoBtn">+ Novo distrato</button>` : ''}</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">${duplicadosDe(state.distratos).length ? `<button type="button" class="btn-sm danger" id="disDedupBtn">Remover ${duplicadosDe(state.distratos).length} repetido(s)</button>` : ''}${empresa ? `<button type="button" class="btn-add" id="novoDistratoBtn">+ Novo distrato</button>` : ''}</div></div>
       <div class="form-hint" style="margin:-4px 0 12px;">Gera o <b>distrato</b> no padrão da <b>Resolução CFC nº 1.590/2020</b>: o encerramento do contrato exige distrato assinado pelas duas partes, com o fim das responsabilidades, a devolução dos livros e documentos (forma e prazo) e a divisão das demonstrações e obrigações acessórias. Se o cliente não assinar, use a <b>notificação de encerramento</b> (art. 6º, parágrafo único).</div>
       <div class="field" style="max-width:360px; margin-bottom:16px;"><label>Empresa</label>
         <select id="distratoEmpresaSelect" class="filter-select" style="width:100%;"><option value="">— Selecione uma empresa —</option>${state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>`<option value="${c.id}" ${empresaId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
@@ -22780,6 +22807,12 @@
     const assin = (x, w, r1, r2)=>{ doc.setDrawColor(60,60,60); doc.setLineWidth(0.3); doc.line(x, y, x+w, y); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(20,25,30); doc.text(r1, x, y+4); doc.setFont('helvetica','normal'); doc.text(doc.splitTextToSize(r2||'', w), x, y+8); };
     return {c, doc, pageW, pageH, mx, larg, par, dtx, bl, rodape, assin, nova, getY:()=>y, setY:v=>{ y = v; }};
   }
+  function distratoRessalvas(t){
+    const nomes = {pessoal:'Departamento Pessoal', fiscal:'Departamento Fiscal', contabil:'Departamento Contábil', legal:'Departamento Legal'};
+    const out = Object.keys(nomes).filter(k=>t.naoEnt && t.naoEnt[k]).map(k=>nomes[k]+': '+t.naoEnt[k]);
+    if(t.naoEntregues) out.push('Geral: '+t.naoEntregues);
+    return out;
+  }
   function gerarPdfDistrato(id){
     if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
     const t = state.distratos.find(x=>x.id===id); if(!t) return;
@@ -22794,6 +22827,8 @@
     cl('CLÁUSULA QUARTA — DAS OBRIGAÇÕES ACESSÓRIAS', t.obrig==='novo' ? 'Fica ajustado que as obrigações tributárias acessórias, inclusive as cujo período de apuração tenha ocorrido na vigência do contrato, serão cumpridas pelo novo profissional contratado pela CONTRATANTE.' : 'A CONTRATADA cumprirá as obrigações tributárias acessórias cujo período de apuração tenha ocorrido na vigência do contrato, ainda que o prazo legal de entrega se encerre após o seu término (art. 10).');
     cl('CLÁUSULA QUINTA — DA ENTREGA DOS DOCUMENTOS', 'A CONTRATANTE é responsável por receber os seus documentos em poder da CONTRATADA (art. 7º). A CONTRATADA devolverá, no prazo de ' + bl(t.prazoDocs) + ' dias, ' + (t.localDocs||'na forma a combinar') + ', os livros contábeis, registros auxiliares, documentos e arquivos relativos às obrigações entregues ao Fisco, inclusive os eletrônicos (art. 9º), a saber:');
     par(t.docs || '____________________', {ind:4, size:10, after:2});
+    const ress = distratoRessalvas(t);
+    if(ress.length){ par('Ressalvas à entrega, por departamento:', {bold:true, after:0}); par(ress.join('\n'), {ind:4, size:10, after:2, lh:5}); }
     par('A entrega será feita ' + (t.receptor ? 'ao representante autorizado por escrito pela CONTRATANTE: ' + t.receptor : 'à própria CONTRATANTE, ou a quem esta indicar por escrito') + ', mediante recibo que relacione tudo o que for entregue.' + (t.pendDocs ? ' Registra-se que a CONTRATANTE deixou de entregar à CONTRATADA os seguintes documentos: ' + t.pendDocs : ''), {after:3, lh:5.2});
     cl('CLÁUSULA SEXTA — DAS INFORMAÇÕES AO NOVO PROFISSIONAL', 'A CONTRATADA prestará ao novo profissional contratado' + (t.novoContador ? ' (' + t.novoContador + ')' : '') + ' as informações de que este necessite para dar continuidade aos serviços (art. 8º), respeitado o sigilo profissional.');
     cl('CLÁUSULA SÉTIMA — DOS HONORÁRIOS', 'Situação dos honorários: ' + bl(t.honorarios) + ' Eventual pendência financeira será cobrada pelas vias próprias e não impedirá a entrega dos documentos pertencentes à CONTRATANTE.');
@@ -22810,6 +22845,7 @@
     par('RECIBO DE ENTREGA DE LIVROS, DOCUMENTOS E ARQUIVOS', {bold:true, size:12.5, center:true, after:5});
     par('Recebi da ' + bl(t.ctdNome) + ' os livros, documentos e arquivos relacionados abaixo, pertencentes a ' + bl(c.name) + ', conforme a cláusula quinta do distrato' + (t.numero?' nº '+t.numero:'') + '.', {after:3});
     par(t.docs || '____________________', {ind:4, size:10, after:3});
+    if(ress.length){ par('Ressalvas à entrega:', {bold:true, size:9.5, after:0}); par(ress.join('\n'), {ind:4, size:9.5, after:3, lh:4.8}); }
     par('Observações: ________________________________________________________________', {after:2}); par('_________________________________________________________________________', {after:8});
     par('Data do recebimento: ____/____/______', {after:14}); y = B.getY(); B.assin(B.mx, w, 'RECEBEDOR', 'Nome, CPF e qualidade (contratante / representante autorizado / novo contabilista):');
     B.rodape();
@@ -26813,22 +26849,28 @@
     // ===== Alterações Contratuais =====
     // ===== Distrato =====
     const disEmpSel = document.getElementById('distratoEmpresaSelect'); if(disEmpSel) disEmpSel.onchange = ()=>{ state.distratoEmpresaAtiva = disEmpSel.value; render(); };
+    const disDedupBtn = document.getElementById('disDedupBtn'); if(disDedupBtn) disDedupBtn.onclick = ()=> removerDuplicados('distratos:', state.distratos, loadDistratos);
+    const ttDedupBtn = document.getElementById('ttDedupBtn'); if(ttDedupBtn) ttDedupBtn.onclick = ()=> removerDuplicados('ttrt:', state.ttrts, loadTtrts);
     const novoDistratoBtn = document.getElementById('novoDistratoBtn');
     if(novoDistratoBtn) novoDistratoBtn.onclick = ()=>{ const cid = state.distratoEmpresaAtiva; if(!cid) return; state.distratoModalData = distratoNovo(cid); state.modal='distrato'; render(); };
     root.querySelectorAll('[data-dis-edit]').forEach(el=>{ el.onclick = ()=>{ const t = state.distratos.find(x=>x.id===el.dataset.disEdit); if(!t) return; state.distratoModalData = JSON.parse(JSON.stringify(t)); state.modal='distrato'; render(); }; });
     root.querySelectorAll('[data-dis-pdf]').forEach(el=>{ el.onclick = ()=> gerarPdfDistrato(el.dataset.disPdf); });
     root.querySelectorAll('[data-dis-not]').forEach(el=>{ el.onclick = ()=> gerarPdfNotificacaoDistrato(el.dataset.disNot); });
     root.querySelectorAll('[data-dis-del]').forEach(el=>{ el.onclick = ()=>{ if(confirm('Excluir este distrato?')) deleteDistrato(el.dataset.disDel); }; });
+    document.querySelectorAll('.dis-mod').forEach(b=>{ b.onclick = ()=>{ const ta = document.querySelector('.dis-ne[data-k="'+b.dataset.k+'"]'); const m = DIS_MODELOS_DEP[b.dataset.k][+b.dataset.i][1]; ta.value = (ta.value.trim() ? ta.value.trim()+' ' : '') + m; ta.focus(); }; });
     const disCancel = document.getElementById('disCancel'); if(disCancel) disCancel.onclick = ()=>{ state.modal=null; state.distratoModalData=null; render(); };
     const distratoForm = document.getElementById('distratoForm');
     if(distratoForm) distratoForm.onsubmit = async (e)=>{
-      e.preventDefault(); const base = state.distratoModalData || {}; const g = id=>{ const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+      e.preventDefault(); if(state._salvandoForm) return; state._salvandoForm = true;
+      const sb = distratoForm.querySelector('button[type=submit]'); if(sb){ sb.disabled = true; sb.textContent = 'Salvando…'; }
+      const base = state.distratoModalData || {}; if(!base.id) base.id = uid(); const g = id=>{ const el = document.getElementById(id); return el ? el.value.trim() : ''; };
       const t = Object.assign({}, base, { numero:g('disNumero'), data:g('disData'), dataContrato:g('disDataContrato'), efeito:g('disEfeito'), inic:g('disInic'), aviso:g('disAviso'),
         servicos:Array.from(document.querySelectorAll('.dis-srv')).filter(x=>x.checked).map(x=>x.value), repNome:g('disRepNome'), repCpf:g('disRepCpf'), repCargo:g('disRepCargo'),
         ctdNome:g('disCtdNome'), ctdCnpj:g('disCtdCnpj'), ctdEnd:g('disCtdEnd'), ctdContador:g('disCtdContador'), ctdCrc:g('disCtdCrc'),
         demonstr:g('disDemonstr'), obrig:g('disObrig'), docs:(document.getElementById('disDocs')||{}).value||'', prazoDocs:g('disPrazoDocs'), localDocs:g('disLocalDocs'), receptor:g('disReceptor'), novoContador:g('disNovoContador'),
-        pendDocs:g('disPendDocs'), honorarios:g('disHonor'), foro:g('disForo'), obs:g('disObs'), status:g('disStatus') });
-      const ok = await saveDistrato(t); if(ok){ state.modal=null; state.distratoModalData=null; render(); }
+        naoEntregues:(document.getElementById('disNaoEnt')||{}).value||'', naoEnt:(()=>{ const o = {}; document.querySelectorAll('.dis-ne').forEach(x=>{ o[x.dataset.k] = x.value.trim(); }); return o; })(), pendDocs:g('disPendDocs'), honorarios:g('disHonor'), foro:g('disForo'), obs:g('disObs'), status:g('disStatus') });
+      let ok = false; try{ ok = await saveDistrato(t); } finally { state._salvandoForm = false; }
+      if(ok){ state.modal=null; state.distratoModalData=null; render(); } else if(sb){ sb.disabled = false; sb.textContent = 'Salvar distrato'; }
     };
     // ===== TTRT =====
     const novoTtrtBtn = document.getElementById('novoTtrtBtn');
@@ -26855,14 +26897,17 @@
     };
     const ttrtForm = document.getElementById('ttrtForm');
     if(ttrtForm) ttrtForm.onsubmit = async (e)=>{
-      e.preventDefault(); const base = state.ttrtModalData || {}; const g = id=>{ const el = document.getElementById(id); return el ? el.value : ''; };
+      e.preventDefault(); if(state._salvandoForm) return; state._salvandoForm = true;
+      const sb = ttrtForm.querySelector('button[type=submit]'); if(sb){ sb.disabled = true; sb.textContent = 'Salvando…'; }
+      const base = state.ttrtModalData || {}; if(!base.id) base.id = uid(); const g = id=>{ const el = document.getElementById(id); return el ? el.value : ''; };
       const t = Object.assign({}, base, { sentido:g('ttSentido'), numero:g('ttNumero').trim(), data:g('ttData'), motivo:g('ttMotivo').trim(),
         servicos:Array.from(document.querySelectorAll('.tt-srv')).filter(x=>x.checked).map(x=>x.value), regime:g('ttRegime'), icms:g('ttIcms'),
         trab:(()=>{ const o = {}; TTRT_TRAB.forEach(([k])=>{ o[k] = { sit:(document.querySelector('.tt-trab-sit[data-k="'+k+'"]')||{}).value||'', dt:(document.querySelector('.tt-trab-dt[data-k="'+k+'"]')||{}).value||'', obs:((document.querySelector('.tt-trab-obs[data-k="'+k+'"]')||{}).value||'').trim() }; }); return o; })(),
         pend:Array.from(document.querySelectorAll('.tt-pend')).filter(x=>x.checked).map(x=>x.value), pendObs:g('ttPendObs').trim(),
         obrigs:ttrtLerObrigs(), quem:g('ttQuem'), docs:g('ttDocs'), honorarios:g('ttHonor').trim(), obs:g('ttObs').trim(), status:g('ttStatus'), protocolo:g('ttProtocolo').trim(), dataRegistro:g('ttDataRegistro'),
         anterior:ttrtLerLado('ttAnt'), novo:ttrtLerLado('ttNov') });
-      const ok = await saveTtrt(t); if(ok){ state.modal=null; state.ttrtModalData=null; render(); }
+      let ok = false; try{ ok = await saveTtrt(t); } finally { state._salvandoForm = false; }
+      if(ok){ state.modal=null; state.ttrtModalData=null; render(); } else if(sb){ sb.disabled = false; sb.textContent = 'Salvar termo'; }
     };
     const altPdfBtn = document.getElementById('altPdfBtn'); if(altPdfBtn) altPdfBtn.onclick = gerarPdfAlteracoes;
     const novaAlteracaoBtn = document.getElementById('novaAlteracaoBtn');
@@ -26913,8 +26958,10 @@
     if(alteracaoForm){
       alteracaoForm.onsubmit = async (e)=>{
         e.preventDefault();
-        const base = state.alteracaoModalData || {};
-        if(!base.clientId){ alert('Selecione uma empresa antes de cadastrar a alteração.'); return; }
+        if(state._salvandoForm) return; state._salvandoForm = true;
+        const sb = alteracaoForm.querySelector('button[type=submit]'); if(sb){ sb.disabled = true; sb.textContent = 'Salvando…'; }
+        const base = state.alteracaoModalData || {}; if(!base.id) base.id = uid();
+        if(!base.clientId){ state._salvandoForm = false; if(sb){ sb.disabled = false; sb.textContent = 'Salvar'; } alert('Selecione uma empresa antes de cadastrar a alteração.'); return; }
         const rd = document.querySelector('input[name="alStatusRd"]:checked');
         const status = rd ? rd.value : 'Pendente';
         const datas = {}; document.querySelectorAll('.alDataSt').forEach(i=>{ datas[ALTERACAO_DATA_CAMPO[i.dataset.st]] = i.value; });
@@ -26927,8 +26974,8 @@
           protocolo: document.getElementById('alProtocolo').value.trim(),
           descricao: document.getElementById('alDescricao').value,
         });
-        const ok = await saveAlteracaoContratual(a);
-        if(!ok) return;
+        let ok = false; try{ ok = await saveAlteracaoContratual(a); } finally { state._salvandoForm = false; }
+        if(!ok){ if(sb){ sb.disabled = false; sb.textContent = 'Salvar'; } return; }
         state.modal=null; state.alteracaoModalData=null; render();
       };
     }
