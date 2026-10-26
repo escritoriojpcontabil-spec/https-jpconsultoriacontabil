@@ -4369,6 +4369,10 @@
     const honorariosCliente = state.honorarios.filter(h=>h.clientId===state.honorarioEmpresaAtiva).sort((a,b)=> (b.competencia||'').localeCompare(a.competencia||''));
     const pagos = honorariosCliente.filter(h=>honorarioStatus(h)==='Pago');
     return `
+      <div class="panel" style="margin-bottom:16px; background:#F8F9FB; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div><div style="font-weight:700;">Reajuste anual dos honorários</div><div class="form-hint" style="margin:0;">Aplica um percentual (ou novo valor) às empresas, atualiza o cadastro e as cobranças mensais em aberto e cria as que faltam até dezembro.</div></div>
+        <button type="button" class="btn-add" id="reajusteHonBtn">↻ Atualizar honorários do ano</button>
+      </div>
       <div class="form-section-title">Relatório Geral de Cobranças (todas as empresas)</div>
       <div class="form-hint" style="margin:-4px 0 14px;">Mês a mês, empresa por empresa — mostra de uma vez só quem está com cobrança em aberto ou vencida, qual competência, qual valor e qual vencimento.</div>
       <div class="panel" style="margin-bottom:16px; background:#F8F9FB;">
@@ -4761,6 +4765,119 @@
         </div>
       </div>
     `;
+  }
+
+  // ===== Reajuste anual dos honorários contábeis =====
+  const RJ_MENSAL = 'Honorários Contábeis Mensais';
+  function rjMensais(clientId){ return state.honorarios.filter(h=>h.clientId===clientId && h.tipoServico===RJ_MENSAL); }
+  function rjUltimoMensal(clientId){ return rjMensais(clientId).slice().sort((a,b)=>(b.competencia||'').localeCompare(a.competencia||''))[0] || null; }
+  function rjValorAtual(c){ const v = Number(c.contractValue)||0; if(v>0) return v; const u = rjUltimoMensal(c.id); return u ? (Number(u.valor)||0) : 0; }
+  function rjArred(v, modo){ return modo==='inteiro' ? Math.round(v) : round2(v); }
+  function rjMesesAteDez(comp){ const out=[]; if(!/^\d{4}-\d{2}$/.test(comp||'')) return out; const a = comp.slice(0,4); for(let m=+comp.slice(5,7); m<=12; m++) out.push(a+'-'+String(m).padStart(2,'0')); return out; }
+  function rjVenc(ym, dia){ const [a,m] = ym.split('-').map(Number); const ult = new Date(a, m+1, 0).getDate(); const d = new Date(a, m, Math.min(dia||10, ult)); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+  // O que o reajuste faria para uma empresa (usado na prévia e na gravação).
+  function rjPlano(c, comp){
+    const mens = rjMensais(c.id);
+    const abertas = mens.filter(h=>(h.competencia||'')>=comp && honorarioValorRecebido(h)<=0.005);
+    const existentes = new Set(mens.map(h=>h.competencia));
+    const mensal = !c.contractPeriodicity || c.contractPeriodicity==='Mensal';
+    const criar = mensal ? rjMesesAteDez(comp).filter(ym=>!existentes.has(ym)) : [];
+    return { abertas, criar };
+  }
+  function rjAbrir(){
+    const hoje = todayStr();
+    state.reajusteHon = { comp: hoje.slice(0,7), pct: '', arred: 'centavos', contrato:true, abertas:true, criar:true };
+    state.modal = 'reajusteHon'; render();
+  }
+  function reajusteModalHtml(){
+    const r = state.reajusteHon; if(!r) return '';
+    const lista = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>({c, atual:rjValorAtual(c)})).filter(x=>x.atual>0 || x.c.contractStatus==='Ativo');
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:900px;">
+      <h3>Reajuste anual dos honorários contábeis</h3>
+      <div class="form-hint" style="margin:-4px 0 10px;">Informe o percentual do reajuste (ou digite o novo valor de cada empresa), a competência a partir da qual vale, e o que atualizar. Nada é gravado antes de você clicar em "Aplicar reajuste".</div>
+      <form id="rjForm">
+        <div class="form-row">
+          <div class="field"><label>Reajuste (%)</label><input type="number" step="0.01" id="rjPct" placeholder="Ex.: 5,00"/></div>
+          <div class="field"><label>Vale a partir da competência</label><input type="month" id="rjComp" value="${r.comp}"/></div>
+          <div class="field"><label>Arredondamento</label><select id="rjArred"><option value="centavos">Em centavos (R$ 1.234,56)</option><option value="inteiro">Para real inteiro (R$ 1.235,00)</option></select></div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px; margin:4px 0 12px;">
+          <label style="display:flex; gap:8px; cursor:pointer;"><input type="checkbox" id="rjContrato" checked/> Atualizar o <b>valor dos honorários no cadastro</b> da empresa (guarda o histórico do reajuste)</label>
+          <label style="display:flex; gap:8px; cursor:pointer;"><input type="checkbox" id="rjAbertas" checked/> Atualizar as <b>cobranças mensais já lançadas e ainda não pagas</b>, da competência escolhida em diante</label>
+          <label style="display:flex; gap:8px; cursor:pointer;"><input type="checkbox" id="rjCriar" checked/> <b>Criar as cobranças mensais que faltam</b> até dezembro do ano (vencimento no mês seguinte, no mesmo dia da última cobrança)</label>
+        </div>
+        <div style="max-height:340px; overflow:auto; border:1px solid var(--line,#d0d5dd); border-radius:8px;">
+          <table style="margin:0;"><thead><tr><th style="width:34px;"><input type="checkbox" id="rjTodas" checked/></th><th>Empresa</th><th style="text-align:right">Valor atual</th><th style="text-align:right">Novo valor</th><th>O que acontece</th></tr></thead>
+          <tbody>${lista.map(x=>`<tr data-rj="${x.c.id}" data-atual="${x.atual}"><td><input type="checkbox" class="rj-sel" ${x.c.contractStatus==='Ativo'||!x.c.contractStatus?'checked':''}/></td>
+            <td>${escapeHtml(x.c.name)}${x.c.contractStatus && x.c.contractStatus!=='Ativo' ? ' <span class="tag sit-outra">'+escapeHtml(x.c.contractStatus)+'</span>' : ''}</td>
+            <td style="text-align:right" class="mono">${x.atual>0?fmtBRL(x.atual):'—'}</td>
+            <td style="text-align:right"><input type="number" step="0.01" min="0" class="rj-novo" value="${x.atual>0?x.atual.toFixed(2):''}" style="width:120px; text-align:right;"/></td>
+            <td class="rj-info form-hint" style="margin:0;"></td></tr>`).join('') || '<tr><td colspan="5">Nenhuma empresa com honorário cadastrado.</td></tr>'}</tbody></table>
+        </div>
+        <div id="rjResumo" class="form-hint" style="margin:10px 0; font-weight:700;"></div>
+        <div class="modal-actions"><button type="button" class="btn-sm" id="rjCancel">Cancelar</button><button type="submit" class="btn-add">Aplicar reajuste</button></div>
+      </form></div></div>`;
+  }
+  function reajusteLigar(){
+    const q = id=>document.getElementById(id);
+    const linhas = ()=>Array.from(document.querySelectorAll('tr[data-rj]'));
+    const calc = ()=>{
+      const comp = q('rjComp').value; let nA=0, nC=0, nE=0;
+      linhas().forEach(tr=>{
+        const c = state.clients.find(x=>x.id===tr.dataset.rj); const sel = tr.querySelector('.rj-sel').checked;
+        const novo = Number(tr.querySelector('.rj-novo').value)||0; const atual = Number(tr.dataset.atual)||0;
+        const info = tr.querySelector('.rj-info'); if(!c || !sel || !(novo>0)){ info.textContent = sel && !(novo>0) ? 'Informe o novo valor' : ''; return; }
+        const pl = rjPlano(c, comp); const partes = [];
+        if(novo!==atual && q('rjContrato').checked) partes.push('cadastro');
+        if(q('rjAbertas').checked && pl.abertas.length){ partes.push(pl.abertas.length+' cobrança(s) em aberto'); nA += pl.abertas.length; }
+        if(q('rjCriar').checked && pl.criar.length){ partes.push(pl.criar.length+' nova(s)'); nC += pl.criar.length; }
+        info.textContent = partes.length ? 'Atualiza: '+partes.join(' · ') : 'Sem alteração'; nE++;
+      });
+      q('rjResumo').textContent = nE+' empresa(s) · '+nA+' cobrança(s) existente(s) reajustada(s) · '+nC+' cobrança(s) nova(s) criada(s)';
+    };
+    const aplicarPct = ()=>{
+      const pct = Number(q('rjPct').value); if(q('rjPct').value==='' || isNaN(pct)) { calc(); return; }
+      linhas().forEach(tr=>{ const atual = Number(tr.dataset.atual)||0; if(atual>0) tr.querySelector('.rj-novo').value = rjArred(atual*(1+pct/100), q('rjArred').value).toFixed(2); });
+      calc();
+    };
+    q('rjPct').oninput = aplicarPct; q('rjArred').onchange = aplicarPct;
+    ['rjComp','rjContrato','rjAbertas','rjCriar'].forEach(id=>{ q(id).onchange = calc; });
+    q('rjTodas').onchange = ()=>{ linhas().forEach(tr=>{ tr.querySelector('.rj-sel').checked = q('rjTodas').checked; }); calc(); };
+    linhas().forEach(tr=>{ tr.querySelector('.rj-sel').onchange = calc; tr.querySelector('.rj-novo').oninput = calc; });
+    q('rjCancel').onclick = ()=>{ state.modal=null; state.reajusteHon=null; render(); };
+    calc();
+    q('rjForm').onsubmit = async (e)=>{
+      e.preventDefault();
+      const comp = q('rjComp').value; if(!/^\d{4}-\d{2}$/.test(comp)){ alert('Informe a competência inicial.'); return; }
+      const pct = q('rjPct').value!=='' ? Number(q('rjPct').value) : null;
+      const sel = linhas().filter(tr=>tr.querySelector('.rj-sel').checked && Number(tr.querySelector('.rj-novo').value)>0);
+      if(!sel.length){ alert('Marque ao menos uma empresa com novo valor.'); return; }
+      if(!q('rjContrato').checked && !q('rjAbertas').checked && !q('rjCriar').checked){ alert('Marque o que deve ser atualizado.'); return; }
+      if(!confirm('Aplicar o reajuste em '+sel.length+' empresa(s), a partir de '+monthLabel(comp)+'/'+comp.slice(0,4)+'?\n\n'+q('rjResumo').textContent+'\n\nCobranças já pagas não são alteradas.')) return;
+      const btn = q('rjForm').querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Gravando…';
+      const ops = []; let nA=0, nC=0, nCt=0;
+      for(const tr of sel){
+        const c = state.clients.find(x=>x.id===tr.dataset.rj); if(!c) continue;
+        const novo = round2(Number(tr.querySelector('.rj-novo').value)); const atual = Number(tr.dataset.atual)||0;
+        const pl = rjPlano(c, comp); const ult = rjUltimoMensal(c.id);
+        if(q('rjContrato').checked){
+          const hist = Array.isArray(c.contractReajustes) ? c.contractReajustes.slice() : [];
+          hist.push({ data: todayStr(), de: atual, para: novo, pct, competencia: comp });
+          ops.push(Store.set('clients:'+c.id, JSON.stringify(Object.assign({}, c, { contractValue: novo, contractReajustes: hist })), true)); nCt++;
+        }
+        if(q('rjAbertas').checked) pl.abertas.forEach(h=>{ ops.push(Store.set('honorarios:'+h.id, JSON.stringify(Object.assign({}, h, { valorAnterior: h.valorAnterior!==undefined ? h.valorAnterior : h.valor, valor: novo })), true)); nA++; });
+        if(q('rjCriar').checked && pl.criar.length){
+          const dia = ult && honorarioVencimento(ult) ? parseInt(honorarioVencimento(ult).slice(8,10),10) : 10;
+          pl.criar.forEach(ym=>{ const h = { id: uid(), clientId: c.id, tipoServico: RJ_MENSAL, tipoCobranca: (ult && ult.tipoCobranca) || 'Boleto', competencia: ym, dataVencimento: rjVenc(ym, dia), valor: novo, observacoes: 'Gerado no reajuste anual' };
+            ops.push(Store.set('honorarios:'+h.id, JSON.stringify(h), true)); nC++; });
+        }
+      }
+      try{ for(let i=0;i<ops.length;i+=25) await Promise.all(ops.slice(i,i+25)); }
+      catch(err){ alert('Houve falha ao gravar parte do reajuste: '+(err&&err.message?err.message:'erro desconhecido')+'\n\nConfira os valores e, se preciso, aplique de novo.'); }
+      state.modal=null; state.reajusteHon=null;
+      await loadAll(); await loadHonorarios(); render();
+      alert('Reajuste aplicado.\n\nCadastro atualizado: '+nCt+' empresa(s)\nCobranças existentes reajustadas: '+nA+'\nCobranças novas criadas: '+nC);
+    };
   }
 
   function honorarioModalHtml(){
@@ -22983,7 +23100,7 @@
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='dupLanc' ? dupModalHtml() : ''}
       ${state.modal==='cpMes' ? cpModalHtml() : ''}
-      ${state.modal==='honorario' ? honorarioModalHtml() : ''}
+      ${state.modal==='honorario' ? honorarioModalHtml() : ''}${state.modal==='reajusteHon' ? reajusteModalHtml() : ''}
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
       ${state.modal==='documentoSocietario' ? documentoSocietarioModalHtml() : ''}
@@ -25610,6 +25727,8 @@
     if(pdfRelatorioGeralHonorariosBtn){
       pdfRelatorioGeralHonorariosBtn.onclick = ()=> gerarPdfRelatorioGeralHonorarios(state.relatorioGeralHonorariosFiltro);
     }
+    const reajusteHonBtn = document.getElementById('reajusteHonBtn'); if(reajusteHonBtn) reajusteHonBtn.onclick = rjAbrir;
+    if(document.getElementById('rjForm')) reajusteLigar();
     const novoHonorarioBtn = document.getElementById('novoHonorarioBtn');
     if(novoHonorarioBtn){
       novoHonorarioBtn.onclick = ()=>{
