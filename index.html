@@ -4387,7 +4387,7 @@
           <input type="checkbox" id="relGeralHonorariosTodasCheck" ${state.relatorioGeralHonorariosTodasEmpresas?'checked':''}/> Todas as empresas (${state.clients.length})
         </label>
         ${!state.clients.length ? `<div class="form-hint" style="margin:0;">Nenhuma empresa cadastrada ainda.</div>` : `
-          <div style="display:flex; flex-wrap:wrap; gap:10px 20px; ${state.relatorioGeralHonorariosTodasEmpresas?'opacity:.45; pointer-events:none;':''}">
+          <div style="display:flex; flex-direction:column; gap:8px; max-height:360px; overflow:auto; ${state.relatorioGeralHonorariosTodasEmpresas?'opacity:.45; pointer-events:none;':''}">
             ${state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>`
               <label style="display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink-soft); cursor:pointer;">
                 <input type="checkbox" class="rel-geral-honorarios-client-check" value="${c.id}" ${state.relatorioGeralHonorariosClientesSelecionados.includes(c.id)?'checked':''}/> ${escapeHtml(c.name)}
