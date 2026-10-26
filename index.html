@@ -9901,7 +9901,51 @@
 
   // Alterações Contratuais — anotações livres das alterações que serão feitas em cada empresa
   // (atividades/CNAE, endereço, capital, sócios, nome empresarial etc.).
-  const ALTERACAO_STATUS = ['A fazer','Em andamento','Protocolada','Concluída','Cancelada'];
+  const ALTERACAO_STATUS = ['Pendente','Em andamento','Concluída'];
+  const ALTERACAO_DATA_CAMPO = { 'Pendente':'dataPendente', 'Em andamento':'dataAndamento', 'Concluída':'dataConclusao' };
+  const ALTERACAO_DATA_ROTULO = { 'Pendente':'Pendente desde', 'Em andamento':'Em andamento desde', 'Concluída':'Concluída em' };
+  function alteracaoStatusNorm(st){ st = String(st||''); if(!st || st==='A fazer') return 'Pendente'; if(st==='Protocolada') return 'Em andamento'; return st; }
+  function alteracaoMime(nome){
+    const e = (String(nome||'').split('.').pop()||'').toLowerCase();
+    return ({pdf:'application/pdf', txt:'text/plain', csv:'text/csv', rtf:'application/rtf', doc:'application/msword', docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls:'application/vnd.ms-excel', xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', odt:'application/vnd.oasis.opendocument.text', ods:'application/vnd.oasis.opendocument.spreadsheet',
+      ppt:'application/vnd.ms-powerpoint', pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp', zip:'application/zip', xml:'application/xml', html:'text/html'})[e] || 'application/octet-stream';
+  }
+  function alteracaoTamanhoTxt(n){ n = Number(n)||0; return n>=1048576 ? (n/1048576).toFixed(1).replace('.',',')+' MB' : Math.max(1,Math.round(n/1024))+' KB'; }
+  async function alteracaoMudarStatus(a, st){
+    const b = Object.assign({}, a, { status: st });
+    b[ALTERACAO_DATA_CAMPO[st]] = todayStr();
+    return saveAlteracaoContratual(b);
+  }
+  async function alteracaoAddArquivos(altId, files){
+    const a = state.alteracoesContratuais.find(x=>x.id===altId); if(!a) return;
+    const anexos = (a.anexos||[]).slice(); let ok = 0; const rej = [];
+    for(const f of files){
+      if(f.size > 700*1024){ rej.push(f.name+' ('+alteracaoTamanhoTxt(f.size)+')'); continue; }
+      try{
+        const bytes = new Uint8Array(await f.arrayBuffer()); let bin = '';
+        for(let i=0;i<bytes.length;i+=8192) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+8192));
+        const fid = uid();
+        await Store.set('alteracaoarq:'+altId+':'+fid, JSON.stringify({id:fid, altId, nome:f.name, b64:btoa(bin)}), true);
+        anexos.push({id:fid, nome:f.name, tamanho:f.size, mime:f.type||alteracaoMime(f.name), data:todayStr()}); ok++;
+      }catch(e){ rej.push(f.name+' (erro ao gravar)'); }
+    }
+    if(ok) await saveAlteracaoContratual(Object.assign({}, a, {anexos}));
+    if(rej.length) alert('Não foi possível guardar:\n• '+rej.join('\n• ')+'\n\nCada arquivo pode ter até 700 KB (limite do banco de dados). Reduza/comprima o arquivo e tente de novo.');
+    return ok;
+  }
+  async function alteracaoAbrirArquivo(altId, fid, baixar){
+    try{
+      const r = await Store.get('alteracaoarq:'+altId+':'+fid, true); if(!r) throw new Error('nf');
+      const d = JSON.parse(r.value); const mime = alteracaoMime(d.nome);
+      if(baixar) baixarArquivoBase64(d.b64, d.nome, mime); else visualizarArquivoBase64(d.b64, d.nome, mime);
+    }catch(e){ alert('Não foi possível ler este arquivo.'); }
+  }
+  async function alteracaoExcluirArquivo(altId, fid){
+    const a = state.alteracoesContratuais.find(x=>x.id===altId); if(!a) return;
+    try{ await Store.delete('alteracaoarq:'+altId+':'+fid, true); }catch(e){}
+    await saveAlteracaoContratual(Object.assign({}, a, {anexos:(a.anexos||[]).filter(x=>x.id!==fid)}));
+  }
   const ALTERACAO_TIPOS_SUGESTAO = ['Atividades / CNAE','Endereço','Capital social','Entrada de sócio','Saída de sócio','Nome empresarial','Administrador','Objeto social','Enquadramento / Porte','Transformação / Mudança de natureza jurídica','Filial (abertura/baixa)','Consolidação do contrato','Baixa da empresa'];
   async function loadAlteracoesContratuais(){
     state.alteracoesContratuais = [];
@@ -9919,6 +9963,7 @@
     if(!a.id) a.id = uid();
     if(!a.criadoEm) a.criadoEm = new Date().toISOString();
     a.atualizadoEm = new Date().toISOString();
+    a.status = alteracaoStatusNorm(a.status);
     try{
       await Store.set('alteracoescontratuais:'+a.id, JSON.stringify(a), true);
     }catch(e){
@@ -9929,6 +9974,8 @@
     return true;
   }
   async function deleteAlteracaoContratual(id){
+    const a = state.alteracoesContratuais.find(x=>x.id===id);
+    for(const x of ((a&&a.anexos)||[])){ try{ await Store.delete('alteracaoarq:'+id+':'+x.id, true); }catch(e){} }
     await Store.delete('alteracoescontratuais:'+id, true);
     await loadAlteracoesContratuais(); render();
   }
@@ -22300,9 +22347,10 @@
   }
 
   function alteracaoStatusClass(st){
+    st = alteracaoStatusNorm(st);
     if(st==='Concluída') return 'sit-ativa';
     if(st==='Cancelada') return 'sit-outra';
-    if(st==='Protocolada' || st==='Em andamento') return 'dept-fiscal';
+    if(st==='Em andamento') return 'dept-fiscal';
     return 'sit-pendente';
   }
   function alteracoesContratuaisPanelHtml(){
@@ -22311,8 +22359,11 @@
     const filtro = state.alteracaoFiltroStatus || 'Todos';
     const lista = state.alteracoesContratuais
       .filter(a=> empresaId ? a.clientId===empresaId : isClientInScope(a.clientId))
-      .filter(a=> filtro==='Todos' || a.status===filtro)
       .sort((a,b)=> (b.criadoEm||'').localeCompare(a.criadoEm||''));
+    const todasEscopo = lista.slice();
+    const cont = {}; ALTERACAO_STATUS.forEach(t=>{ cont[t] = todasEscopo.filter(a=>alteracaoStatusNorm(a.status)===t).length; });
+    const lista2 = lista.filter(a=> filtro==='Todos' || alteracaoStatusNorm(a.status)===filtro);
+    lista.length = 0; lista2.forEach(x=>lista.push(x));
     return `
       <div class="panel-head">
         <h3>Alterações Contratuais</h3>
@@ -22320,22 +22371,24 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Anote aqui, em texto livre, as alterações que serão feitas nas empresas — atividades/CNAE, endereço, capital social, sócios, nome empresarial etc. — e acompanhe o andamento de cada uma.</div>
       ${!empresa ? `<div class="form-hint" style="margin:0 0 10px;">Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página, para cadastrar uma alteração. Abaixo aparecem as alterações das empresas selecionadas.</div>` : `<div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(empresa.name)}</div>`}
-      <div class="form-row" style="margin-bottom:6px;">
-        <div class="field" style="max-width:240px;"><label>Filtrar por status</label>
-          <select id="alteracaoFiltro">${['Todos'].concat(ALTERACAO_STATUS).map(t=>`<option value="${t}" ${filtro===t?'selected':''}>${t}</option>`).join('')}</select>
-        </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px;">
+        <button type="button" class="btn-sm ${filtro==='Todos'?'primary':''}" data-alt-filtro="Todos">Todos (${todasEscopo.length})</button>
+        ${ALTERACAO_STATUS.map(t=>`<button type="button" class="btn-sm ${filtro===t?'primary':''}" data-alt-filtro="${t}">${t==='Pendente'?'Pendentes':t==='Concluída'?'Concluídas':t} (${cont[t]})</button>`).join('')}
       </div>
       ${!lista.length ? `<div class="empty">Nenhuma alteração contratual ${filtro!=='Todos'?'com status "'+escapeHtml(filtro)+'" ':''}cadastrada ainda.</div>` : `
         <div class="cc-list">
           ${lista.map(a=>`
             <div class="cc-row" style="align-items:flex-start;">
               <div class="cr-main">
-                <div class="cr-title">${escapeHtml(a.titulo||'Alteração')} <span class="tag ${alteracaoStatusClass(a.status)}" style="margin-left:6px;">${escapeHtml(a.status||'A fazer')}</span></div>
-                <div class="cr-meta">${!empresaId ? '<b>'+escapeHtml(clientName(a.clientId))+'</b> · ' : ''}${escapeHtml(a.tipo||'Sem tipo')}${a.dataPrevista?' · Prevista para '+fmtDate(a.dataPrevista):''}${a.dataConclusao?' · Concluída em '+fmtDate(a.dataConclusao):''}${a.protocolo?' · Protocolo: '+escapeHtml(a.protocolo):''}</div>
+                <div class="cr-title">${escapeHtml(a.titulo||'Alteração')} <span class="tag ${alteracaoStatusClass(a.status)}" style="margin-left:6px;">${escapeHtml(alteracaoStatusNorm(a.status))}</span></div>
+                <div class="cr-meta">${!empresaId ? '<b>'+escapeHtml(clientName(a.clientId))+'</b> · ' : ''}${escapeHtml(a.tipo||'Sem tipo')}${a.dataPrevista?' · Prazo previsto '+fmtDate(a.dataPrevista):''}${a.protocolo?' · Protocolo: '+escapeHtml(a.protocolo):''}</div>
+                <div class="cr-meta" style="font-weight:600;">${ALTERACAO_STATUS.map(t=>{ const dt = a[ALTERACAO_DATA_CAMPO[t]] || (t==='Pendente' ? String(a.criadoEm||'').slice(0,10) : ''); return dt ? ALTERACAO_DATA_ROTULO[t]+' '+fmtDate(dt) : ''; }).filter(Boolean).join(' · ')}</div>
                 ${a.descricao ? `<div class="cr-meta" style="white-space:pre-wrap; color:var(--ink); margin-top:4px;">${escapeHtml(a.descricao)}</div>` : ''}
               </div>
               <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">
-                ${a.status!=='Concluída' ? `<button type="button" class="btn-detail" data-concluir-alteracao="${a.id}">Marcar concluída</button>` : ''}
+                ${ALTERACAO_STATUS.filter(t=>t!==alteracaoStatusNorm(a.status)).map(t=>`<button type="button" class="btn-detail" data-alt-status="${a.id}" data-st="${t}">${t==='Pendente'?'Marcar pendente':t==='Em andamento'?'Em andamento':'Marcar concluída'}</button>`).join('')}
+                <button type="button" class="btn-detail" data-desc-alteracao="${a.id}">✎ Descrever</button>
+                <button type="button" class="btn-detail" data-arq-alteracao="${a.id}">📎 Arquivos${(a.anexos&&a.anexos.length)?' ('+a.anexos.length+')':''}</button>
                 <button type="button" class="btn-detail" data-edit-alteracao="${a.id}">Editar</button>
                 <button type="button" class="btn-sm danger" data-del-alteracao="${a.id}">Excluir</button>
               </div>
@@ -22355,18 +22408,21 @@
           <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">Empresa: ${escapeHtml(clientName(d.clientId))}</div>
           <form id="alteracaoForm">
             <div class="field"><label>Título / identificação</label><input type="text" id="alTitulo" value="${escapeHtml(d.titulo||'')}" placeholder="Ex: Incluir CNAE 4772-5/00 e alterar endereço" required/></div>
-            <div class="form-row">
-              <div class="field"><label>Tipo de alteração (livre)</label>
-                <input type="text" id="alTipo" list="alTiposLista" value="${escapeHtml(d.tipo||'')}" placeholder="Escolha da lista ou digite"/>
-                <datalist id="alTiposLista">${ALTERACAO_TIPOS_SUGESTAO.map(t=>`<option value="${escapeHtml(t)}"></option>`).join('')}</datalist>
-              </div>
-              <div class="field"><label>Status</label>
-                <select id="alStatus">${ALTERACAO_STATUS.map(t=>`<option value="${t}" ${(d.status||'A fazer')===t?'selected':''}>${t}</option>`).join('')}</select>
+            <div class="field"><label>Tipo de alteração (livre)</label>
+              <input type="text" id="alTipo" list="alTiposLista" value="${escapeHtml(d.tipo||'')}" placeholder="Escolha da lista ou digite"/>
+              <datalist id="alTiposLista">${ALTERACAO_TIPOS_SUGESTAO.map(t=>`<option value="${escapeHtml(t)}"></option>`).join('')}</datalist>
+            </div>
+            <div class="field"><label>Situação do processo (marque uma) e a data de cada etapa</label>
+              <div class="form-row" style="align-items:flex-end;">
+                ${ALTERACAO_STATUS.map(t=>{ const sel = alteracaoStatusNorm(d.status)===t; const campo = ALTERACAO_DATA_CAMPO[t]; const val = d[campo] || (t==='Pendente' && !d.id ? todayStr() : '');
+                  return `<div class="field" style="border:2px solid ${sel?'#1f4e79':'#d0d5dd'}; border-radius:8px; padding:8px 10px;">
+                    <label style="display:flex; gap:6px; align-items:center; cursor:pointer; font-weight:700;"><input type="radio" name="alStatusRd" value="${t}" ${sel?'checked':''}/> ${t==='Pendente'?'Pendente':t==='Concluída'?'Concluído':t}</label>
+                    <label style="font-size:12px; margin-top:6px;">${ALTERACAO_DATA_ROTULO[t]}</label>
+                    <input type="date" class="alDataSt" data-st="${t}" value="${escapeHtml(val)}"/></div>`; }).join('')}
               </div>
             </div>
             <div class="form-row">
-              <div class="field"><label>Data prevista</label><input type="date" id="alDataPrevista" value="${escapeHtml(d.dataPrevista||'')}"/></div>
-              <div class="field"><label>Data de conclusão</label><input type="date" id="alDataConclusao" value="${escapeHtml(d.dataConclusao||'')}"/></div>
+              <div class="field"><label>Prazo previsto</label><input type="date" id="alDataPrevista" value="${escapeHtml(d.dataPrevista||'')}"/></div>
               <div class="field"><label>Nº do protocolo / órgão</label><input type="text" id="alProtocolo" value="${escapeHtml(d.protocolo||'')}" placeholder="Ex: Junta Comercial — 2026/123456"/></div>
             </div>
             <div class="field"><label>Descrição das alterações (campo livre)</label>
@@ -22380,6 +22436,34 @@
         </div>
       </div>
     `;
+  }
+
+  function alteracaoDescModalHtml(){
+    const a = state.alteracoesContratuais.find(x=>x.id===state.alteracaoDescId); if(!a) return '';
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:720px;">
+      <h3>Descrever as alterações</h3>
+      <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">${escapeHtml(clientName(a.clientId))} — ${escapeHtml(a.titulo||'Alteração')}</div>
+      <div class="form-hint" style="margin:0 0 8px;">Escreva o que será (ou foi) alterado e vá anotando o andamento. O botão abaixo insere a data de hoje numa nova linha.</div>
+      <textarea id="alDescTexto" rows="14" style="width:100%;" placeholder="Ex.: Incluir CNAE 4772-5/00; novo endereço Rua X, 100; capital passa para R$ 50.000,00…">${escapeHtml(a.descricao||'')}</textarea>
+      <div class="modal-actions" style="justify-content:space-between;">
+        <button type="button" class="btn-sm" id="alDescData">+ Inserir data de hoje</button>
+        <span style="display:flex; gap:8px;"><button type="button" class="btn-sm" id="alDescCancel">Cancelar</button><button type="button" class="btn-add" id="alDescSalvar">Salvar descrição</button></span>
+      </div></div></div>`;
+  }
+  function alteracaoArqModalHtml(){
+    const a = state.alteracoesContratuais.find(x=>x.id===state.alteracaoArqId); if(!a) return '';
+    const l = a.anexos||[];
+    const vis = (n)=>/\.(pdf|png|jpe?g|gif|webp|txt|html)$/i.test(n||'');
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:720px;">
+      <h3>Arquivos da alteração</h3>
+      <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">${escapeHtml(clientName(a.clientId))} — ${escapeHtml(a.titulo||'Alteração')}</div>
+      ${l.length ? `<div class="cc-list">${l.map(x=>`<div class="cc-row"><div class="cr-main"><div class="cr-title">${escapeHtml(x.nome)}</div><div class="cr-meta">${alteracaoTamanhoTxt(x.tamanho)} · guardado em ${fmtDate(x.data)}</div></div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">${vis(x.nome)?`<button type="button" class="btn-detail" data-arq-ver="${x.id}">Visualizar</button>`:''}<button type="button" class="btn-detail" data-arq-baixar="${x.id}">Baixar</button><button type="button" class="btn-sm danger" data-arq-del="${x.id}">Excluir</button></div></div>`).join('')}</div>` : '<div class="empty">Nenhum arquivo guardado ainda.</div>'}
+      <div class="field" style="margin-top:12px;"><label>Guardar arquivos (PDF, Word, Excel, TXT, imagens, ZIP… vários de uma vez)</label>
+        <input type="file" id="alArqInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.rtf,.odt,.ods,.csv,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.webp,.zip,.xml,.html"/>
+        <div class="form-hint" style="margin-top:4px;">Cada arquivo pode ter até 700 KB (limite do banco de dados).</div></div>
+      <div class="modal-actions"><button type="button" class="btn-sm" id="alArqFechar">Fechar</button><button type="button" class="btn-add" id="alArqAdd">Guardar arquivos selecionados</button></div>
+    </div></div>`;
   }
 
   function processoFiscalModalHtml(){
@@ -22906,7 +22990,7 @@
       ${state.modal==='inscricao' ? inscricaoModalHtml() : ''}
       ${state.modal==='alvara' ? alvaraModalHtml() : ''}
       ${state.modal==='processoFiscal' ? processoFiscalModalHtml() : ''}
-      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}
+      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}${state.modal==='alteracaoDesc' ? alteracaoDescModalHtml() : ''}${state.modal==='alteracaoArq' ? alteracaoArqModalHtml() : ''}
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
       ${state.modal==='certidao' ? certidaoModalHtml() : ''}
@@ -26178,21 +26262,40 @@
     const novaAlteracaoBtn = document.getElementById('novaAlteracaoBtn');
     if(novaAlteracaoBtn) novaAlteracaoBtn.onclick = ()=>{
       const cid = deptOneSelectedClient(); if(!cid) return;
-      state.alteracaoModalData = { clientId: cid, status: 'A fazer' };
+      state.alteracaoModalData = { clientId: cid, status: 'Pendente' };
       state.modal = 'alteracao'; render();
     };
-    const alteracaoFiltroEl = document.getElementById('alteracaoFiltro');
-    if(alteracaoFiltroEl) alteracaoFiltroEl.onchange = (e)=>{ state.alteracaoFiltroStatus = e.target.value; render(); };
+    root.querySelectorAll('[data-alt-filtro]').forEach(el=>{ el.onclick = ()=>{ state.alteracaoFiltroStatus = el.dataset.altFiltro; render(); }; });
+    root.querySelectorAll('[data-alt-status]').forEach(el=>{
+      el.onclick = ()=>{ const a = state.alteracoesContratuais.find(x=>x.id===el.dataset.altStatus); if(a) alteracaoMudarStatus(a, el.dataset.st); };
+    });
+    root.querySelectorAll('[data-desc-alteracao]').forEach(el=>{ el.onclick = ()=>{ state.alteracaoDescId = el.dataset.descAlteracao; state.modal = 'alteracaoDesc'; render(); }; });
+    root.querySelectorAll('[data-arq-alteracao]').forEach(el=>{ el.onclick = ()=>{ state.alteracaoArqId = el.dataset.arqAlteracao; state.modal = 'alteracaoArq'; render(); }; });
+    const alDescCancel = document.getElementById('alDescCancel'); if(alDescCancel) alDescCancel.onclick = ()=>{ state.modal=null; render(); };
+    const alDescData = document.getElementById('alDescData');
+    if(alDescData) alDescData.onclick = ()=>{ const t = document.getElementById('alDescTexto'); const pre = t.value && !/\n$/.test(t.value) ? '\n' : ''; t.value += pre + fmtDate(todayStr()) + ' — '; t.focus(); t.setSelectionRange(t.value.length, t.value.length); };
+    const alDescSalvar = document.getElementById('alDescSalvar');
+    if(alDescSalvar) alDescSalvar.onclick = async ()=>{
+      const a = state.alteracoesContratuais.find(x=>x.id===state.alteracaoDescId); if(!a) return;
+      const ok = await saveAlteracaoContratual(Object.assign({}, a, {descricao: document.getElementById('alDescTexto').value}));
+      if(ok){ state.modal=null; render(); }
+    };
+    const alArqFechar = document.getElementById('alArqFechar'); if(alArqFechar) alArqFechar.onclick = ()=>{ state.modal=null; render(); };
+    const alArqAdd = document.getElementById('alArqAdd');
+    if(alArqAdd) alArqAdd.onclick = async ()=>{
+      const inp = document.getElementById('alArqInput'); const fs = inp && inp.files ? Array.from(inp.files) : [];
+      if(!fs.length){ alert('Escolha um ou mais arquivos primeiro.'); return; }
+      alArqAdd.disabled = true; alArqAdd.textContent = 'Guardando…';
+      await alteracaoAddArquivos(state.alteracaoArqId, fs);
+    };
+    root.querySelectorAll('[data-arq-ver]').forEach(el=>{ el.onclick = ()=> alteracaoAbrirArquivo(state.alteracaoArqId, el.dataset.arqVer, false); });
+    root.querySelectorAll('[data-arq-baixar]').forEach(el=>{ el.onclick = ()=> alteracaoAbrirArquivo(state.alteracaoArqId, el.dataset.arqBaixar, true); });
+    root.querySelectorAll('[data-arq-del]').forEach(el=>{ el.onclick = ()=>{ if(confirm('Excluir este arquivo?')) alteracaoExcluirArquivo(state.alteracaoArqId, el.dataset.arqDel); }; });
+    root.querySelectorAll('input[name="alStatusRd"]').forEach(r=>{ r.onchange = ()=>{ const d = document.querySelector('.alDataSt[data-st="'+r.value+'"]'); if(d && !d.value) d.value = todayStr(); }; });
     root.querySelectorAll('[data-edit-alteracao]').forEach(el=>{
       el.onclick = ()=>{
         const a = state.alteracoesContratuais.find(x=>x.id===el.getAttribute('data-edit-alteracao')); if(!a) return;
         state.alteracaoModalData = Object.assign({}, a); state.modal = 'alteracao'; render();
-      };
-    });
-    root.querySelectorAll('[data-concluir-alteracao]').forEach(el=>{
-      el.onclick = ()=>{
-        const a = state.alteracoesContratuais.find(x=>x.id===el.getAttribute('data-concluir-alteracao')); if(!a) return;
-        saveAlteracaoContratual(Object.assign({}, a, { status:'Concluída', dataConclusao: a.dataConclusao || todayStr() }));
       };
     });
     root.querySelectorAll('[data-del-alteracao]').forEach(el=>{
@@ -26206,15 +26309,15 @@
         e.preventDefault();
         const base = state.alteracaoModalData || {};
         if(!base.clientId){ alert('Selecione uma empresa antes de cadastrar a alteração.'); return; }
-        const status = document.getElementById('alStatus').value;
-        let dataConclusao = document.getElementById('alDataConclusao').value;
-        if(status==='Concluída' && !dataConclusao) dataConclusao = todayStr();
-        const a = Object.assign({}, base, {
+        const rd = document.querySelector('input[name="alStatusRd"]:checked');
+        const status = rd ? rd.value : 'Pendente';
+        const datas = {}; document.querySelectorAll('.alDataSt').forEach(i=>{ datas[ALTERACAO_DATA_CAMPO[i.dataset.st]] = i.value; });
+        if(!datas[ALTERACAO_DATA_CAMPO[status]]) datas[ALTERACAO_DATA_CAMPO[status]] = todayStr();
+        const a = Object.assign({}, base, datas, {
           titulo: document.getElementById('alTitulo').value.trim(),
           tipo: document.getElementById('alTipo').value.trim(),
           status,
           dataPrevista: document.getElementById('alDataPrevista').value,
-          dataConclusao,
           protocolo: document.getElementById('alProtocolo').value.trim(),
           descricao: document.getElementById('alDescricao').value,
         });
