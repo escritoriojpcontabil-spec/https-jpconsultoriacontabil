@@ -803,6 +803,7 @@
     alvaraModalData: null,
     processosFiscais: [],
     alteracoesContratuais: [],
+    ttrts: [],
     alteracaoModalData: null,
     alteracaoFiltroStatus: 'Todos',
     processoFiscalEmpresaAtiva: '',
@@ -13844,6 +13845,7 @@
     await loadAlvaras();
     await loadProcessosFiscais();
     await loadAlteracoesContratuais();
+    await loadTtrts();
   }
 
   async function exportAllData(){
@@ -13904,6 +13906,7 @@
       alvaras: state.alvaras,
       processosFiscais: state.processosFiscais,
       alteracoesContratuais: state.alteracoesContratuais,
+      ttrts: state.ttrts,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -13993,6 +13996,7 @@
       {key:'alvaras', prefix:'alvaras:', idField:'id'},
       {key:'processosFiscais', prefix:'processosfiscais:', idField:'id'},
       {key:'alteracoesContratuais', prefix:'alteracoescontratuais:', idField:'id'},
+      {key:'ttrts', prefix:'ttrt:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -21954,6 +21958,7 @@
     {k:'alvaras', label:'Alvarás'},
     {k:'processos', label:'Processos Fiscais'},
     {k:'alteracoes', label:'Alterações Contratuais'},
+    {k:'ttrt', label:'Transferência de Contador (TTRT)'},
   ];
   function contratosServicosPanelHtml(){
     const empresa = state.clients.find(c=>c.id===state.contratoEmpresaAtiva);
@@ -22002,6 +22007,7 @@
     else if(state.legalTab==='alvaras') tabContent = alvarasPanelHtml();
     else if(state.legalTab==='processos') tabContent = processosFiscaisPanelHtml();
     else if(state.legalTab==='alteracoes') tabContent = alteracoesContratuaisPanelHtml();
+    else if(state.legalTab==='ttrt') tabContent = ttrtPanelHtml();
     return `
       <div class="panel">
         <div class="dp-tabs">
@@ -22471,6 +22477,163 @@
     if(st==='Em andamento') return 'dept-fiscal';
     return 'sit-pendente';
   }
+  // ===== TTRT — Termo de Transferência de Responsabilidade Técnica (troca de contador) =====
+  const TTRT_SERVICOS = ['Escrituração contábil', 'Escrituração fiscal', 'Folha de pagamento / Departamento pessoal', 'Controle do patrimônio (imobilizado)', 'Apuração de tributos e guias', 'Obrigações acessórias (SPED, DCTF, DEFIS etc.)', 'Abertura, alteração e baixa de empresas (legalização)'];
+  const TTRT_OBRIG_PADRAO = ['ECD (SPED Contábil) — último ano entregue: ', 'ECF — último ano entregue: ', 'DEFIS / DASN-SIMEI — último ano entregue: ', 'PGDAS-D / DAS — última competência apurada: ', 'DCTFWeb / EFD-Reinf — última competência: ', 'EFD-Contribuições / SPED Fiscal — última competência: ', 'eSocial / folha — última competência: ', 'DIRF / RAIS — último ano entregue: '].join('\n');
+  const TTRT_DOCS_PADRAO = ['Livros contábeis e fiscais (Diário, Razão, Registro de Entradas/Saídas/Apuração)', 'Notas fiscais e documentos que sustentam a escrituração', 'Arquivos digitais (SPED, recibos de entrega, XMLs)', 'Folha de pagamento, admissões e rescisões (eSocial)', 'Contrato social, alterações e documentos de legalização', 'Certificado digital / procurações eletrônicas (e-CAC, SEFAZ, prefeitura)'].join('\n');
+  async function loadTtrts(){
+    state.ttrts = [];
+    try{
+      const keys = await Store.list('ttrt:', true);
+      if(keys && keys.keys){ for(const k of keys.keys){ try{ const r = await Store.get(k, true); if(r) state.ttrts.push(JSON.parse(r.value)); }catch(e){} } }
+    }catch(e){}
+    state.ttrts.sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
+  }
+  async function saveTtrt(t){
+    if(!t.id) t.id = uid();
+    if(!t.criadoEm) t.criadoEm = new Date().toISOString();
+    t.atualizadoEm = new Date().toISOString();
+    try{ await Store.set('ttrt:'+t.id, JSON.stringify(t), true); }
+    catch(e){ alert('Não foi possível salvar o termo.\n\nDetalhe técnico: '+(e&&e.message?e.message:'erro desconhecido')); return false; }
+    await loadTtrts(); render(); return true;
+  }
+  async function deleteTtrt(id){ await Store.delete('ttrt:'+id, true); await loadTtrts(); render(); }
+  // Dados do próprio escritório (lidos do cadastro, se ele estiver cadastrado como cliente).
+  function ttrtMeuEscritorio(){
+    const doc = '49307112000189';
+    const c = state.clients.find(x=>String(x.doc||'').replace(/\D/g,'')===doc);
+    const end = c ? [c.address, c.cep ? 'CEP '+cepFmt(c.cep) : '', [c.city, c.uf].filter(Boolean).join('/')].filter(Boolean).join(', ') : '';
+    return { nome:'JAILSON PEREIRA CONSULTORIA CONTÁBIL', cnpj:'49.307.112/0001-89', crc:'', end, tel:(c&&c.phone)||'', contador:'Jailson Pereira', crcContador:'CRC-PE 019219-O/8', categ:'Contador', email:(c&&c.email)||'' };
+  }
+  function ttrtLadoVazio(){ return { nome:'', cnpj:'', crc:'', end:'', tel:'', contador:'', crcContador:'', categ:'Contador', email:'' }; }
+  function ttrtNovo(clientId){
+    const c = state.clients.find(x=>x.id===clientId)||{};
+    return { clientId, sentido:'saindo', data:todayStr(), numero:'', motivo:'', servicos:TTRT_SERVICOS.slice(0,5), regime:c.regimeTributario||'', icms:'', dtContab:'', dtDiario:'', dtFiscal:'', dtBalancete:'', dtFolha:'', dtDocs:'',
+      obrig:TTRT_OBRIG_PADRAO, quem:'anterior', docs:TTRT_DOCS_PADRAO, honorarios:'Sem pendências de honorários.', obs:'', status:'Rascunho', protocolo:'', dataRegistro:'',
+      anterior:ttrtMeuEscritorio(), novo:ttrtLadoVazio() };
+  }
+  function ttrtLadoHtml(pre, d, titulo){
+    const f = (id, rot, val, ph, extra)=>`<div class="field" ${extra||''}><label>${rot}</label><input type="text" id="${pre}${id}" value="${escapeHtml(val||'')}" placeholder="${ph||''}"/></div>`;
+    return `<div class="form-section-title" style="margin-top:14px;">${titulo}</div>
+      <div class="form-row">${f('Nome','Escritório / organização contábil',d.nome)}${f('Cnpj','CNPJ',d.cnpj)}${f('Crc','CRC da organização (se houver)',d.crc)}</div>
+      <div class="form-row">${f('End','Endereço completo',d.end)}${f('Tel','Telefone',d.tel)}</div>
+      <div class="form-row">${f('Contador','Contabilista responsável',d.contador)}${f('CrcContador','CRC do contabilista',d.crcContador,'Ex.: CRC-PE 000000/O-0')}
+        <div class="field"><label>Categoria</label><select id="${pre}Categ">${['Contador','Técnico em Contabilidade'].map(x=>`<option ${d.categ===x?'selected':''}>${x}</option>`).join('')}</select></div>
+        ${f('Email','E-mail',d.email)}</div>`;
+  }
+  function ttrtModalHtml(){
+    const d = state.ttrtModalData; if(!d) return '';
+    const c = state.clients.find(x=>x.id===d.clientId)||{};
+    const dt = (id, rot, v)=>`<div class="field"><label>${rot}</label><input type="date" id="${id}" value="${escapeHtml(v||'')}"/></div>`;
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:900px;">
+      <h3>${d.id?'Editar':'Novo'} Termo de Transferência de Responsabilidade Técnica (TTRT)</h3>
+      <div class="form-hint" style="margin:-4px 0 8px; font-weight:700;">Empresa: ${escapeHtml(c.name||'—')} — ${escapeHtml(c.doc||'')}</div>
+      <form id="ttrtForm">
+        <div class="form-row">
+          <div class="field"><label>Situação do meu escritório</label><select id="ttSentido"><option value="saindo" ${d.sentido==='saindo'?'selected':''}>Estou SAINDO — transferindo a empresa para outro contador</option><option value="entrando" ${d.sentido==='entrando'?'selected':''}>Estou ENTRANDO — assumindo a empresa de outro contador</option></select></div>
+          <div class="field"><label>Termo nº</label><input type="text" id="ttNumero" value="${escapeHtml(d.numero||'')}" placeholder="Ex.: 001/2026"/></div>
+          <div class="field"><label>Data da transferência</label><input type="date" id="ttData" value="${escapeHtml(d.data||'')}" required/></div>
+        </div>
+        <div class="field"><label>Motivo da transferência</label><input type="text" id="ttMotivo" list="ttMotivos" value="${escapeHtml(d.motivo||'')}" placeholder="Escolha ou digite"/><datalist id="ttMotivos">${['Opção do contratante (cliente)','Rescisão do contrato de prestação de serviços','Redução de custos','Mudança de cidade/endereço da empresa','Aposentadoria / encerramento do escritório'].map(x=>`<option value="${x}"></option>`).join('')}</datalist></div>
+        <div class="form-section-title" style="margin-top:14px;">Serviços prestados pelo contabilista que transfere</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:4px 14px; margin-bottom:8px;">${TTRT_SERVICOS.map(x=>`<label style="display:flex; gap:6px; cursor:pointer;"><input type="checkbox" class="tt-srv" value="${escapeHtml(x)}" ${(d.servicos||[]).indexOf(x)>=0?'checked':''}/> ${x}</label>`).join('')}</div>
+        <div class="form-row">
+          <div class="field"><label>Regime tributário</label><select id="ttRegime"><option value="">—</option>${REGIME_OPTIONS.map(x=>`<option ${d.regime===x?'selected':''}>${x}</option>`).join('')}</select></div>
+          <div class="field"><label>Apuração do ICMS</label><select id="ttIcms">${['','Débito e crédito (regime normal)','Simples Nacional','Estimativa','Isento / não contribuinte'].map(x=>`<option ${d.icms===x?'selected':''}>${x}</option>`).join('')}</select></div>
+        </div>
+        <div class="form-section-title" style="margin-top:14px;">Situação dos trabalhos na data da transferência (escrito até quando)</div>
+        <div class="form-row">${dt('ttDtContab','Escrituração contábil até',d.dtContab)}${dt('ttDtDiario','Livros Diário e Razão até',d.dtDiario)}${dt('ttDtFiscal','Livros fiscais até',d.dtFiscal)}</div>
+        <div class="form-row">${dt('ttDtBalancete','Balancete / Balanço até',d.dtBalancete)}${dt('ttDtFolha','Folha de pagamento até',d.dtFolha)}${dt('ttDtDocs','Documentos legais e comerciais até',d.dtDocs)}</div>
+        <div class="field"><label>Últimas obrigações acessórias entregues (uma por linha, com o período)</label><textarea id="ttObrig" rows="7">${escapeHtml(d.obrig||'')}</textarea></div>
+        <div class="field"><label>Quem entregará as próximas obrigações pendentes de entrega</label><select id="ttQuem"><option value="anterior" ${d.quem==='anterior'?'selected':''}>Contabilista anterior (quando o período for da sua responsabilidade)</option><option value="novo" ${d.quem==='novo'?'selected':''}>Contabilista novo (a partir da data da transferência)</option></select></div>
+        ${ttrtLadoHtml('ttAnt', d.anterior, 'Escritório e contabilista ANTERIOR (que transfere)')}
+        ${ttrtLadoHtml('ttNov', d.novo, 'Escritório e contabilista NOVO (que assume)')}
+        <div class="form-section-title" style="margin-top:14px;">Documentos, honorários e observações</div>
+        <div class="field"><label>Documentos e arquivos entregues (um por linha)</label><textarea id="ttDocs" rows="6">${escapeHtml(d.docs||'')}</textarea></div>
+        <div class="form-row"><div class="field"><label>Honorários / pendências financeiras</label><input type="text" id="ttHonor" value="${escapeHtml(d.honorarios||'')}"/></div></div>
+        <div class="field"><label>Observações</label><textarea id="ttObs" rows="3">${escapeHtml(d.obs||'')}</textarea></div>
+        <div class="form-section-title" style="margin-top:14px;">Controle do registro no CRC (TTRT-e)</div>
+        <div class="form-row">
+          <div class="field"><label>Situação</label><select id="ttStatus">${['Rascunho','Assinado','Registrado no TTRT-e do CRC'].map(x=>`<option ${d.status===x?'selected':''}>${x}</option>`).join('')}</select></div>
+          <div class="field"><label>Protocolo / nº no TTRT-e</label><input type="text" id="ttProtocolo" value="${escapeHtml(d.protocolo||'')}"/></div>
+          ${dt('ttDataRegistro','Data do registro no CRC',d.dataRegistro)}
+        </div>
+        <div class="modal-actions"><button type="button" class="btn-sm" id="ttCancel">Cancelar</button><button type="submit" class="btn-add">Salvar termo</button></div>
+      </form></div></div>`;
+  }
+  function ttrtLerLado(pre){
+    const g = id=>{ const el = document.getElementById(pre+id); return el ? el.value.trim() : ''; };
+    return { nome:g('Nome'), cnpj:g('Cnpj'), crc:g('Crc'), end:g('End'), tel:g('Tel'), contador:g('Contador'), crcContador:g('CrcContador'), categ:g('Categ'), email:g('Email') };
+  }
+  function ttrtPanelHtml(){
+    const empresaId = deptOneSelectedClient();
+    const empresa = state.clients.find(c=>c.id===empresaId);
+    const lista = state.ttrts.filter(t=> empresaId ? t.clientId===empresaId : isClientInScope(t.clientId));
+    return `
+      <div class="panel-head"><h3>Transferência de Contador — TTRT</h3>
+        ${empresa ? `<button type="button" class="btn-add" id="novoTtrtBtn">+ Novo termo de transferência</button>` : ''}</div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Gera o <b>Termo de Transferência de Responsabilidade Técnica</b> para a troca de contador da empresa, já preenchido com os dados do cadastro. Imprima, colha as assinaturas (contador anterior, contador novo e empresa) e depois registre o <b>TTRT-e</b> no site do seu CRC.</div>
+      <div class="attach-box" style="margin:0 0 14px; font-size:13px; line-height:1.5;">
+        <b>Como funciona a troca de contador</b><br>
+        1) <b>Distrato</b> do contrato de serviços (obrigatório — Resolução CFC nº 1.590/2020), com a forma e o prazo de devolução dos livros e documentos.<br>
+        2) <b>Termo de Transferência</b> (este documento) informando até onde os trabalhos foram feitos e as obrigações entregues.<br>
+        3) <b>TTRT-e no CRC</b>: o contador que assume inicia a transferência no portal do CRC e o anterior valida; o que sai registra a desvinculação. Em CRCs como GO e PR o prazo é de <b>30 dias</b> — confirme a regra do seu CRC.<br>
+        4) Atualizar o responsável técnico nos órgãos (Receita Federal, SEFAZ, prefeitura, Junta) e transferir certificados/procurações eletrônicas.
+      </div>
+      ${!empresa ? `<div class="form-hint" style="margin:0 0 10px;">Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página, para criar o termo. Abaixo aparecem os termos das empresas selecionadas.</div>` : `<div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(empresa.name)}</div>`}
+      ${!lista.length ? `<div class="empty">Nenhum termo de transferência cadastrado ainda.</div>` : `<div class="cc-list">${lista.map(t=>`
+        <div class="cc-row" style="align-items:flex-start;"><div class="cr-main">
+          <div class="cr-title">TTRT ${escapeHtml(t.numero||'s/nº')} — ${escapeHtml(clientName(t.clientId))} <span class="tag ${t.status==='Rascunho'?'sit-pendente':'sit-ativa'}" style="margin-left:6px;">${escapeHtml(t.status||'Rascunho')}</span></div>
+          <div class="cr-meta">${t.sentido==='entrando'?'Assumindo de':'Transferindo para'}: <b>${escapeHtml(((t.sentido==='entrando'?t.anterior:t.novo)||{}).nome||'—')}</b> · Data da transferência ${t.data?fmtDate(t.data):'—'}${t.protocolo?' · Protocolo TTRT-e: '+escapeHtml(t.protocolo):''}</div></div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;"><button type="button" class="btn-detail" data-ttrt-pdf="${t.id}">🖨 Gerar PDF</button><button type="button" class="btn-detail" data-ttrt-edit="${t.id}">Editar</button><button type="button" class="btn-sm danger" data-ttrt-del="${t.id}">Excluir</button></div></div>`).join('')}</div>`}`;
+  }
+  function gerarPdfTtrt(id){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const t = state.ttrts.find(x=>x.id===id); if(!t) return;
+    const c = state.clients.find(x=>x.id===t.clientId)||{};
+    const ie = clienteIEAtual(c.id); const ieTxt = c.ieIsento || (ie&&ie.numero==='ISENTO') ? 'Isento / não contribuinte' : c.somenteServicos ? 'Não possui (empresa de serviços)' : ((ie&&ie.numero&&ie.numero!=='BAIXADA') ? ie.numero : '—');
+    const { jsPDF } = window.jspdf; const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const mx = 18, larg = pageW-2*mx, lim = pageH-20; let y = 20;
+    const nova = h=>{ if(y+h>lim){ doc.addPage(); y = 20; } };
+    const par = (txt, o)=>{ o=o||{}; doc.setFont('helvetica', o.bold?'bold':'normal'); doc.setFontSize(o.size||10); doc.setTextColor(20,25,30);
+      String(txt).split(/\r?\n/).reduce((acc,ln)=>acc.concat(ln.trim()?doc.splitTextToSize(ln, larg-(o.ind||0)):['']),[]).forEach(l=>{ nova(5); doc.text(l, mx+(o.ind||0), y, o.center?{align:'center'}:undefined); y += (o.lh||4.8); }); };
+    const tit = (n)=>{ nova(14); y += 3; doc.setFillColor(238,242,247); doc.rect(mx, y-4.5, larg, 6.5, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30); doc.text(n, mx+2, y); y += 7; };
+    const kv = (k, v)=>{ nova(6); doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(k+':', mx+2, y); doc.setFont('helvetica','normal'); const ls = doc.splitTextToSize(String(v||'—'), larg-58); doc.text(ls, mx+56, y); y += Math.max(1,ls.length)*4.6 + 0.6; };
+    const dtx = v=> v ? fmtDate(v) : '____/____/______';
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text('TERMO DE TRANSFERÊNCIA DE', pageW/2, y, {align:'center'}); y += 6; doc.text('RESPONSABILIDADE TÉCNICA', pageW/2, y, {align:'center'}); y += 6;
+    doc.setFontSize(11); doc.text('TTRT Nº ' + (t.numero||'______'), pageW/2, y, {align:'center'}); y += 8;
+    const a = t.anterior||{}, n = t.novo||{};
+    par('Pelo presente termo, o(a) contabilista e a organização contábil ANTERIORES e o(a) contabilista e a organização contábil NOVOS, identificados abaixo, formalizam a transferência da responsabilidade técnica pelos serviços contábeis da empresa indicada, a partir de ' + dtx(t.data) + ', nos termos da Resolução CFC nº 1.590/2020 e das normas do Conselho Regional de Contabilidade.', {lh:5});
+    tit('1. EMPRESA OBJETO DA TRANSFERÊNCIA');
+    kv('Razão social', c.name); kv('CNPJ / CPF', c.doc); kv('Inscrição Estadual', ieTxt);
+    kv('Endereço', [c.address, c.cep?'CEP '+cepFmt(c.cep):'', [c.city,c.uf].filter(Boolean).join('/')].filter(Boolean).join(', ')); kv('Telefone / e-mail', [c.phone, c.email].filter(Boolean).join(' / '));
+    kv('Regime tributário', t.regime || c.regimeTributario); kv('Apuração do ICMS', t.icms);
+    tit('2. SERVIÇOS PRESTADOS PELO CONTABILISTA ANTERIOR');
+    par((t.servicos&&t.servicos.length ? t.servicos.map(x=>'(x) '+x).join('\n') : '—'), {ind:2});
+    tit('3. SITUAÇÃO DOS TRABALHOS NA DATA DA TRANSFERÊNCIA');
+    kv('Escrituração contábil até', dtx(t.dtContab)); kv('Diário e Razão até', dtx(t.dtDiario)); kv('Livros fiscais até', dtx(t.dtFiscal)); kv('Balancete / Balanço até', dtx(t.dtBalancete)); kv('Folha de pagamento até', dtx(t.dtFolha)); kv('Documentos legais até', dtx(t.dtDocs));
+    y += 1; par('Últimas obrigações acessórias entregues:', {bold:true, size:9.5}); par(t.obrig||'—', {ind:2, size:9.5});
+    par('As obrigações acessórias com período de apuração dentro da vigência do contrato anterior serão entregues pelo contabilista ' + (t.quem==='novo' ? 'NOVO, a partir da data desta transferência' : 'ANTERIOR, ainda que o prazo legal se encerre após a transferência, salvo disposição contratual em contrário') + '.', {size:9.5, lh:4.8});
+    tit('4. MOTIVO DA TRANSFERÊNCIA'); par(t.motivo||'—');
+    const lado = (num, titulo, x)=>{ tit(num+'. '+titulo); kv('Organização contábil', x.nome); kv('CNPJ / CRC da organização', [x.cnpj, x.crc].filter(Boolean).join(' / ')); kv('Endereço', x.end); kv('Telefone / e-mail', [x.tel, x.email].filter(Boolean).join(' / ')); kv('Contabilista responsável', x.contador); kv('CRC / categoria', [x.crcContador, x.categ].filter(Boolean).join(' — ')); };
+    lado('5', 'ORGANIZAÇÃO CONTÁBIL E CONTABILISTA ANTERIORES', a);
+    lado('6', 'ORGANIZAÇÃO CONTÁBIL E CONTABILISTA NOVOS', n);
+    tit('7. DOCUMENTOS ENTREGUES, HONORÁRIOS E OBSERVAÇÕES');
+    par('Documentos e arquivos entregues ao contratante ou a quem ele indicar por escrito:', {bold:true, size:9.5}); par(t.docs||'—', {ind:2, size:9.5});
+    kv('Honorários / pendências', t.honorarios); if(t.obs) kv('Observações', t.obs);
+    tit('8. RESPONSABILIDADES');
+    par('a) O contabilista anterior prestará ao novo as informações de que este necessite para a continuidade dos serviços (Res. CFC nº 1.590/2020, art. 8º).\nb) Salvo disposição em contrário no distrato, o contabilista anterior responde pelas demonstrações contábeis do período sob sua responsabilidade e pelas obrigações acessórias cujo período de apuração tenha ocorrido na vigência do contrato (arts. 9º e 10).\nc) Os livros, documentos e arquivos serão devolvidos ao contratante, ou a quem ele indicar por escrito, na forma e prazo previstos no distrato (art. 7º).\nd) Este termo não substitui o distrato do contrato de prestação de serviços contábeis, que deve ser firmado separadamente.\ne) A transferência deverá ser registrada no TTRT-e do Conselho Regional de Contabilidade, conforme as normas do respectivo CRC.', {size:9.5, lh:4.8});
+    y += 2; par('Declaramos que as informações prestadas neste termo são verdadeiras.', {size:9.5});
+    nova(70); y += 4; par('Local e data: ______________________________, ' + dtx(t.data), {size:10}); y += 16;
+    const assin = (x, rot1, rot2)=>{ doc.setDrawColor(60,60,60); doc.setLineWidth(0.3); doc.line(x, y, x+larg/2-6, y); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.text(rot1, x, y+4); doc.setFont('helvetica','normal'); doc.text(doc.splitTextToSize(rot2, larg/2-6), x, y+8); };
+    assin(mx, 'CONTABILISTA ANTERIOR', (a.contador||'')+(a.crcContador?' — '+a.crcContador:'')); assin(mx+larg/2+3, 'CONTABILISTA NOVO', (n.contador||'')+(n.crcContador?' — '+n.crcContador:''));
+    y += 24; nova(30); assin(mx, 'EMPRESA / REPRESENTANTE LEGAL', (c.name||'')+(c.doc?' — '+c.doc:'')); 
+    const np = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+    for(let i=1;i<=np;i++){ if(doc.setPage) doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,130,145); doc.text('TTRT '+(t.numero||'')+' — '+(c.name||''), mx, pageH-10); doc.text('Página '+i+' de '+np, pageW-mx, pageH-10, {align:'right'}); }
+    pdfSalvar(doc, 'ttrt-' + String(c.name||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+
   // Relatório para impressão das alterações contratuais (respeita empresa e filtro de situação da tela).
   function alteracoesListaTela(){
     const empresaId = deptOneSelectedClient();
@@ -23175,7 +23338,7 @@
       ${state.modal==='inscricao' ? inscricaoModalHtml() : ''}
       ${state.modal==='alvara' ? alvaraModalHtml() : ''}
       ${state.modal==='processoFiscal' ? processoFiscalModalHtml() : ''}
-      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}${state.modal==='alteracaoDesc' ? alteracaoDescModalHtml() : ''}${state.modal==='alteracaoArq' ? alteracaoArqModalHtml() : ''}
+      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}${state.modal==='ttrt' ? ttrtModalHtml() : ''}${state.modal==='alteracaoDesc' ? alteracaoDescModalHtml() : ''}${state.modal==='alteracaoArq' ? alteracaoArqModalHtml() : ''}
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
       ${state.modal==='certidao' ? certidaoModalHtml() : ''}
@@ -26446,6 +26609,31 @@
     }
 
     // ===== Alterações Contratuais =====
+    // ===== TTRT =====
+    const novoTtrtBtn = document.getElementById('novoTtrtBtn');
+    if(novoTtrtBtn) novoTtrtBtn.onclick = ()=>{ const cid = deptOneSelectedClient(); if(!cid) return; state.ttrtModalData = ttrtNovo(cid); state.modal='ttrt'; render(); };
+    root.querySelectorAll('[data-ttrt-edit]').forEach(el=>{ el.onclick = ()=>{ const t = state.ttrts.find(x=>x.id===el.dataset.ttrtEdit); if(!t) return; state.ttrtModalData = JSON.parse(JSON.stringify(t)); state.modal='ttrt'; render(); }; });
+    root.querySelectorAll('[data-ttrt-pdf]').forEach(el=>{ el.onclick = ()=> gerarPdfTtrt(el.dataset.ttrtPdf); });
+    root.querySelectorAll('[data-ttrt-del]').forEach(el=>{ el.onclick = ()=>{ if(confirm('Excluir este termo de transferência?')) deleteTtrt(el.dataset.ttrtDel); }; });
+    const ttCancel = document.getElementById('ttCancel'); if(ttCancel) ttCancel.onclick = ()=>{ state.modal=null; state.ttrtModalData=null; render(); };
+    const ttSentido = document.getElementById('ttSentido');
+    if(ttSentido) ttSentido.onchange = ()=>{
+      const meu = ttrtMeuEscritorio(); const lado = ttSentido.value==='saindo' ? 'ttAnt' : 'ttNov', outro = ttSentido.value==='saindo' ? 'ttNov' : 'ttAnt';
+      const set = (pre, o)=>{ const m = {Nome:o.nome,Cnpj:o.cnpj,Crc:o.crc,End:o.end,Tel:o.tel,Contador:o.contador,CrcContador:o.crcContador,Email:o.email}; Object.keys(m).forEach(k=>{ const el = document.getElementById(pre+k); if(el) el.value = m[k]||''; }); };
+      const outroNome = document.getElementById(outro+'Nome');
+      if(outroNome && outroNome.value.trim().toUpperCase()===meu.nome) set(outro, ttrtLadoVazio());
+      set(lado, meu);
+    };
+    const ttrtForm = document.getElementById('ttrtForm');
+    if(ttrtForm) ttrtForm.onsubmit = async (e)=>{
+      e.preventDefault(); const base = state.ttrtModalData || {}; const g = id=>{ const el = document.getElementById(id); return el ? el.value : ''; };
+      const t = Object.assign({}, base, { sentido:g('ttSentido'), numero:g('ttNumero').trim(), data:g('ttData'), motivo:g('ttMotivo').trim(),
+        servicos:Array.from(document.querySelectorAll('.tt-srv')).filter(x=>x.checked).map(x=>x.value), regime:g('ttRegime'), icms:g('ttIcms'),
+        dtContab:g('ttDtContab'), dtDiario:g('ttDtDiario'), dtFiscal:g('ttDtFiscal'), dtBalancete:g('ttDtBalancete'), dtFolha:g('ttDtFolha'), dtDocs:g('ttDtDocs'),
+        obrig:g('ttObrig'), quem:g('ttQuem'), docs:g('ttDocs'), honorarios:g('ttHonor').trim(), obs:g('ttObs').trim(), status:g('ttStatus'), protocolo:g('ttProtocolo').trim(), dataRegistro:g('ttDataRegistro'),
+        anterior:ttrtLerLado('ttAnt'), novo:ttrtLerLado('ttNov') });
+      const ok = await saveTtrt(t); if(ok){ state.modal=null; state.ttrtModalData=null; render(); }
+    };
     const altPdfBtn = document.getElementById('altPdfBtn'); if(altPdfBtn) altPdfBtn.onclick = gerarPdfAlteracoes;
     const novaAlteracaoBtn = document.getElementById('novaAlteracaoBtn');
     if(novaAlteracaoBtn) novaAlteracaoBtn.onclick = ()=>{
