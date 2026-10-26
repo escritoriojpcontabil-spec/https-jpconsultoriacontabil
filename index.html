@@ -804,6 +804,7 @@
     processosFiscais: [],
     alteracoesContratuais: [],
     ttrts: [],
+    distratos: [],
     alteracaoModalData: null,
     alteracaoFiltroStatus: 'Todos',
     processoFiscalEmpresaAtiva: '',
@@ -4182,6 +4183,8 @@
     {k:'orientacoes', label:'Orientações'},
     {k:'esporadicos', label:'Serviços Esporádicos'},
     {k:'baixa-empresas', label:'Baixa de Empresas'},
+    {k:'distrato', label:'Distrato de Contrato (CFC)'},
+    {k:'ttrt', label:'Transferência de Contador (TTRT)'},
   ];
   function renderServicosContabeis(){
     if(!SERVICOS_TABS.some(t=>t.k===state.servicosTab)) state.servicosTab = 'proposta';
@@ -4192,6 +4195,8 @@
     else if(state.servicosTab==='orientacoes') tabContent = orientacoesSectionHtml();
     else if(state.servicosTab==='esporadicos') tabContent = servicosEsporadicosSectionHtml();
     else if(state.servicosTab==='baixa-empresas') tabContent = baixaEmpresaPanelHtml();
+    else if(state.servicosTab==='ttrt') tabContent = ttrtPanelHtml();
+    else if(state.servicosTab==='distrato') tabContent = distratoPanelHtml();
     return `
       <div class="panel">
         <div class="dp-tabs">
@@ -13846,6 +13851,7 @@
     await loadProcessosFiscais();
     await loadAlteracoesContratuais();
     await loadTtrts();
+    await loadDistratos();
   }
 
   async function exportAllData(){
@@ -13907,6 +13913,7 @@
       processosFiscais: state.processosFiscais,
       alteracoesContratuais: state.alteracoesContratuais,
       ttrts: state.ttrts,
+      distratos: state.distratos,
       funcionarios: state.funcionarios,
       folhas: state.folhas,
       ferias: state.ferias,
@@ -13997,6 +14004,7 @@
       {key:'processosFiscais', prefix:'processosfiscais:', idField:'id'},
       {key:'alteracoesContratuais', prefix:'alteracoescontratuais:', idField:'id'},
       {key:'ttrts', prefix:'ttrt:', idField:'id'},
+      {key:'distratos', prefix:'distratos:', idField:'id'},
       {key:'funcionarios', prefix:'funcionarios:', idField:'id'},
       {key:'folhas', prefix:'folhas:', idField:'id'},
       {key:'ferias', prefix:'ferias:', idField:'id'},
@@ -21958,7 +21966,6 @@
     {k:'alvaras', label:'Alvarás'},
     {k:'processos', label:'Processos Fiscais'},
     {k:'alteracoes', label:'Alterações Contratuais'},
-    {k:'ttrt', label:'Transferência de Contador (TTRT)'},
   ];
   function contratosServicosPanelHtml(){
     const empresa = state.clients.find(c=>c.id===state.contratoEmpresaAtiva);
@@ -22007,7 +22014,6 @@
     else if(state.legalTab==='alvaras') tabContent = alvarasPanelHtml();
     else if(state.legalTab==='processos') tabContent = processosFiscaisPanelHtml();
     else if(state.legalTab==='alteracoes') tabContent = alteracoesContratuaisPanelHtml();
-    else if(state.legalTab==='ttrt') tabContent = ttrtPanelHtml();
     return `
       <div class="panel">
         <div class="dp-tabs">
@@ -22479,7 +22485,19 @@
   }
   // ===== TTRT — Termo de Transferência de Responsabilidade Técnica (troca de contador) =====
   const TTRT_SERVICOS = ['Escrituração contábil', 'Escrituração fiscal', 'Folha de pagamento / Departamento pessoal', 'Controle do patrimônio (imobilizado)', 'Apuração de tributos e guias', 'Obrigações acessórias (SPED, DCTF, DEFIS etc.)', 'Abertura, alteração e baixa de empresas (legalização)'];
-  const TTRT_OBRIG_PADRAO = ['ECD (SPED Contábil) — último ano entregue: ', 'ECF — último ano entregue: ', 'DEFIS / DASN-SIMEI — último ano entregue: ', 'PGDAS-D / DAS — última competência apurada: ', 'DCTFWeb / EFD-Reinf — última competência: ', 'EFD-Contribuições / SPED Fiscal — última competência: ', 'eSocial / folha — última competência: ', 'DIRF / RAIS — último ano entregue: '].join('\n');
+  const TTRT_TRAB = [['contab','Escrituração contábil'],['diario','Livros Diário e Razão'],['fiscal','Livros fiscais'],['balancete','Balancete / Balanço'],['folha','Folha de pagamento'],['docs','Documentos legais']];
+  const TTRT_TRAB_SIT = [['ate','Realizado até a data'],['nao','NÃO elaborado'],['na','Não se aplica']];
+  const TTRT_OBRIG_SIT = ['Entregue','Pendente','Dispensada / não obrigatória','Não se aplica'];
+  const TTRT_PEND_DOCS = ['Extratos bancários (OFX / PDF)','Notas fiscais de entrada (compras)','Notas fiscais de saída (vendas/serviços)','Comprovantes de despesas e pagamentos','Documentos de empregados / folha','Informações sobre sócios e pró-labore','Certificado digital / procuração eletrônica','Outros documentos'];
+  function ttrtObrigsPadrao(regime){
+    const base = {
+      'Simples Nacional': ['PGDAS-D / DAS','DEFIS','DCTFWeb (se houver empregados ou retenções)','eSocial / folha (se houver empregados)','EFD-Reinf (se houver retenções)'],
+      'MEI': ['DASN-SIMEI','Relatório mensal de receitas brutas'],
+      'Lucro Presumido': ['ECD (SPED Contábil)','ECF','EFD-Contribuições','SPED Fiscal / EFD ICMS-IPI (se contribuinte de ICMS)','DCTFWeb','EFD-Reinf','eSocial / folha'],
+      'Lucro Real': ['ECD (SPED Contábil)','ECF (com LALUR/LACS)','EFD-Contribuições','SPED Fiscal / EFD ICMS-IPI (se contribuinte de ICMS)','DCTFWeb','EFD-Reinf','eSocial / folha'],
+    };
+    return (base[regime] || ['ECD (SPED Contábil)','ECF','PGDAS-D / DEFIS (se Simples Nacional)','DCTFWeb','EFD-Reinf','eSocial / folha']).map(n=>({nome:n, sit:'', periodo:''}));
+  }
   const TTRT_DOCS_PADRAO = ['Livros contábeis e fiscais (Diário, Razão, Registro de Entradas/Saídas/Apuração)', 'Notas fiscais e documentos que sustentam a escrituração', 'Arquivos digitais (SPED, recibos de entrega, XMLs)', 'Folha de pagamento, admissões e rescisões (eSocial)', 'Contrato social, alterações e documentos de legalização', 'Certificado digital / procurações eletrônicas (e-CAC, SEFAZ, prefeitura)'].join('\n');
   async function loadTtrts(){
     state.ttrts = [];
@@ -22508,8 +22526,8 @@
   function ttrtLadoVazio(){ return { nome:'', cnpj:'', crc:'', end:'', tel:'', contador:'', crcContador:'', categ:'Contador', email:'' }; }
   function ttrtNovo(clientId){
     const c = state.clients.find(x=>x.id===clientId)||{};
-    return { clientId, sentido:'saindo', data:todayStr(), numero:'', motivo:'', servicos:TTRT_SERVICOS.slice(0,5), regime:c.regimeTributario||'', icms:'', dtContab:'', dtDiario:'', dtFiscal:'', dtBalancete:'', dtFolha:'', dtDocs:'',
-      obrig:TTRT_OBRIG_PADRAO, quem:'anterior', docs:TTRT_DOCS_PADRAO, honorarios:'Sem pendências de honorários.', obs:'', status:'Rascunho', protocolo:'', dataRegistro:'',
+    return { clientId, sentido:'saindo', data:todayStr(), numero:'', motivo:'', servicos:TTRT_SERVICOS.slice(0,5), regime:c.regimeTributario||'', icms:'', trab:{}, pend:[], pendObs:'',
+      obrigs:ttrtObrigsPadrao(c.regimeTributario||''), quem:'anterior', docs:TTRT_DOCS_PADRAO, honorarios:'Sem pendências de honorários.', obs:'', status:'Rascunho', protocolo:'', dataRegistro:'',
       anterior:ttrtMeuEscritorio(), novo:ttrtLadoVazio() };
   }
   function ttrtLadoHtml(pre, d, titulo){
@@ -22521,6 +22539,13 @@
         <div class="field"><label>Categoria</label><select id="${pre}Categ">${['Contador','Técnico em Contabilidade'].map(x=>`<option ${d.categ===x?'selected':''}>${x}</option>`).join('')}</select></div>
         ${f('Email','E-mail',d.email)}</div>`;
   }
+  function ttrtObrigRowsHtml(list){
+    return `<table style="margin:0;"><thead><tr><th>Obrigação</th><th style="width:230px;">Situação</th><th style="width:200px;">Último período / observação</th><th style="width:34px;"></th></tr></thead><tbody>${list.map(o=>`<tr class="tt-ob-row"><td><input type="text" class="tt-ob-nome" value="${escapeHtml(o.nome||'')}"/></td>
+      <td><select class="tt-ob-sit"><option value="">— em branco —</option>${TTRT_OBRIG_SIT.map(x=>`<option ${o.sit===x?'selected':''}>${x}</option>`).join('')}</select></td>
+      <td><input type="text" class="tt-ob-per" value="${escapeHtml(o.periodo||'')}" placeholder="Ex.: 08/2026"/></td>
+      <td><button type="button" class="btn-sm danger tt-ob-del" title="Remover">×</button></td></tr>`).join('')}</tbody></table>`;
+  }
+  function ttrtLerObrigs(){ return Array.from(document.querySelectorAll('.tt-ob-row')).map(r=>({ nome:r.querySelector('.tt-ob-nome').value.trim(), sit:r.querySelector('.tt-ob-sit').value, periodo:r.querySelector('.tt-ob-per').value.trim() })).filter(o=>o.nome); }
   function ttrtModalHtml(){
     const d = state.ttrtModalData; if(!d) return '';
     const c = state.clients.find(x=>x.id===d.clientId)||{};
@@ -22532,7 +22557,7 @@
         <div class="form-row">
           <div class="field"><label>Situação do meu escritório</label><select id="ttSentido"><option value="saindo" ${d.sentido==='saindo'?'selected':''}>Estou SAINDO — transferindo a empresa para outro contador</option><option value="entrando" ${d.sentido==='entrando'?'selected':''}>Estou ENTRANDO — assumindo a empresa de outro contador</option></select></div>
           <div class="field"><label>Termo nº</label><input type="text" id="ttNumero" value="${escapeHtml(d.numero||'')}" placeholder="Ex.: 001/2026"/></div>
-          <div class="field"><label>Data da transferência</label><input type="date" id="ttData" value="${escapeHtml(d.data||'')}" required/></div>
+          <div class="field"><label>Data da transferência</label><input type="date" id="ttData" value="${escapeHtml(d.data||'')}"/></div>
         </div>
         <div class="field"><label>Motivo da transferência</label><input type="text" id="ttMotivo" list="ttMotivos" value="${escapeHtml(d.motivo||'')}" placeholder="Escolha ou digite"/><datalist id="ttMotivos">${['Opção do contratante (cliente)','Rescisão do contrato de prestação de serviços','Redução de custos','Mudança de cidade/endereço da empresa','Aposentadoria / encerramento do escritório'].map(x=>`<option value="${x}"></option>`).join('')}</datalist></div>
         <div class="form-section-title" style="margin-top:14px;">Serviços prestados pelo contabilista que transfere</div>
@@ -22541,10 +22566,20 @@
           <div class="field"><label>Regime tributário</label><select id="ttRegime"><option value="">—</option>${REGIME_OPTIONS.map(x=>`<option ${d.regime===x?'selected':''}>${x}</option>`).join('')}</select></div>
           <div class="field"><label>Apuração do ICMS</label><select id="ttIcms">${['','Débito e crédito (regime normal)','Simples Nacional','Estimativa','Isento / não contribuinte'].map(x=>`<option ${d.icms===x?'selected':''}>${x}</option>`).join('')}</select></div>
         </div>
-        <div class="form-section-title" style="margin-top:14px;">Situação dos trabalhos na data da transferência (escrito até quando)</div>
-        <div class="form-row">${dt('ttDtContab','Escrituração contábil até',d.dtContab)}${dt('ttDtDiario','Livros Diário e Razão até',d.dtDiario)}${dt('ttDtFiscal','Livros fiscais até',d.dtFiscal)}</div>
-        <div class="form-row">${dt('ttDtBalancete','Balancete / Balanço até',d.dtBalancete)}${dt('ttDtFolha','Folha de pagamento até',d.dtFolha)}${dt('ttDtDocs','Documentos legais e comerciais até',d.dtDocs)}</div>
-        <div class="field"><label>Últimas obrigações acessórias entregues (uma por linha, com o período)</label><textarea id="ttObrig" rows="7">${escapeHtml(d.obrig||'')}</textarea></div>
+        <div class="form-section-title" style="margin-top:14px;">Situação dos trabalhos na data da transferência</div>
+        <div class="form-hint" style="margin:-4px 0 8px;">Nada aqui é obrigatório: o que ficar em branco sai no PDF como linha para preencher à mão. Se um serviço não foi feito (ex.: falta de extratos), marque <b>NÃO elaborado</b> e explique.</div>
+        <table style="margin:0 0 8px;"><thead><tr><th>Serviço</th><th style="width:210px;">Situação</th><th style="width:150px;">Até a data</th><th>Observação / motivo</th></tr></thead><tbody>
+        ${TTRT_TRAB.map(([k,rot])=>{ const v = (d.trab||{})[k] || {}; return `<tr><td>${rot}</td>
+          <td><select class="tt-trab-sit" data-k="${k}"><option value="">— em branco —</option>${TTRT_TRAB_SIT.map(([x,l])=>`<option value="${x}" ${v.sit===x?'selected':''}>${l}</option>`).join('')}</select></td>
+          <td><input type="date" class="tt-trab-dt" data-k="${k}" value="${escapeHtml(v.dt||'')}"/></td>
+          <td><input type="text" class="tt-trab-obs" data-k="${k}" value="${escapeHtml(v.obs||'')}" placeholder="Ex.: falta de extratos bancários"/></td></tr>`; }).join('')}
+        </tbody></table>
+        <div class="form-section-title" style="margin-top:14px;">Pendências de documentação por parte da empresa</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:4px 14px; margin-bottom:8px;">${TTRT_PEND_DOCS.map(x=>`<label style="display:flex; gap:6px; cursor:pointer;"><input type="checkbox" class="tt-pend" value="${escapeHtml(x)}" ${(d.pend||[]).indexOf(x)>=0?'checked':''}/> ${x}</label>`).join('')}</div>
+        <div class="field"><label>Detalhe das pendências (períodos, bancos, o que foi solicitado e quando)</label><textarea id="ttPendObs" rows="3" placeholder="Ex.: Extratos do Bradesco de 01/2025 a 09/2026 solicitados em 10/09/2026 e não entregues.">${escapeHtml(d.pendObs||'')}</textarea></div>
+        <div class="form-section-title" style="margin-top:14px;">Obrigações acessórias <span style="font-weight:400;">(a lista muda conforme o regime tributário escolhido acima)</span></div>
+        <div id="ttObrigBox">${ttrtObrigRowsHtml(d.obrigs && d.obrigs.length ? d.obrigs : ttrtObrigsPadrao(d.regime))}</div>
+        <button type="button" class="btn-sm" id="ttObrigAdd" style="margin:6px 0 10px;">+ Adicionar obrigação</button>
         <div class="field"><label>Quem entregará as próximas obrigações pendentes de entrega</label><select id="ttQuem"><option value="anterior" ${d.quem==='anterior'?'selected':''}>Contabilista anterior (quando o período for da sua responsabilidade)</option><option value="novo" ${d.quem==='novo'?'selected':''}>Contabilista novo (a partir da data da transferência)</option></select></div>
         ${ttrtLadoHtml('ttAnt', d.anterior, 'Escritório e contabilista ANTERIOR (que transfere)')}
         ${ttrtLadoHtml('ttNov', d.novo, 'Escritório e contabilista NOVO (que assume)')}
@@ -22566,9 +22601,9 @@
     return { nome:g('Nome'), cnpj:g('Cnpj'), crc:g('Crc'), end:g('End'), tel:g('Tel'), contador:g('Contador'), crcContador:g('CrcContador'), categ:g('Categ'), email:g('Email') };
   }
   function ttrtPanelHtml(){
-    const empresaId = deptOneSelectedClient();
+    const empresaId = state.ttrtEmpresaAtiva || '';
     const empresa = state.clients.find(c=>c.id===empresaId);
-    const lista = state.ttrts.filter(t=> empresaId ? t.clientId===empresaId : isClientInScope(t.clientId));
+    const lista = state.ttrts.filter(t=> empresaId ? t.clientId===empresaId : true);
     return `
       <div class="panel-head"><h3>Transferência de Contador — TTRT</h3>
         ${empresa ? `<button type="button" class="btn-add" id="novoTtrtBtn">+ Novo termo de transferência</button>` : ''}</div>
@@ -22580,7 +22615,9 @@
         3) <b>TTRT-e no CRC</b>: o contador que assume inicia a transferência no portal do CRC e o anterior valida; o que sai registra a desvinculação. Em CRCs como GO e PR o prazo é de <b>30 dias</b> — confirme a regra do seu CRC.<br>
         4) Atualizar o responsável técnico nos órgãos (Receita Federal, SEFAZ, prefeitura, Junta) e transferir certificados/procurações eletrônicas.
       </div>
-      ${!empresa ? `<div class="form-hint" style="margin:0 0 10px;">Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página, para criar o termo. Abaixo aparecem os termos das empresas selecionadas.</div>` : `<div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(empresa.name)}</div>`}
+      <div class="field" style="max-width:360px; margin-bottom:16px;"><label>Empresa</label>
+        <select id="ttrtEmpresaSelect" class="filter-select" style="width:100%;"><option value="">— Selecione uma empresa —</option>${state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>`<option value="${c.id}" ${empresaId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
+      ${!empresa ? `<div class="form-hint" style="margin:0 0 10px;">Escolha a empresa acima para criar um termo. Abaixo aparecem os termos já cadastrados.</div>` : ''}
       ${!lista.length ? `<div class="empty">Nenhum termo de transferência cadastrado ainda.</div>` : `<div class="cc-list">${lista.map(t=>`
         <div class="cc-row" style="align-items:flex-start;"><div class="cr-main">
           <div class="cr-title">TTRT ${escapeHtml(t.numero||'s/nº')} — ${escapeHtml(clientName(t.clientId))} <span class="tag ${t.status==='Rascunho'?'sit-pendente':'sit-ativa'}" style="margin-left:6px;">${escapeHtml(t.status||'Rascunho')}</span></div>
@@ -22599,7 +22636,7 @@
     const par = (txt, o)=>{ o=o||{}; doc.setFont('helvetica', o.bold?'bold':'normal'); doc.setFontSize(o.size||10); doc.setTextColor(20,25,30);
       String(txt).split(/\r?\n/).reduce((acc,ln)=>acc.concat(ln.trim()?doc.splitTextToSize(ln, larg-(o.ind||0)):['']),[]).forEach(l=>{ nova(5); doc.text(l, mx+(o.ind||0), y, o.center?{align:'center'}:undefined); y += (o.lh||4.8); }); };
     const tit = (n)=>{ nova(14); y += 3; doc.setFillColor(238,242,247); doc.rect(mx, y-4.5, larg, 6.5, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30); doc.text(n, mx+2, y); y += 7; };
-    const kv = (k, v)=>{ nova(6); doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(k+':', mx+2, y); doc.setFont('helvetica','normal'); const ls = doc.splitTextToSize(String(v||'—'), larg-58); doc.text(ls, mx+56, y); y += Math.max(1,ls.length)*4.6 + 0.6; };
+    const kv = (k, v)=>{ nova(6); doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(k+':', mx+2, y); doc.setFont('helvetica','normal'); const ls = doc.splitTextToSize(String(v||'______________________________'), larg-58); doc.text(ls, mx+56, y); y += Math.max(1,ls.length)*4.6 + 0.6; };
     const dtx = v=> v ? fmtDate(v) : '____/____/______';
     doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text('TERMO DE TRANSFERÊNCIA DE', pageW/2, y, {align:'center'}); y += 6; doc.text('RESPONSABILIDADE TÉCNICA', pageW/2, y, {align:'center'}); y += 6;
     doc.setFontSize(11); doc.text('TTRT Nº ' + (t.numero||'______'), pageW/2, y, {align:'center'}); y += 8;
@@ -22612,8 +22649,25 @@
     tit('2. SERVIÇOS PRESTADOS PELO CONTABILISTA ANTERIOR');
     par((t.servicos&&t.servicos.length ? t.servicos.map(x=>'(x) '+x).join('\n') : '—'), {ind:2});
     tit('3. SITUAÇÃO DOS TRABALHOS NA DATA DA TRANSFERÊNCIA');
-    kv('Escrituração contábil até', dtx(t.dtContab)); kv('Diário e Razão até', dtx(t.dtDiario)); kv('Livros fiscais até', dtx(t.dtFiscal)); kv('Balancete / Balanço até', dtx(t.dtBalancete)); kv('Folha de pagamento até', dtx(t.dtFolha)); kv('Documentos legais até', dtx(t.dtDocs));
-    y += 1; par('Últimas obrigações acessórias entregues:', {bold:true, size:9.5}); par(t.obrig||'—', {ind:2, size:9.5});
+    const trab = t.trab || {};
+    TTRT_TRAB.forEach(([k,rot])=>{
+      let v = trab[k]; if(!v){ const leg = {contab:t.dtContab, diario:t.dtDiario, fiscal:t.dtFiscal, balancete:t.dtBalancete, folha:t.dtFolha, docs:t.dtDocs}[k]; v = leg ? {sit:'ate', dt:leg} : {}; }
+      let txt;
+      if(v.sit==='ate') txt = 'Realizado até ' + dtx(v.dt) + (v.obs ? ' — ' + v.obs : '');
+      else if(v.sit==='nao') txt = 'NÃO ELABORADO' + (v.dt ? ' (referência ' + fmtDate(v.dt) + ')' : '') + (v.obs ? ' — ' + v.obs : '');
+      else if(v.sit==='na') txt = 'Não se aplica' + (v.obs ? ' — ' + v.obs : '');
+      else txt = 'Realizado até ____/____/______' + (v.obs ? ' — ' + v.obs : '');
+      kv(rot, txt);
+    });
+    y += 1; par('Pendências de documentação por parte da empresa:', {bold:true, size:9.5});
+    if((t.pend&&t.pend.length) || t.pendObs){
+      if(t.pend&&t.pend.length) par(t.pend.map(x=>'• '+x).join('\n'), {ind:2, size:9.5});
+      if(t.pendObs) par(t.pendObs, {ind:2, size:9.5});
+      par('Declara-se que os serviços indicados como "NÃO ELABORADO" deixaram de ser realizados em razão da não entrega, pela empresa, da documentação acima relacionada, cabendo ao contabilista novo solicitá-la ao contratante.', {size:9, lh:4.6});
+    } else par('Não há pendências de documentação a declarar.', {ind:2, size:9.5});
+    y += 1; par('Obrigações acessórias:', {bold:true, size:9.5});
+    if(t.obrigs && t.obrigs.length) par(t.obrigs.map(o=>'• '+o.nome+' — '+(o.sit||'situação: ________')+(o.periodo?' ('+o.periodo+')':'')).join('\n'), {ind:2, size:9.5});
+    else par(t.obrig||'—', {ind:2, size:9.5});
     par('As obrigações acessórias com período de apuração dentro da vigência do contrato anterior serão entregues pelo contabilista ' + (t.quem==='novo' ? 'NOVO, a partir da data desta transferência' : 'ANTERIOR, ainda que o prazo legal se encerre após a transferência, salvo disposição contratual em contrário') + '.', {size:9.5, lh:4.8});
     tit('4. MOTIVO DA TRANSFERÊNCIA'); par(t.motivo||'—');
     const lado = (num, titulo, x)=>{ tit(num+'. '+titulo); kv('Organização contábil', x.nome); kv('CNPJ / CRC da organização', [x.cnpj, x.crc].filter(Boolean).join(' / ')); kv('Endereço', x.end); kv('Telefone / e-mail', [x.tel, x.email].filter(Boolean).join(' / ')); kv('Contabilista responsável', x.contador); kv('CRC / categoria', [x.crcContador, x.categ].filter(Boolean).join(' — ')); };
@@ -22632,6 +22686,154 @@
     const np = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
     for(let i=1;i<=np;i++){ if(doc.setPage) doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,130,145); doc.text('TTRT '+(t.numero||'')+' — '+(c.name||''), mx, pageH-10); doc.text('Página '+i+' de '+np, pageW-mx, pageH-10, {align:'right'}); }
     pdfSalvar(doc, 'ttrt-' + String(c.name||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+
+  // ===== Distrato do contrato de prestação de serviços contábeis (Res. CFC nº 1.590/2020) =====
+  async function loadDistratos(){
+    state.distratos = [];
+    try{
+      const keys = await Store.list('distratos:', true);
+      if(keys && keys.keys){ for(const k of keys.keys){ try{ const r = await Store.get(k, true); if(r) state.distratos.push(JSON.parse(r.value)); }catch(e){} } }
+    }catch(e){}
+    state.distratos.sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
+  }
+  async function saveDistrato(t){
+    if(!t.id) t.id = uid();
+    if(!t.criadoEm) t.criadoEm = new Date().toISOString();
+    t.atualizadoEm = new Date().toISOString();
+    try{ await Store.set('distratos:'+t.id, JSON.stringify(t), true); }
+    catch(e){ alert('Não foi possível salvar o distrato.\n\nDetalhe técnico: '+(e&&e.message?e.message:'erro desconhecido')); return false; }
+    await loadDistratos(); render(); return true;
+  }
+  async function deleteDistrato(id){ await Store.delete('distratos:'+id, true); await loadDistratos(); render(); }
+  const DIS_DOCS_PADRAO = ['Livros contábeis e fiscais (Diário, Razão, Registros fiscais)','Notas fiscais e documentos que sustentam a escrituração','Arquivos digitais (SPED, recibos de entrega, XMLs)','Folha de pagamento, admissões e rescisões','Contrato social, alterações e documentos de legalização','Certificado digital e procurações eletrônicas'].join('\n');
+  function distratoNovo(clientId){
+    const c = state.clients.find(x=>x.id===clientId)||{};
+    const ctr = state.contratos.filter(x=>x.clientId===clientId && /Presta[cç][aã]o de Servi[cç]os Cont/i.test(x.tipo||'')).sort((a,b)=>(b.dataAssinatura||'').localeCompare(a.dataAssinatura||''))[0];
+    const soc = (Array.isArray(c.socios)?c.socios:[])[0] || {};
+    const m = ttrtMeuEscritorio();
+    return { clientId, numero:'', data:todayStr(), dataContrato:(ctr&&ctr.dataAssinatura)||c.contractStart||'', efeito:'', inic:'Mútuo acordo', aviso:'',
+      servicos:TTRT_SERVICOS.slice(0,5), repNome:soc.nome||'', repCpf:soc.cpf||'', repCargo:soc.cargo||'Sócio(a) administrador(a)',
+      ctdNome:m.nome, ctdCnpj:m.cnpj, ctdEnd:m.end, ctdContador:m.contador, ctdCrc:m.crcContador,
+      demonstr:'contratada', obrig:'contratada', docs:DIS_DOCS_PADRAO, prazoDocs:'30', localDocs:'na sede da CONTRATADA ou por meio digital, a critério do CONTRATANTE', receptor:'', novoContador:'',
+      pendDocs:'', honorarios:'Não há honorários pendentes.', foro:(m.end.match(/,\s*([^,]+\/[A-Z]{2})\s*$/)||[])[1]||'Paulista/PE', obs:'', status:'Rascunho' };
+  }
+  function distratoModalHtml(){
+    const d = state.distratoModalData; if(!d) return '';
+    const c = state.clients.find(x=>x.id===d.clientId)||{};
+    const f = (id, rot, v, ph, tp)=>`<div class="field"><label>${rot}</label><input type="${tp||'text'}" id="${id}" value="${escapeHtml(v||'')}" placeholder="${ph||''}"/></div>`;
+    const sel = (id, rot, v, opts)=>`<div class="field"><label>${rot}</label><select id="${id}">${opts.map(([x,l])=>`<option value="${escapeHtml(x)}" ${v===x?'selected':''}>${l}</option>`).join('')}</select></div>`;
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:900px;">
+      <h3>${d.id?'Editar':'Novo'} Distrato do Contrato de Prestação de Serviços Contábeis</h3>
+      <div class="form-hint" style="margin:-4px 0 8px; font-weight:700;">Contratante: ${escapeHtml(c.name||'—')} — ${escapeHtml(c.doc||'')}</div>
+      <div class="form-hint" style="margin:0 0 8px;">Nada é obrigatório: o que ficar em branco sai no PDF como linha para preencher à mão.</div>
+      <form id="distratoForm">
+        <div class="form-row">${f('disNumero','Distrato nº',d.numero,'Ex.: 001/2026')}${f('disData','Data da assinatura do distrato',d.data,'','date')}${f('disDataContrato','Data do contrato original',d.dataContrato,'','date')}${f('disEfeito','Serviços encerram em (data de efeito)',d.efeito,'','date')}</div>
+        <div class="form-row">${sel('disInic','Iniciativa do encerramento',d.inic,[['Mútuo acordo','Mútuo acordo'],['Por iniciativa do CONTRATANTE','Iniciativa do contratante (cliente)'],['Por iniciativa da CONTRATADA','Iniciativa da contratada (meu escritório)']])}${f('disAviso','Aviso prévio previsto no contrato',d.aviso,'Ex.: 30 dias — cumprido / dispensado')}</div>
+        <div class="form-section-title" style="margin-top:12px;">Serviços que eram prestados</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:4px 14px; margin-bottom:8px;">${TTRT_SERVICOS.map(x=>`<label style="display:flex; gap:6px; cursor:pointer;"><input type="checkbox" class="dis-srv" value="${escapeHtml(x)}" ${(d.servicos||[]).indexOf(x)>=0?'checked':''}/> ${x}</label>`).join('')}</div>
+        <div class="form-section-title" style="margin-top:12px;">Contratante (cliente) — quem assina</div>
+        <div class="form-row">${f('disRepNome','Representante legal',d.repNome)}${f('disRepCpf','CPF',d.repCpf)}${f('disRepCargo','Cargo / qualidade',d.repCargo)}</div>
+        <div class="form-section-title" style="margin-top:12px;">Contratada (meu escritório)</div>
+        <div class="form-row">${f('disCtdNome','Organização contábil',d.ctdNome)}${f('disCtdCnpj','CNPJ',d.ctdCnpj)}</div>
+        <div class="form-row">${f('disCtdEnd','Endereço',d.ctdEnd)}${f('disCtdContador','Contabilista responsável',d.ctdContador)}${f('disCtdCrc','CRC',d.ctdCrc)}</div>
+        <div class="form-section-title" style="margin-top:12px;">Ajustes do encerramento (art. 7º a 10 da Resolução CFC 1.590/2020)</div>
+        <div class="form-row">${sel('disDemonstr','Demonstrações contábeis do período sob responsabilidade da contratada',d.demonstr,[['contratada','A contratada ELABORA (regra geral)'],['novo','NÃO elabora — fica com o novo profissional (ajustado)']])}${sel('disObrig','Obrigações acessórias com período dentro da vigência',d.obrig,[['contratada','A contratada ENTREGA, mesmo com prazo posterior (regra geral)'],['novo','Ficam com o novo profissional (ajustado)']])}</div>
+        <div class="field"><label>Livros, documentos e arquivos a devolver (um por linha)</label><textarea id="disDocs" rows="5">${escapeHtml(d.docs||'')}</textarea></div>
+        <div class="form-row">${f('disPrazoDocs','Prazo de devolução (dias)',d.prazoDocs)}${f('disLocalDocs','Forma / local de entrega',d.localDocs)}</div>
+        <div class="form-row">${f('disReceptor','Quem receberá os documentos (se não for o próprio contratante — exige autorização por escrito)',d.receptor,'Nome e CPF/CRC do representante autorizado')}${f('disNovoContador','Novo contabilista contratado (se já souber)',d.novoContador,'Nome e CRC')}</div>
+        <div class="field"><label>Documentos que o contratante deixou de entregar (pendências)</label><textarea id="disPendDocs" rows="2" placeholder="Ex.: Extratos bancários (OFX/PDF) de 01/2025 a 09/2026 não entregues.">${escapeHtml(d.pendDocs||'')}</textarea></div>
+        <div class="form-row">${f('disHonor','Honorários pendentes',d.honorarios)}${f('disForo','Foro (comarca)',d.foro)}</div>
+        <div class="field"><label>Observações</label><textarea id="disObs" rows="2">${escapeHtml(d.obs||'')}</textarea></div>
+        <div class="form-row">${sel('disStatus','Situação',d.status,[['Rascunho','Rascunho'],['Assinado','Assinado']])}</div>
+        <div class="modal-actions"><button type="button" class="btn-sm" id="disCancel">Cancelar</button><button type="submit" class="btn-add">Salvar distrato</button></div>
+      </form></div></div>`;
+  }
+  function distratoPanelHtml(){
+    const empresaId = state.distratoEmpresaAtiva || '';
+    const empresa = state.clients.find(c=>c.id===empresaId);
+    const lista = state.distratos.filter(t=> empresaId ? t.clientId===empresaId : true);
+    return `
+      <div class="panel-head"><h3>Distrato do Contrato de Serviços Contábeis</h3>
+        ${empresa ? `<button type="button" class="btn-add" id="novoDistratoBtn">+ Novo distrato</button>` : ''}</div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Gera o <b>distrato</b> no padrão da <b>Resolução CFC nº 1.590/2020</b>: o encerramento do contrato exige distrato assinado pelas duas partes, com o fim das responsabilidades, a devolução dos livros e documentos (forma e prazo) e a divisão das demonstrações e obrigações acessórias. Se o cliente não assinar, use a <b>notificação de encerramento</b> (art. 6º, parágrafo único).</div>
+      <div class="field" style="max-width:360px; margin-bottom:16px;"><label>Empresa</label>
+        <select id="distratoEmpresaSelect" class="filter-select" style="width:100%;"><option value="">— Selecione uma empresa —</option>${state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=>`<option value="${c.id}" ${empresaId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
+      ${!empresa ? `<div class="form-hint" style="margin:0 0 10px;">Escolha a empresa acima para criar um distrato. Abaixo aparecem os já cadastrados.</div>` : ''}
+      ${!lista.length ? `<div class="empty">Nenhum distrato cadastrado ainda.</div>` : `<div class="cc-list">${lista.map(t=>`
+        <div class="cc-row" style="align-items:flex-start;"><div class="cr-main">
+          <div class="cr-title">Distrato ${escapeHtml(t.numero||'s/nº')} — ${escapeHtml(clientName(t.clientId))} <span class="tag ${t.status==='Assinado'?'sit-ativa':'sit-pendente'}" style="margin-left:6px;">${escapeHtml(t.status||'Rascunho')}</span></div>
+          <div class="cr-meta">${escapeHtml(t.inic||'')} · Serviços encerram em ${t.efeito?fmtDate(t.efeito):'—'} · Distrato de ${t.data?fmtDate(t.data):'—'}</div></div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;"><button type="button" class="btn-detail" data-dis-pdf="${t.id}">🖨 Gerar distrato</button><button type="button" class="btn-detail" data-dis-not="${t.id}">Notificação de encerramento</button><button type="button" class="btn-detail" data-dis-edit="${t.id}">Editar</button><button type="button" class="btn-sm danger" data-dis-del="${t.id}">Excluir</button></div></div>`).join('')}</div>`}`;
+  }
+  function distratoPdfBase(t){
+    const c = state.clients.find(x=>x.id===t.clientId)||{};
+    const { jsPDF } = window.jspdf; const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const mx = 20, larg = pageW-2*mx, lim = pageH-22; let y = 22;
+    const nova = h=>{ if(y+h>lim){ doc.addPage(); y = 22; } };
+    const par = (txt, o)=>{ o=o||{}; doc.setFont('helvetica', o.bold?'bold':'normal'); doc.setFontSize(o.size||10.5); doc.setTextColor(20,25,30);
+      String(txt).split(/\r?\n/).reduce((acc,ln)=>acc.concat(ln.trim()?doc.splitTextToSize(ln, larg-(o.ind||0)):['']),[]).forEach(l=>{ nova(5.5); doc.text(l, o.center?pageW/2:mx+(o.ind||0), y, o.center?{align:'center'}:undefined); y += (o.lh||5.2); }); y += (o.after||0); };
+    const dtx = v=> v ? fmtDate(v) : '____/____/______';
+    const bl = v=> v || '______________________';
+    const rodape = ()=>{ const np = doc.getNumberOfPages ? doc.getNumberOfPages() : 1; for(let i=1;i<=np;i++){ if(doc.setPage) doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,130,145); doc.text((t.numero?'Distrato '+t.numero+' — ':'')+(c.name||''), mx, pageH-10); doc.text('Página '+i+' de '+np, pageW-mx, pageH-10, {align:'right'}); } };
+    const assin = (x, w, r1, r2)=>{ doc.setDrawColor(60,60,60); doc.setLineWidth(0.3); doc.line(x, y, x+w, y); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(20,25,30); doc.text(r1, x, y+4); doc.setFont('helvetica','normal'); doc.text(doc.splitTextToSize(r2||'', w), x, y+8); };
+    return {c, doc, pageW, pageH, mx, larg, par, dtx, bl, rodape, assin, nova, getY:()=>y, setY:v=>{ y = v; }};
+  }
+  function gerarPdfDistrato(id){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const t = state.distratos.find(x=>x.id===id); if(!t) return;
+    const B = distratoPdfBase(t); const {c, doc, par, dtx, bl} = B; let y;
+    par('DISTRATO DO CONTRATO DE PRESTAÇÃO DE SERVIÇOS CONTÁBEIS' + (t.numero?' Nº '+t.numero:''), {bold:true, size:13, center:true, after:5, lh:6});
+    par('Pelo presente instrumento particular, de um lado ' + bl(c.name) + ', inscrita no CNPJ/CPF sob o nº ' + bl(c.doc) + ', com sede em ' + bl([c.address, c.cep?'CEP '+cepFmt(c.cep):'', [c.city,c.uf].filter(Boolean).join('/')].filter(Boolean).join(', ')) + ', neste ato representada por ' + bl(t.repNome) + ', CPF nº ' + bl(t.repCpf) + ', ' + bl(t.repCargo) + ', doravante denominada CONTRATANTE; e, de outro lado, ' + bl(t.ctdNome) + ', inscrita no CNPJ sob o nº ' + bl(t.ctdCnpj) + ', com sede em ' + bl(t.ctdEnd) + ', neste ato representada por ' + bl(t.ctdContador) + ', ' + bl(t.ctdCrc) + ', doravante denominada CONTRATADA, resolvem, de comum acordo e nos termos da Resolução CFC nº 1.590/2020, firmar o presente DISTRATO, mediante as cláusulas seguintes:', {after:3, lh:5.4});
+    const cl = (tit, txt)=>{ par(tit, {bold:true, after:0}); par(txt, {after:3, lh:5.2}); };
+    const srv = (t.servicos&&t.servicos.length) ? t.servicos.map(x=>x.toLowerCase()).join('; ') : '____________________';
+    cl('CLÁUSULA PRIMEIRA — DO OBJETO', 'As partes distratam o contrato de prestação de serviços contábeis firmado em ' + dtx(t.dataContrato) + ', que tinha por objeto os seguintes serviços: ' + srv + '. O encerramento ocorre ' + (t.inic==='Mútuo acordo' ? 'por mútuo acordo' : t.inic ? t.inic.charAt(0).toLowerCase()+t.inic.slice(1) : 'por __________') + ', com efeitos a partir de ' + dtx(t.efeito) + '. Aviso prévio previsto no contrato: ' + bl(t.aviso) + '.');
+    cl('CLÁUSULA SEGUNDA — DO FIM DAS RESPONSABILIDADES', 'A CONTRATADA permanece tecnicamente responsável pelos serviços até ' + dtx(t.efeito) + '. A partir dessa data cessam as responsabilidades de ambas as partes decorrentes do contrato ora distratado, ressalvadas as obrigações expressamente mantidas neste instrumento (art. 6º da Resolução CFC nº 1.590/2020).');
+    cl('CLÁUSULA TERCEIRA — DAS DEMONSTRAÇÕES CONTÁBEIS', t.demonstr==='novo' ? 'Fica ajustado que a CONTRATADA não elaborará as demonstrações contábeis do período sob sua responsabilidade técnica, que ficarão a cargo do novo profissional contratado pela CONTRATANTE (art. 9º, parágrafo único).' : 'A CONTRATADA elaborará as demonstrações contábeis do período sob sua responsabilidade técnica, até ' + dtx(t.efeito) + ' (art. 9º, parágrafo único).');
+    cl('CLÁUSULA QUARTA — DAS OBRIGAÇÕES ACESSÓRIAS', t.obrig==='novo' ? 'Fica ajustado que as obrigações tributárias acessórias, inclusive as cujo período de apuração tenha ocorrido na vigência do contrato, serão cumpridas pelo novo profissional contratado pela CONTRATANTE.' : 'A CONTRATADA cumprirá as obrigações tributárias acessórias cujo período de apuração tenha ocorrido na vigência do contrato, ainda que o prazo legal de entrega se encerre após o seu término (art. 10).');
+    cl('CLÁUSULA QUINTA — DA ENTREGA DOS DOCUMENTOS', 'A CONTRATANTE é responsável por receber os seus documentos em poder da CONTRATADA (art. 7º). A CONTRATADA devolverá, no prazo de ' + bl(t.prazoDocs) + ' dias, ' + (t.localDocs||'na forma a combinar') + ', os livros contábeis, registros auxiliares, documentos e arquivos relativos às obrigações entregues ao Fisco, inclusive os eletrônicos (art. 9º), a saber:');
+    par(t.docs || '____________________', {ind:4, size:10, after:2});
+    par('A entrega será feita ' + (t.receptor ? 'ao representante autorizado por escrito pela CONTRATANTE: ' + t.receptor : 'à própria CONTRATANTE, ou a quem esta indicar por escrito') + ', mediante recibo que relacione tudo o que for entregue.' + (t.pendDocs ? ' Registra-se que a CONTRATANTE deixou de entregar à CONTRATADA os seguintes documentos: ' + t.pendDocs : ''), {after:3, lh:5.2});
+    cl('CLÁUSULA SEXTA — DAS INFORMAÇÕES AO NOVO PROFISSIONAL', 'A CONTRATADA prestará ao novo profissional contratado' + (t.novoContador ? ' (' + t.novoContador + ')' : '') + ' as informações de que este necessite para dar continuidade aos serviços (art. 8º), respeitado o sigilo profissional.');
+    cl('CLÁUSULA SÉTIMA — DOS HONORÁRIOS', 'Situação dos honorários: ' + bl(t.honorarios) + ' Eventual pendência financeira será cobrada pelas vias próprias e não impedirá a entrega dos documentos pertencentes à CONTRATANTE.');
+    cl('CLÁUSULA OITAVA — DA QUITAÇÃO E DOS DADOS', 'Cumpridas as obrigações aqui previstas, as partes dão-se mútua quitação quanto aos serviços prestados, ressalvados os honorários pendentes. A CONTRATADA poderá manter cópia dos documentos pelo prazo exigido em lei para o exercício regular de direitos, observada a Lei Geral de Proteção de Dados.');
+    cl('CLÁUSULA NONA — DO FORO', 'Fica eleito o foro da comarca de ' + bl(t.foro) + ' para dirimir eventuais controvérsias deste distrato.');
+    if(t.obs) par('Observações: ' + t.obs, {size:10, after:3});
+    par('E, por estarem de acordo, firmam o presente em duas vias de igual teor, na presença de duas testemunhas.', {after:4});
+    B.nova(75); y = B.getY(); par('______________________________, ' + dtx(t.data), {after:12});
+    y = B.getY(); const w = (B.larg-8)/2;
+    B.assin(B.mx, w, 'CONTRATANTE', bl(t.repNome)+' — '+(c.name||'')); B.assin(B.mx+w+8, w, 'CONTRATADA', bl(t.ctdContador)+' — '+(t.ctdCrc||''));
+    B.setY(B.getY()+26); y = B.getY(); B.assin(B.mx, w, 'TESTEMUNHA 1', 'Nome e CPF:'); B.assin(B.mx+w+8, w, 'TESTEMUNHA 2', 'Nome e CPF:');
+    // Recibo de documentos
+    doc.addPage(); B.setY(22);
+    par('RECIBO DE ENTREGA DE LIVROS, DOCUMENTOS E ARQUIVOS', {bold:true, size:12.5, center:true, after:5});
+    par('Recebi da ' + bl(t.ctdNome) + ' os livros, documentos e arquivos relacionados abaixo, pertencentes a ' + bl(c.name) + ', conforme a cláusula quinta do distrato' + (t.numero?' nº '+t.numero:'') + '.', {after:3});
+    par(t.docs || '____________________', {ind:4, size:10, after:3});
+    par('Observações: ________________________________________________________________', {after:2}); par('_________________________________________________________________________', {after:8});
+    par('Data do recebimento: ____/____/______', {after:14}); y = B.getY(); B.assin(B.mx, w, 'RECEBEDOR', 'Nome, CPF e qualidade (contratante / representante autorizado / novo contabilista):');
+    B.rodape();
+    pdfSalvar(doc, 'distrato-' + String(c.name||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+  function gerarPdfNotificacaoDistrato(id){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const t = state.distratos.find(x=>x.id===id); if(!t) return;
+    const B = distratoPdfBase(t); const {c, doc, par, dtx, bl} = B;
+    par('NOTIFICAÇÃO DE ENCERRAMENTO DA RELAÇÃO CONTRATUAL', {bold:true, size:13, center:true, after:2, lh:6});
+    par('(Resolução CFC nº 1.590/2020, art. 6º, parágrafo único)', {size:9.5, center:true, after:8});
+    par('Local e data: ______________________________, ' + dtx(t.data), {after:6});
+    par('À ' + bl(c.name) + '\nCNPJ/CPF: ' + bl(c.doc) + '\nA/C: ' + bl(t.repNome), {bold:true, after:6});
+    par('Prezados,', {after:3});
+    par('Comunicamos que, ' + (t.inic==='Por iniciativa do CONTRATANTE' ? 'em razão da decisão da CONTRATANTE, ' : t.inic==='Por iniciativa da CONTRATADA' ? 'por decisão desta organização contábil, ' : '') + 'a relação contratual de prestação de serviços contábeis firmada em ' + dtx(t.dataContrato) + ' encerra-se em ' + dtx(t.efeito) + (t.aviso ? ', observado o aviso prévio: ' + t.aviso : '') + '. Não tendo sido possível firmar o distrato, esta notificação confirma que, a partir da data indicada, cessam as responsabilidades de ambas as partes decorrentes do contrato.', {after:3, lh:5.4});
+    par('Solicitamos que seja contratado, com urgência, novo profissional da contabilidade, para assumir a responsabilidade técnica a partir de ' + dtx(t.efeito) + '. Este escritório prestará ao novo profissional as informações necessárias à continuidade dos serviços.', {after:3, lh:5.4});
+    par('Os livros, documentos e arquivos da empresa estão à disposição para retirada, ' + (t.localDocs||'conforme combinado') + ', no prazo de ' + bl(t.prazoDocs) + ' dias a contar desta notificação, mediante recibo' + (t.receptor ? ', podendo ser recebidos por ' + t.receptor + ' (representante autorizado por escrito)' : ', por representante autorizado por escrito') + '.', {after:3, lh:5.4});
+    if(t.pendDocs) par('Registramos que não foram entregues a este escritório: ' + t.pendDocs, {after:3, lh:5.4});
+    par('Situação dos honorários: ' + bl(t.honorarios) + ' A pendência financeira, se houver, será tratada pelas vias próprias e não impede a entrega dos documentos da empresa.', {after:3, lh:5.4});
+    par('Permanecemos à disposição.', {after:16});
+    let y = B.getY(); const w = (B.larg-8)/2; B.assin(B.mx, w, bl(t.ctdContador), (t.ctdNome||'')+(t.ctdCrc?' — '+t.ctdCrc:''));
+    B.setY(B.getY()+26); par('CIÊNCIA DA CONTRATANTE: Recebi esta notificação em ____/____/______.', {after:14}); y = B.getY(); B.assin(B.mx, w, 'CONTRATANTE', bl(t.repNome)+' — '+(c.name||''));
+    B.rodape();
+    pdfSalvar(doc, 'notificacao-encerramento-' + String(c.name||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
   // Relatório para impressão das alterações contratuais (respeita empresa e filtro de situação da tela).
@@ -23338,7 +23540,7 @@
       ${state.modal==='inscricao' ? inscricaoModalHtml() : ''}
       ${state.modal==='alvara' ? alvaraModalHtml() : ''}
       ${state.modal==='processoFiscal' ? processoFiscalModalHtml() : ''}
-      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}${state.modal==='ttrt' ? ttrtModalHtml() : ''}${state.modal==='alteracaoDesc' ? alteracaoDescModalHtml() : ''}${state.modal==='alteracaoArq' ? alteracaoArqModalHtml() : ''}
+      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}${state.modal==='ttrt' ? ttrtModalHtml() : ''}${state.modal==='distrato' ? distratoModalHtml() : ''}${state.modal==='alteracaoDesc' ? alteracaoDescModalHtml() : ''}${state.modal==='alteracaoArq' ? alteracaoArqModalHtml() : ''}
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
       ${state.modal==='certidao' ? certidaoModalHtml() : ''}
@@ -26609,13 +26811,40 @@
     }
 
     // ===== Alterações Contratuais =====
+    // ===== Distrato =====
+    const disEmpSel = document.getElementById('distratoEmpresaSelect'); if(disEmpSel) disEmpSel.onchange = ()=>{ state.distratoEmpresaAtiva = disEmpSel.value; render(); };
+    const novoDistratoBtn = document.getElementById('novoDistratoBtn');
+    if(novoDistratoBtn) novoDistratoBtn.onclick = ()=>{ const cid = state.distratoEmpresaAtiva; if(!cid) return; state.distratoModalData = distratoNovo(cid); state.modal='distrato'; render(); };
+    root.querySelectorAll('[data-dis-edit]').forEach(el=>{ el.onclick = ()=>{ const t = state.distratos.find(x=>x.id===el.dataset.disEdit); if(!t) return; state.distratoModalData = JSON.parse(JSON.stringify(t)); state.modal='distrato'; render(); }; });
+    root.querySelectorAll('[data-dis-pdf]').forEach(el=>{ el.onclick = ()=> gerarPdfDistrato(el.dataset.disPdf); });
+    root.querySelectorAll('[data-dis-not]').forEach(el=>{ el.onclick = ()=> gerarPdfNotificacaoDistrato(el.dataset.disNot); });
+    root.querySelectorAll('[data-dis-del]').forEach(el=>{ el.onclick = ()=>{ if(confirm('Excluir este distrato?')) deleteDistrato(el.dataset.disDel); }; });
+    const disCancel = document.getElementById('disCancel'); if(disCancel) disCancel.onclick = ()=>{ state.modal=null; state.distratoModalData=null; render(); };
+    const distratoForm = document.getElementById('distratoForm');
+    if(distratoForm) distratoForm.onsubmit = async (e)=>{
+      e.preventDefault(); const base = state.distratoModalData || {}; const g = id=>{ const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+      const t = Object.assign({}, base, { numero:g('disNumero'), data:g('disData'), dataContrato:g('disDataContrato'), efeito:g('disEfeito'), inic:g('disInic'), aviso:g('disAviso'),
+        servicos:Array.from(document.querySelectorAll('.dis-srv')).filter(x=>x.checked).map(x=>x.value), repNome:g('disRepNome'), repCpf:g('disRepCpf'), repCargo:g('disRepCargo'),
+        ctdNome:g('disCtdNome'), ctdCnpj:g('disCtdCnpj'), ctdEnd:g('disCtdEnd'), ctdContador:g('disCtdContador'), ctdCrc:g('disCtdCrc'),
+        demonstr:g('disDemonstr'), obrig:g('disObrig'), docs:(document.getElementById('disDocs')||{}).value||'', prazoDocs:g('disPrazoDocs'), localDocs:g('disLocalDocs'), receptor:g('disReceptor'), novoContador:g('disNovoContador'),
+        pendDocs:g('disPendDocs'), honorarios:g('disHonor'), foro:g('disForo'), obs:g('disObs'), status:g('disStatus') });
+      const ok = await saveDistrato(t); if(ok){ state.modal=null; state.distratoModalData=null; render(); }
+    };
     // ===== TTRT =====
     const novoTtrtBtn = document.getElementById('novoTtrtBtn');
-    if(novoTtrtBtn) novoTtrtBtn.onclick = ()=>{ const cid = deptOneSelectedClient(); if(!cid) return; state.ttrtModalData = ttrtNovo(cid); state.modal='ttrt'; render(); };
+    const ttrtEmpSel = document.getElementById('ttrtEmpresaSelect'); if(ttrtEmpSel) ttrtEmpSel.onchange = ()=>{ state.ttrtEmpresaAtiva = ttrtEmpSel.value; render(); };
+    if(novoTtrtBtn) novoTtrtBtn.onclick = ()=>{ const cid = state.ttrtEmpresaAtiva; if(!cid) return; state.ttrtModalData = ttrtNovo(cid); state.modal='ttrt'; render(); };
     root.querySelectorAll('[data-ttrt-edit]').forEach(el=>{ el.onclick = ()=>{ const t = state.ttrts.find(x=>x.id===el.dataset.ttrtEdit); if(!t) return; state.ttrtModalData = JSON.parse(JSON.stringify(t)); state.modal='ttrt'; render(); }; });
     root.querySelectorAll('[data-ttrt-pdf]').forEach(el=>{ el.onclick = ()=> gerarPdfTtrt(el.dataset.ttrtPdf); });
     root.querySelectorAll('[data-ttrt-del]').forEach(el=>{ el.onclick = ()=>{ if(confirm('Excluir este termo de transferência?')) deleteTtrt(el.dataset.ttrtDel); }; });
     const ttCancel = document.getElementById('ttCancel'); if(ttCancel) ttCancel.onclick = ()=>{ state.modal=null; state.ttrtModalData=null; render(); };
+    const ttObrigLig = ()=>{ document.querySelectorAll('.tt-ob-del').forEach(b=>{ b.onclick = ()=>{ b.closest('tr').remove(); }; }); };
+    ttObrigLig();
+    const ttObrigAdd = document.getElementById('ttObrigAdd');
+    if(ttObrigAdd) ttObrigAdd.onclick = ()=>{ const lista = ttrtLerObrigs(); lista.push({nome:'',sit:'',periodo:''}); document.getElementById('ttObrigBox').innerHTML = ttrtObrigRowsHtml(lista); ttObrigLig(); const ns = document.querySelectorAll('.tt-ob-nome'); if(ns.length) ns[ns.length-1].focus(); };
+    const ttRegime = document.getElementById('ttRegime');
+    if(ttRegime) ttRegime.onchange = ()=>{ const atual = ttrtLerObrigs(); const padrao = ttrtObrigsPadrao(ttRegime.value); const usado = new Set(); const nova = padrao.map(o=>{ const ex = atual.find(x=>x.nome===o.nome); if(ex) usado.add(ex.nome); return ex||o; });
+      atual.filter(x=>!usado.has(x.nome) && (x.sit||x.periodo)).forEach(x=>nova.push(x)); document.getElementById('ttObrigBox').innerHTML = ttrtObrigRowsHtml(nova); ttObrigLig(); };
     const ttSentido = document.getElementById('ttSentido');
     if(ttSentido) ttSentido.onchange = ()=>{
       const meu = ttrtMeuEscritorio(); const lado = ttSentido.value==='saindo' ? 'ttAnt' : 'ttNov', outro = ttSentido.value==='saindo' ? 'ttNov' : 'ttAnt';
@@ -26629,8 +26858,9 @@
       e.preventDefault(); const base = state.ttrtModalData || {}; const g = id=>{ const el = document.getElementById(id); return el ? el.value : ''; };
       const t = Object.assign({}, base, { sentido:g('ttSentido'), numero:g('ttNumero').trim(), data:g('ttData'), motivo:g('ttMotivo').trim(),
         servicos:Array.from(document.querySelectorAll('.tt-srv')).filter(x=>x.checked).map(x=>x.value), regime:g('ttRegime'), icms:g('ttIcms'),
-        dtContab:g('ttDtContab'), dtDiario:g('ttDtDiario'), dtFiscal:g('ttDtFiscal'), dtBalancete:g('ttDtBalancete'), dtFolha:g('ttDtFolha'), dtDocs:g('ttDtDocs'),
-        obrig:g('ttObrig'), quem:g('ttQuem'), docs:g('ttDocs'), honorarios:g('ttHonor').trim(), obs:g('ttObs').trim(), status:g('ttStatus'), protocolo:g('ttProtocolo').trim(), dataRegistro:g('ttDataRegistro'),
+        trab:(()=>{ const o = {}; TTRT_TRAB.forEach(([k])=>{ o[k] = { sit:(document.querySelector('.tt-trab-sit[data-k="'+k+'"]')||{}).value||'', dt:(document.querySelector('.tt-trab-dt[data-k="'+k+'"]')||{}).value||'', obs:((document.querySelector('.tt-trab-obs[data-k="'+k+'"]')||{}).value||'').trim() }; }); return o; })(),
+        pend:Array.from(document.querySelectorAll('.tt-pend')).filter(x=>x.checked).map(x=>x.value), pendObs:g('ttPendObs').trim(),
+        obrigs:ttrtLerObrigs(), quem:g('ttQuem'), docs:g('ttDocs'), honorarios:g('ttHonor').trim(), obs:g('ttObs').trim(), status:g('ttStatus'), protocolo:g('ttProtocolo').trim(), dataRegistro:g('ttDataRegistro'),
         anterior:ttrtLerLado('ttAnt'), novo:ttrtLerLado('ttNov') });
       const ok = await saveTtrt(t); if(ok){ state.modal=null; state.ttrtModalData=null; render(); }
     };
