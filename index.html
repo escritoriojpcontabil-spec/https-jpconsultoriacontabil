@@ -22471,6 +22471,71 @@
     if(st==='Em andamento') return 'dept-fiscal';
     return 'sit-pendente';
   }
+  // Relatório para impressão das alterações contratuais (respeita empresa e filtro de situação da tela).
+  function alteracoesListaTela(){
+    const empresaId = deptOneSelectedClient();
+    const filtro = state.alteracaoFiltroStatus || 'Todos';
+    return state.alteracoesContratuais
+      .filter(a=> empresaId ? a.clientId===empresaId : isClientInScope(a.clientId))
+      .filter(a=> filtro==='Todos' || alteracaoStatusNorm(a.status)===filtro)
+      .sort((a,b)=> clientName(a.clientId).localeCompare(clientName(b.clientId)) || (a.criadoEm||'').localeCompare(b.criadoEm||''));
+  }
+  function gerarPdfAlteracoes(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const lista = alteracoesListaTela();
+    if(!lista.length){ alert('Não há alterações contratuais para imprimir com o filtro atual.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const mx = 14, larg = pageW - 2*mx, limite = pageH - 18;
+    const empresas = Array.from(new Set(lista.map(a=>a.clientId)));
+    const nomeEmp = empresas.length===1 ? clientName(empresas[0]) : empresas.length + ' empresas';
+    let y = pdfHeader(doc, 'Alterações Contratuais — Acompanhamento', nomeEmp);
+    const filtro = state.alteracaoFiltroStatus || 'Todos';
+    const cont = {}; ALTERACAO_STATUS.forEach(t=>{ cont[t] = lista.filter(a=>alteracaoStatusNorm(a.status)===t).length; });
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90,105,120);
+    doc.text('Situação: ' + (filtro==='Todos' ? 'todas' : filtro) + ' — ' + lista.length + ' alteração(ões): ' + cont['Pendente'] + ' pendente(s), ' + cont['Em andamento'] + ' em andamento, ' + cont['Concluída'] + ' concluída(s)', mx, y-2);
+    doc.setTextColor(20,25,30); y += 4;
+    const nova = (h)=>{ if(y + h > limite){ doc.addPage(); y = 16; return true; } return false; };
+    const cores = { 'Pendente':[180,83,9], 'Em andamento':[30,100,175], 'Concluída':[46,125,50] };
+    let empAtual = null;
+    lista.forEach(a=>{
+      const st = alteracaoStatusNorm(a.status);
+      if(empresas.length>1 && a.clientId!==empAtual){
+        empAtual = a.clientId; nova(14);
+        doc.setFillColor(238,242,247); doc.rect(mx, y, larg, 7, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.text(clientName(a.clientId), mx+2, y+5); y += 10;
+      }
+      const datas = ALTERACAO_STATUS.map(t=>{ const dt = a[ALTERACAO_DATA_CAMPO[t]] || (t==='Pendente' ? String(a.criadoEm||'').slice(0,10) : ''); return dt ? ALTERACAO_DATA_ROTULO[t]+' '+fmtDate(dt) : ''; }).filter(Boolean).join('   |   ');
+      const meta = [a.tipo||'Sem tipo', a.dataPrevista ? 'Prazo previsto '+fmtDate(a.dataPrevista) : '', a.protocolo ? 'Protocolo: '+a.protocolo : ''].filter(Boolean).join('   |   ');
+      doc.setFont('helvetica','normal'); doc.setFontSize(9);
+      const descL = a.descricao ? doc.splitTextToSize(String(a.descricao), larg-6) : [];
+      const anexos = (a.anexos||[]).map(x=>x.nome);
+      nova(26);
+      doc.setDrawColor(190,198,210); doc.setLineWidth(0.3);
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(20,25,30);
+      const tl = doc.splitTextToSize(a.titulo||'Alteração', larg-42);
+      doc.text(tl, mx+2, y+5);
+      const c = cores[st] || [90,105,120]; doc.setTextColor(c[0],c[1],c[2]); doc.setFontSize(9.5);
+      doc.text(st.toUpperCase(), mx+larg-2, y+5, {align:'right'});
+      doc.setTextColor(20,25,30); y += 5 + (tl.length-1)*4.6 + 5;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(70,80,95);
+      if(empresas.length===1 || true){ doc.text(doc.splitTextToSize(meta, larg-4), mx+2, y); y += 4.5; }
+      doc.setFont('helvetica','bold'); doc.text(doc.splitTextToSize(datas, larg-4), mx+2, y); y += 5;
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(20,25,30);
+      if(descL.length){
+        doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.text('Descrição:', mx+2, y); y += 4.2; doc.setFont('helvetica','normal'); doc.setFontSize(9);
+        descL.forEach(l=>{ if(nova(5)){ } doc.text(l, mx+4, y); y += 4.3; });
+      }
+      if(anexos.length){
+        nova(10); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.text('Arquivos guardados:', mx+2, y); y += 4.2; doc.setFont('helvetica','normal');
+        doc.splitTextToSize(anexos.join('; '), larg-6).forEach(l=>{ nova(5); doc.text(l, mx+4, y); y += 4.2; });
+      }
+      y += 2; doc.line(mx, y, mx+larg, y); y += 6;
+    });
+    const n = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+    for(let i=1;i<=n;i++){ if(doc.setPage) doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,130,145); doc.text('Página '+i+' de '+n, pageW-mx, pageH-8, {align:'right'}); doc.text('JP Consultoria Contábil — emitido em '+fmtDate(todayStr()), mx, pageH-8); }
+    pdfSalvar(doc, 'alteracoes-contratuais-' + String(nomeEmp).replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
   function alteracoesContratuaisPanelHtml(){
     const empresaId = deptOneSelectedClient();
     const empresa = state.clients.find(c=>c.id===empresaId);
@@ -22485,7 +22550,8 @@
     return `
       <div class="panel-head">
         <h3>Alterações Contratuais</h3>
-        ${empresa ? `<button type="button" class="btn-add" id="novaAlteracaoBtn">+ Nova alteração</button>` : ''}
+        <div style="display:flex; gap:8px; flex-wrap:wrap;"><button type="button" class="btn-sm" id="altPdfBtn" title="Gera um PDF das alterações que estão na tela, para imprimir">🖨 Relatório para impressão</button>
+        ${empresa ? `<button type="button" class="btn-add" id="novaAlteracaoBtn">+ Nova alteração</button>` : ''}</div>
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Anote aqui, em texto livre, as alterações que serão feitas nas empresas — atividades/CNAE, endereço, capital social, sócios, nome empresarial etc. — e acompanhe o andamento de cada uma.</div>
       ${!empresa ? `<div class="form-hint" style="margin:0 0 10px;">Selecione exatamente uma empresa no painel "Selecionar cliente", no topo da página, para cadastrar uma alteração. Abaixo aparecem as alterações das empresas selecionadas.</div>` : `<div class="form-hint" style="margin:0 0 10px; font-weight:700;">Empresa: ${escapeHtml(empresa.name)}</div>`}
@@ -26380,6 +26446,7 @@
     }
 
     // ===== Alterações Contratuais =====
+    const altPdfBtn = document.getElementById('altPdfBtn'); if(altPdfBtn) altPdfBtn.onclick = gerarPdfAlteracoes;
     const novaAlteracaoBtn = document.getElementById('novaAlteracaoBtn');
     if(novaAlteracaoBtn) novaAlteracaoBtn.onclick = ()=>{
       const cid = deptOneSelectedClient(); if(!cid) return;
