@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portal do Cliente — JP Consultoria Contábil</title>
+<meta name="robots" content="noindex, nofollow">
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{ --bg:#f4f6fa; --card:#ffffff; --ink:#1b2430; --soft:#5b6878; --line:#d9dfe8; --brand:#1f2f6b; --accent:#c9a23a; --ok:#2e7d32; --warn:#b45309; --danger:#b3261e; }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --bg:#10151d; --card:#18202b; --ink:#e8edf4; --soft:#9aa7b8; --line:#2b3645; --brand:#7f95e8; } }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; background:var(--bg); color:var(--ink); font-family:'Inter',system-ui,sans-serif; }
+  .wrap{ max-width:900px; margin:0 auto; padding:16px; }
+  header{ background:#1f2f6b; color:#fff; padding:14px 16px; }
+  header .in{ max-width:900px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  header b{ font-size:16px; letter-spacing:.3px; } header span{ font-size:12px; opacity:.85; display:block; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin:14px 0; }
+  h2{ margin:0 0 6px; font-size:18px; } h3{ margin:0 0 10px; font-size:15px; }
+  .hint{ color:var(--soft); font-size:13px; line-height:1.5; margin:0 0 12px; }
+  label{ display:block; font-size:12px; font-weight:600; color:var(--soft); margin:10px 0 4px; text-transform:uppercase; letter-spacing:.4px; }
+  input,select{ width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:8px; font-size:15px; background:var(--card); color:var(--ink); }
+  button{ cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:8px; padding:10px 14px; font-size:14px; font-weight:600; }
+  button.primary{ background:var(--brand); color:#fff; border-color:var(--brand); }
+  button:disabled{ opacity:.55; cursor:default; }
+  .tabs{ display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+  .tabs button.on{ background:var(--brand); color:#fff; border-color:var(--brand); }
+  .row{ display:flex; gap:10px; align-items:center; justify-content:space-between; padding:12px 0; border-top:1px solid var(--line); flex-wrap:wrap; }
+  .row:first-of-type{ border-top:0; }
+  .row .n{ font-weight:600; word-break:break-word; } .row .m{ font-size:12px; color:var(--soft); margin-top:2px; }
+  .tag{ display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; background:#fdf3e0; color:var(--warn); margin-left:6px; }
+  .tag.ok{ background:#e6f4e7; color:var(--ok); }
+  .msg{ font-size:13px; margin:10px 0 0; } .msg.err{ color:var(--danger); } .msg.ok{ color:var(--ok); }
+  .empty{ color:var(--soft); text-align:center; padding:22px 8px; font-size:14px; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; } @media (max-width:560px){ .grid2{ grid-template-columns:1fr; } }
+  .link{ background:none; border:0; color:var(--brand); padding:4px 0; font-weight:600; text-decoration:underline; }
+</style>
+</head>
+<body>
+<header><div class="in"><div><b>JP CONSULTORIA CONTÁBIL</b><span>Portal do Cliente — documentos</span></div><div id="topo"></div></div></header>
+<div class="wrap" id="app"><div class="empty">Carregando…</div></div>
+<script>
+(function(){
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDmbd1J8o1b8ibIMs-uWa7rHk1UuBUybTg",
+    authDomain: "jpconsultoriacontabil-3ee8d.firebaseapp.com",
+    projectId: "jpconsultoriacontabil-3ee8d",
+    storageBucket: "jpconsultoriacontabil-3ee8d.firebasestorage.app",
+    messagingSenderId: "382197426237",
+    appId: "1:382197426237:web:d2267f3174aa6bfc96a254"
+  };
+  const COL = 'jp_portal', PARTES = 'jp_portal_arq', ACESSO = 'jp_portal_acesso';
+  const PARTE_TAM = 600000, MAX = 5*1024*1024;
+  const CATS = ['Extratos bancários','Notas fiscais','Documentos de empregados','Comprovantes de pagamento','Documentos societários','Outros'];
+  firebase.initializeApp(FIREBASE_CONFIG);
+  const auth = firebase.auth(), db = firebase.firestore();
+  const S = { user:null, acesso:null, docs:[], aba:'enviado', msg:'', err:'', carregando:false, modo:'login' };
+  const $ = id=>document.getElementById(id);
+  const esc = s=>String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmtData = iso=>{ const d = String(iso||'').slice(0,10).split('-'); return d.length===3 ? d[2]+'/'+d[1]+'/'+d[0] : ''; };
+  const tam = n=>{ n = Number(n)||0; return n>=1048576 ? (n/1048576).toFixed(1).replace('.',',')+' MB' : Math.max(1,Math.round(n/1024))+' KB'; };
+  const uid = ()=> Date.now().toString(36)+Math.random().toString(36).slice(2,9);
+  const MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const comp = c=> /^\d{4}-\d{2}$/.test(c||'') ? MESES[+c.slice(5)-1]+'/'+c.slice(0,4) : '';
+  const MIME = {pdf:'application/pdf',txt:'text/plain',csv:'text/csv',doc:'application/msword',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',xls:'application/vnd.ms-excel',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',zip:'application/zip',xml:'application/xml',ofx:'application/x-ofx'};
+  const erroAuth = e=>{
+    const c = (e&&e.code)||'';
+    if(c==='auth/invalid-credential'||c==='auth/wrong-password'||c==='auth/user-not-found'||c==='auth/invalid-email') return 'E-mail ou senha incorretos.';
+    if(c==='auth/too-many-requests') return 'Muitas tentativas. Aguarde alguns minutos e tente de novo.';
+    if(c==='auth/network-request-failed') return 'Sem conexão com a internet.';
+    if(c==='auth/weak-password') return 'A nova senha é fraca (mínimo de 6 caracteres).';
+    return (e&&e.message)||'Erro desconhecido.';
+  };
+
+  function telaLogin(){
+    $('topo').innerHTML = '';
+    $('app').innerHTML = `<div class="card" style="max-width:420px; margin:30px auto;">
+      <h2>${S.modo==='reset'?'Redefinir senha':'Acessar meus documentos'}</h2>
+      <p class="hint">${S.modo==='reset'?'Informe o e-mail do seu acesso. Enviaremos um link para criar uma nova senha.':'Use o e-mail e a senha que o escritório enviou para você.'}</p>
+      <form id="fLogin" autocomplete="on">
+        <label for="email">E-mail</label><input id="email" type="email" autocomplete="username" required/>
+        ${S.modo==='reset'?'':'<label for="senha">Senha</label><input id="senha" type="password" autocomplete="current-password" required/>'}
+        <div style="margin-top:14px;"><button class="primary" type="submit" style="width:100%;">${S.modo==='reset'?'Enviar link':'Entrar'}</button></div>
+      </form>
+      <div class="msg err" id="msgErr">${esc(S.err)}</div><div class="msg ok" id="msgOk">${esc(S.msg)}</div>
+      <div style="margin-top:12px;"><button class="link" id="alterna">${S.modo==='reset'?'Voltar ao login':'Esqueci minha senha'}</button></div></div>`;
+    $('alterna').onclick = ()=>{ S.modo = S.modo==='reset'?'login':'reset'; S.err=''; S.msg=''; telaLogin(); };
+    $('fLogin').onsubmit = async e=>{
+      e.preventDefault(); S.err=''; S.msg=''; const em = $('email').value.trim(); const b = $('fLogin').querySelector('button'); b.disabled = true;
+      try{
+        if(S.modo==='reset'){ await auth.sendPasswordResetEmail(em); S.msg = 'Se este e-mail tiver acesso, você receberá o link em instantes (veja também o spam).'; }
+        else await auth.signInWithEmailAndPassword(em, $('senha').value);
+      }catch(er){ if(S.modo==='reset'){ S.msg = 'Se este e-mail tiver acesso, você receberá o link em instantes (veja também o spam).'; } else S.err = erroAuth(er); }
+      if(S.modo==='reset' || S.err){ $('msgErr').textContent = S.err; $('msgOk').textContent = S.msg; b.disabled = false; }
+    };
+  }
+
+  async function carregar(){
+    S.carregando = true; telaPrincipal();
+    try{
+      const a = await db.collection(ACESSO).doc(S.user.uid).get();
+      if(!a.exists || a.data().ativo === false){ S.acesso = null; S.err = 'Seu acesso não está habilitado. Fale com o escritório.'; await auth.signOut(); return; }
+      S.acesso = a.data();
+      const r = await db.collection(COL).where('clientId','==',S.acesso.clientId).get();
+      S.docs = r.docs.map(d=>d.data()).sort((x,y)=>(y.criadoEm||'').localeCompare(x.criadoEm||''));
+    }catch(e){ S.err = 'Não foi possível carregar seus documentos. Tente novamente em instantes.'; }
+    S.carregando = false; telaPrincipal();
+  }
+
+  function telaPrincipal(){
+    $('topo').innerHTML = `<span style="opacity:1;">${esc(S.user.email||'')}</span><button id="sair" style="margin-top:4px; padding:4px 10px; font-size:12px;">Sair</button>`;
+    $('sair').onclick = ()=>auth.signOut();
+    if(S.carregando || !S.acesso){ $('app').innerHTML = `<div class="empty">${S.carregando?'Carregando…':esc(S.err)}</div>`; return; }
+    const lista = S.docs.filter(d=>d.sentido===S.aba);
+    const novos = S.docs.filter(d=>d.sentido==='enviado' && !d.baixadoEm).length;
+    $('app').innerHTML = `
+      <div class="card"><h2>${esc(S.acesso.empresaNome||'Sua empresa')}</h2><p class="hint" style="margin:0;">Aqui você baixa os documentos que o escritório preparou e envia os documentos que precisamos de você.</p></div>
+      <div class="tabs"><button data-aba="enviado" class="${S.aba==='enviado'?'on':''}">Documentos do escritório${novos?' <span class="tag">'+novos+' novo(s)</span>':''}</button><button data-aba="recebido" class="${S.aba==='recebido'?'on':''}">Enviar ao escritório</button><button data-aba="senha" class="${S.aba==='senha'?'on':''}">Alterar senha</button></div>
+      ${S.aba==='senha' ? senhaHtml() : `
+      ${S.aba==='recebido' ? `<div class="card"><h3>Enviar documentos</h3><p class="hint">Extratos bancários (OFX ou PDF), notas fiscais, comprovantes e outros. Até 5 MB por arquivo.</p>
+        <div class="grid2"><div><label>Tipo de documento</label><select id="cat">${CATS.map(c=>`<option>${esc(c)}</option>`).join('')}</select></div><div><label>Mês de referência (opcional)</label><input id="comp" type="month"/></div></div>
+        <label>Observação (opcional)</label><input id="desc" type="text" placeholder="Ex.: extrato do Bradesco de setembro"/>
+        <label>Arquivos</label><input id="arqs" type="file" multiple/>
+        <div style="margin-top:12px;"><button class="primary" id="enviar">Enviar ao escritório</button></div><div class="msg" id="msgUp"></div></div>` : ''}
+      <div class="card"><h3>${S.aba==='enviado'?'Documentos disponíveis para você':'Documentos que você já enviou'}</h3>
+        ${!lista.length ? `<div class="empty">${S.aba==='enviado'?'O escritório ainda não enviou documentos.':'Você ainda não enviou documentos.'}</div>` : lista.map(d=>`
+          <div class="row"><div><div class="n">${esc(d.nome)}${S.aba==='enviado' && !d.baixadoEm ? '<span class="tag">novo</span>' : ''}</div>
+            <div class="m">${esc(d.categoria||'')}${d.competencia?' · '+esc(comp(d.competencia)):''} · ${tam(d.tamanho)} · ${fmtData(d.criadoEm)}${d.descricao?' · '+esc(d.descricao):''}</div></div>
+            ${S.aba==='enviado' ? `<button class="primary" data-baixar="${esc(d.id)}">Baixar</button>` : ''}</div>`).join('')}
+      </div>`}`;
+    document.querySelectorAll('[data-aba]').forEach(b=>{ b.onclick = ()=>{ S.aba = b.dataset.aba; telaPrincipal(); }; });
+    document.querySelectorAll('[data-baixar]').forEach(b=>{ b.onclick = ()=>baixar(S.docs.find(x=>x.id===b.dataset.baixar), b); });
+    if($('enviar')) $('enviar').onclick = enviar;
+    if($('fSenha')) $('fSenha').onsubmit = trocarSenha;
+  }
+  function senhaHtml(){
+    return `<div class="card" style="max-width:460px;"><h3>Alterar senha</h3><form id="fSenha">
+      <label>Senha atual</label><input id="sAtual" type="password" autocomplete="current-password" required/>
+      <label>Nova senha (mínimo 8 caracteres)</label><input id="sNova" type="password" autocomplete="new-password" minlength="8" required/>
+      <label>Repita a nova senha</label><input id="sNova2" type="password" autocomplete="new-password" minlength="8" required/>
+      <div style="margin-top:12px;"><button class="primary" type="submit">Salvar nova senha</button></div><div class="msg" id="msgSenha"></div></form></div>`;
+  }
+  async function trocarSenha(e){
+    e.preventDefault(); const m = $('msgSenha'); m.className = 'msg'; m.textContent = '';
+    if($('sNova').value !== $('sNova2').value){ m.className = 'msg err'; m.textContent = 'As senhas novas não são iguais.'; return; }
+    try{
+      const cred = firebase.auth.EmailAuthProvider.credential(S.user.email, $('sAtual').value);
+      await S.user.reauthenticateWithCredential(cred); await S.user.updatePassword($('sNova').value);
+      m.className = 'msg ok'; m.textContent = 'Senha alterada com sucesso.'; $('fSenha').reset();
+    }catch(er){ m.className = 'msg err'; m.textContent = erroAuth(er); }
+  }
+  async function baixar(d, btn){
+    if(!d) return; const t = btn.textContent; btn.disabled = true; btn.textContent = 'Baixando…';
+    try{
+      const r = await db.collection(PARTES).where('clientId','==',d.clientId).where('docId','==',d.id).get();
+      const partes = r.docs.map(x=>x.data()).sort((a,b)=>a.n-b.n);
+      if(partes.length < (d.partes||1)) throw new Error('Arquivo incompleto.');
+      const bin = atob(partes.map(p=>p.b64).join('')); const bytes = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+      const ext = (d.nome.split('.').pop()||'').toLowerCase();
+      const url = URL.createObjectURL(new Blob([bytes], {type: d.mime || MIME[ext] || 'application/octet-stream'}));
+      const a = document.createElement('a'); a.href = url; a.download = d.nome; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url), 30000);
+      if(!d.baixadoEm){ try{ const agora = new Date().toISOString(); await db.collection(COL).doc(d.id).update({ baixadoEm: agora }); d.baixadoEm = agora; }catch(e){} }
+    }catch(e){ alert('Não foi possível baixar este arquivo. Tente novamente.'); }
+    btn.disabled = false; btn.textContent = t; telaPrincipal();
+  }
+  async function enviar(){
+    const fs = Array.from($('arqs').files||[]); const m = $('msgUp'); m.className = 'msg'; m.textContent = '';
+    if(!fs.length){ m.className = 'msg err'; m.textContent = 'Escolha um ou mais arquivos.'; return; }
+    const b = $('enviar'); b.disabled = true; b.textContent = 'Enviando…'; const rej = []; let ok = 0;
+    for(const f of fs){
+      if(f.size > MAX){ rej.push(f.name+' (maior que 5 MB)'); continue; }
+      try{
+        const bytes = new Uint8Array(await f.arrayBuffer()); let bin = ''; for(let i=0;i<bytes.length;i+=8192) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+8192));
+        const b64 = btoa(bin), id = uid(), n = Math.max(1, Math.ceil(b64.length/PARTE_TAM)), cid = S.acesso.clientId;
+        for(let i=0;i<n;i++) await db.collection(PARTES).doc(id+'_'+i).set({ clientId:cid, docId:id, n:i, b64:b64.slice(i*PARTE_TAM,(i+1)*PARTE_TAM) });
+        await db.collection(COL).doc(id).set({ id, clientId:cid, sentido:'recebido', categoria:$('cat').value, competencia:$('comp').value||'', descricao:$('desc').value.trim(), nome:f.name, tamanho:f.size, mime:f.type||'', partes:n, criadoEm:new Date().toISOString(), criadoPor:'cliente', baixadoEm:'' });
+        ok++;
+      }catch(e){ rej.push(f.name+' (falha ao enviar)'); }
+    }
+    await carregar(); S.aba = 'recebido'; telaPrincipal();
+    const m2 = $('msgUp'); if(m2){ m2.className = rej.length ? 'msg err' : 'msg ok'; m2.textContent = (ok ? ok+' arquivo(s) enviado(s) com sucesso. ' : '') + (rej.length ? 'Não enviados: '+rej.join('; ') : ''); }
+  }
+
+  auth.onAuthStateChanged(u=>{
+    S.user = u;
+    if(!u){ S.acesso = null; S.docs = []; telaLogin(); return; }
+    S.err = ''; carregar();
+  });
+})();
+</script>
+</body>
+</html>

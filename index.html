@@ -14609,6 +14609,7 @@
       {k:'lancamentos', label:'Setor Financeiro', subtitle:'Fluxo e Lançamentos', icon:ICONS.lanc, dept:'Setor Financeiro'},
       {k:'servicos-contabeis', label:'Serviços Contábeis', subtitle:'Propostas e Honorários', icon:ICONS.proposta, dept:'Serviços Contábeis'},
       {k:'relatorios', label:'Relatórios', subtitle:'Gráficos e resumos', icon:ICONS.relatorios},
+      {k:'arquivosdoc', label:'ARQUIVOS.DOC', subtitle:'Documentos com o cliente', icon:ICONS.proposta},
     ].filter(it => !it.dept || userHasDeptAccess(state.user, it.dept));
     if(state.user.role==='admin'){
       navItems.push({k:'admin', label:'Administração', subtitle:'Usuários do sistema', icon:ICONS.admin});
@@ -22872,6 +22873,210 @@
     pdfSalvar(doc, 'notificacao-encerramento-' + String(c.name||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
+  // ===== ARQUIVOS.DOC — troca de documentos com o cliente (portal do cliente) =====
+  // Fica à parte dos departamentos. O cliente entra em portal.html com e-mail e senha e só enxerga os
+  // documentos da própria empresa. Os arquivos ficam no Firestore em partes (limite de 1 MB por documento).
+  const ARQ_COL = 'jp_portal', ARQ_PARTES = 'jp_portal_arq', ARQ_ACESSO = 'jp_portal_acesso';
+  const ARQ_PORTAL_URL = 'https://sistema.jpconsultoriacontabil.com.br/portal.html';
+  const ARQ_PARTE_TAM = 600000, ARQ_MAX = 5*1024*1024;
+  const ARQ_CATEGORIAS = {
+    enviado: ['Guias de impostos','Folha de pagamento','Inscrição Estadual','Cartão CNPJ','Contrato / Distrato','Declarações e recibos','Balanço e demonstrações','Certidões','Outros'],
+    recebido: ['Extratos bancários','Notas fiscais','Documentos de empregados','Comprovantes de pagamento','Documentos societários','Outros']
+  };
+  const ARQ_REGRAS = `    function jpStaff() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/jp_autorizados/$(request.auth.uid));
+    }
+    function jpCliente(cid) {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/jp_portal_acesso/$(request.auth.uid))
+        && get(/databases/$(database)/documents/jp_portal_acesso/$(request.auth.uid)).data.ativo == true
+        && get(/databases/$(database)/documents/jp_portal_acesso/$(request.auth.uid)).data.clientId == cid;
+    }
+    match /jp_portal_acesso/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || jpStaff());
+      allow write: if jpStaff();
+    }
+    match /jp_portal/{id} {
+      allow read: if jpStaff() || jpCliente(resource.data.clientId);
+      allow create: if jpStaff() || (jpCliente(request.resource.data.clientId) && request.resource.data.sentido == 'recebido');
+      allow update: if jpStaff() || (jpCliente(resource.data.clientId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['baixadoEm']));
+      allow delete: if jpStaff();
+    }
+    match /jp_portal_arq/{id} {
+      allow read: if jpStaff() || jpCliente(resource.data.clientId);
+      allow create: if jpStaff() || jpCliente(request.resource.data.clientId);
+      allow update, delete: if jpStaff();
+    }`;
+  function arqDb(){ return USING_FIREBASE && FirebaseStore.db ? FirebaseStore.db : null; }
+  function arqTam(n){ n = Number(n)||0; return n>=1048576 ? (n/1048576).toFixed(1).replace('.',',')+' MB' : Math.max(1,Math.round(n/1024))+' KB'; }
+  function arqGerarSenha(){
+    const al = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'; const b = new Uint32Array(12); crypto.getRandomValues(b);
+    return Array.from(b).map(x=>al[x % al.length]).join('');
+  }
+  async function arqCarregar(clientId){
+    state.arqErro = ''; state.arqCarregando = true;
+    try{
+      const db = arqDb(); if(!db) throw new Error('SEM_FIREBASE');
+      const [ds, ac] = await Promise.all([ db.collection(ARQ_COL).where('clientId','==',clientId).get(), db.collection(ARQ_ACESSO).where('clientId','==',clientId).get() ]);
+      state.arqDocs = ds.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
+      state.arqAcesso = ac.docs.length ? Object.assign({uid:ac.docs[0].id}, ac.docs[0].data()) : null;
+    }catch(e){ state.arqErro = (e && e.code==='permission-denied') ? 'REGRAS' : (e && e.message==='SEM_FIREBASE' ? 'SEM_FIREBASE' : (e&&e.message)||'erro'); state.arqDocs = []; state.arqAcesso = null; }
+    state.arqCarregando = false; state.arqCarregadoPara = clientId; render();
+  }
+  async function arqEnviar(clientId, files, meta){
+    const db = arqDb(); const ok = [], rej = [];
+    for(const f of files){
+      if(f.size > ARQ_MAX){ rej.push(f.name+' ('+arqTam(f.size)+')'); continue; }
+      try{
+        const bytes = new Uint8Array(await f.arrayBuffer()); let bin = '';
+        for(let i=0;i<bytes.length;i+=8192) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+8192));
+        const b64 = btoa(bin); const id = uid(); const n = Math.max(1, Math.ceil(b64.length/ARQ_PARTE_TAM));
+        for(let i=0;i<n;i++) await db.collection(ARQ_PARTES).doc(id+'_'+i).set({ clientId, docId:id, n:i, b64:b64.slice(i*ARQ_PARTE_TAM,(i+1)*ARQ_PARTE_TAM) });
+        await db.collection(ARQ_COL).doc(id).set({ id, clientId, sentido:'enviado', categoria:meta.categoria, competencia:meta.competencia||'', descricao:meta.descricao||'', nome:f.name, tamanho:f.size, mime:f.type||'', partes:n, criadoEm:new Date().toISOString(), criadoPor:(state.user&&state.user.name)||'Escritório', baixadoEm:'' });
+        ok.push(f.name);
+      }catch(e){ rej.push(f.name+' ('+((e&&e.message)||'erro')+')'); }
+    }
+    return {ok, rej};
+  }
+  async function arqLerArquivo(d){
+    const db = arqDb();
+    const r = await db.collection(ARQ_PARTES).where('clientId','==',d.clientId).where('docId','==',d.id).get();
+    const partes = r.docs.map(x=>x.data()).sort((a,b)=>a.n-b.n);
+    if(partes.length < (d.partes||1)) throw new Error('Arquivo incompleto.');
+    return partes.map(p=>p.b64).join('');
+  }
+  async function arqBaixar(d){
+    try{
+      const b64 = await arqLerArquivo(d);
+      baixarArquivoBase64(b64, d.nome, d.mime || alteracaoMime(d.nome));
+      if(d.sentido==='recebido' && !d.baixadoEm){ await arqDb().collection(ARQ_COL).doc(d.id).update({ baixadoEm:new Date().toISOString() }); await arqCarregar(d.clientId); }
+    }catch(e){ alert('Não foi possível abrir este arquivo: '+((e&&e.message)||'erro')); }
+  }
+  async function arqExcluir(d){
+    const db = arqDb();
+    try{
+      const r = await db.collection(ARQ_PARTES).where('clientId','==',d.clientId).where('docId','==',d.id).get();
+      for(const x of r.docs) await x.ref.delete();
+      await db.collection(ARQ_COL).doc(d.id).delete();
+    }catch(e){ alert('Não foi possível excluir: '+((e&&e.message)||'erro')); }
+    await arqCarregar(d.clientId);
+  }
+  function arqMensagemAcesso(c, email, senha){
+    return 'Olá! Segue o seu acesso ao portal de documentos da JP Consultoria Contábil, onde você recebe suas guias e documentos e pode nos enviar os seus.\n\nEndereço: ' + ARQ_PORTAL_URL + '\nE-mail: ' + email + '\nSenha: ' + senha + '\n\nRecomendamos trocar a senha no primeiro acesso (menu "Alterar senha" do portal). Não compartilhe esta senha.';
+  }
+  function arquivosDocHtml(){
+    const clientes = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const cid = state.arqEmpresa || ''; const c = state.clients.find(x=>x.id===cid);
+    const aba = state.arqAba || 'enviado';
+    let corpo = '';
+    if(!arqDb()) corpo = `<div class="empty">O ARQUIVOS.DOC precisa do banco de dados online (Firebase). Neste modo local ele não funciona.</div>`;
+    else if(!c) corpo = `<div class="empty">Escolha uma empresa acima para ver, enviar e receber documentos.</div>`;
+    else if(state.arqCarregando || state.arqCarregadoPara!==cid){
+      if(!state.arqCarregando && state.arqCarregadoPara!==cid){ state.arqCarregando = true; setTimeout(()=>arqCarregar(cid), 0); }
+      corpo = `<div class="empty">Carregando…</div>`;
+    }
+    else if(state.arqErro==='REGRAS') corpo = arqRegrasHtml();
+    else if(state.arqErro) corpo = `<div class="empty">Erro ao carregar: ${escapeHtml(state.arqErro)}</div>`;
+    else {
+      const ac = state.arqAcesso;
+      const docs = (state.arqDocs||[]).filter(d=>d.sentido===aba);
+      const novos = (state.arqDocs||[]).filter(d=>d.sentido==='recebido' && !d.baixadoEm).length;
+      const cats = ARQ_CATEGORIAS[aba];
+      corpo = `
+        <div class="panel" style="background:#F8F9FB; margin-bottom:14px;">
+          <div style="font-weight:700; margin-bottom:6px;">Acesso do cliente ao portal</div>
+          ${ac ? `<div class="form-hint" style="margin:0 0 8px;">Login: <b>${escapeHtml(ac.email||'')}</b> · ${ac.ativo===false ? '<span class="tag sit-baixada">Bloqueado</span>' : '<span class="tag sit-ativa">Ativo</span>'} · criado em ${fmtDate(String(ac.criadoEm||'').slice(0,10))}</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;"><button type="button" class="btn-sm" id="arqResetBtn">Enviar e-mail para o cliente redefinir a senha</button><button type="button" class="btn-sm" id="arqBloqBtn">${ac.ativo===false?'Reativar acesso':'Bloquear acesso'}</button><button type="button" class="btn-sm danger" id="arqRemoverAcessoBtn">Remover acesso</button></div>`
+          : `<div class="form-hint" style="margin:0 0 8px;">Este cliente ainda não tem acesso. Informe o e-mail dele (será o login) e o sistema gera uma senha para você enviar.</div>
+            <div class="form-row"><div class="field"><label>E-mail do cliente (login)</label><input type="email" id="arqEmail" value="${escapeHtml(c.email||'')}" placeholder="cliente@empresa.com.br"/></div></div>
+            <button type="button" class="btn-add" id="arqCriarAcessoBtn">Criar acesso do cliente</button>`}
+        </div>
+        <div style="display:flex; gap:8px; margin:0 0 12px; flex-wrap:wrap;">
+          <button type="button" class="btn-sm ${aba==='enviado'?'primary':''}" data-adoc-aba="enviado">Enviados ao cliente (${(state.arqDocs||[]).filter(d=>d.sentido==='enviado').length})</button>
+          <button type="button" class="btn-sm ${aba==='recebido'?'primary':''}" data-adoc-aba="recebido">Recebidos do cliente (${(state.arqDocs||[]).filter(d=>d.sentido==='recebido').length})${novos?' · <b style="color:#b45309;">'+novos+' novo(s)</b>':''}</button>
+        </div>
+        ${aba==='enviado' ? `<div class="panel" style="margin-bottom:14px;">
+          <div style="font-weight:700; margin-bottom:6px;">Enviar documentos ao cliente</div>
+          <div class="form-row">
+            <div class="field"><label>Tipo de documento</label><select id="arqCat">${cats.map(x=>`<option>${x}</option>`).join('')}</select></div>
+            <div class="field"><label>Competência (opcional)</label><input type="month" id="arqComp"/></div>
+            <div class="field"><label>Observação (opcional)</label><input type="text" id="arqDesc" placeholder="Ex.: DAS de setembro, vence dia 20"/></div>
+          </div>
+          <div class="field"><label>Arquivos (PDF, Word, Excel, imagens… vários de uma vez — até 5 MB cada)</label><input type="file" id="arqFiles" multiple/></div>
+          <button type="button" class="btn-add" id="arqEnviarBtn">Enviar ao cliente</button>
+        </div>` : `<div class="form-hint" style="margin:0 0 10px;">Documentos que o cliente enviou pelo portal. Ao baixar, o item deixa de aparecer como "novo".</div>`}
+        ${!docs.length ? `<div class="empty">Nenhum documento ${aba==='enviado'?'enviado ao cliente':'recebido do cliente'} ainda.</div>` : `
+        <table><thead><tr><th>Arquivo</th><th>Tipo</th><th>Competência</th><th>Tamanho</th><th>Data</th><th>${aba==='enviado'?'Cliente baixou?':'Situação'}</th><th></th></tr></thead><tbody>
+          ${docs.map(d=>`<tr><td>${escapeHtml(d.nome)}${d.descricao?`<div style="font-size:11px; color:var(--ink-soft);">${escapeHtml(d.descricao)}</div>`:''}</td><td>${escapeHtml(d.categoria||'')}</td><td>${d.competencia?monthLabel(d.competencia)+'/'+d.competencia.slice(0,4):'—'}</td><td>${arqTam(d.tamanho)}</td><td>${fmtDate(String(d.criadoEm||'').slice(0,10))}</td>
+            <td>${aba==='enviado' ? (d.baixadoEm?'<span class="tag sit-ativa">Sim, em '+fmtDate(String(d.baixadoEm).slice(0,10))+'</span>':'<span class="tag sit-pendente">Ainda não</span>') : (d.baixadoEm?'<span class="tag sit-ativa">Visto</span>':'<span class="tag sit-pendente">Novo</span>')}</td>
+            <td style="display:flex; gap:6px;"><button type="button" class="btn-detail" data-adoc-baixar="${d.id}">Baixar</button><button type="button" class="btn-sm danger" data-adoc-del="${d.id}">Excluir</button></td></tr>`).join('')}
+        </tbody></table>`}`;
+    }
+    return `
+      <div class="panel">
+        <div class="panel-head"><h3>ARQUIVOS.DOC</h3></div>
+        <div class="form-hint" style="margin:-4px 0 12px;">Troca de documentos com o cliente, separada dos departamentos: você envia guias, folha, inscrição estadual, cartão CNPJ etc. e o cliente envia extratos, notas e comprovantes. O cliente entra no portal com e-mail e senha e só vê os documentos da própria empresa.</div>
+        <div class="field" style="max-width:380px; margin-bottom:14px;"><label>Empresa</label><select id="arqEmpresaSel" class="filter-select" style="width:100%;"><option value="">— Selecione uma empresa —</option>${clientes.map(x=>`<option value="${x.id}" ${cid===x.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('')}</select></div>
+        ${corpo}
+      </div>`;
+  }
+  function arqRegrasHtml(){
+    return `<div class="attach-box" style="line-height:1.5;"><b>Falta uma configuração, feita uma única vez, no Firebase.</b><br>
+      O banco ainda não libera a coleção do ARQUIVOS.DOC. Abra o <b>Firebase Console › Firestore Database › Regras</b> e, <b>sem apagar as regras que já existem</b>, cole o trecho abaixo logo antes do fechamento final <code>}</code> do bloco <code>match /databases/{database}/documents</code>. Depois clique em <b>Publicar</b> e recarregue esta tela.
+      <textarea readonly rows="14" style="width:100%; font-family:monospace; font-size:12px; margin-top:8px;">${escapeHtml(ARQ_REGRAS)}</textarea>
+      <div style="margin-top:8px; display:flex; gap:8px;"><button type="button" class="btn-sm" id="arqCopiarRegrasBtn">Copiar regras</button><button type="button" class="btn-sm" id="arqRecarregarBtn">Já publiquei — tentar de novo</button></div></div>`;
+  }
+  function arqLigar(){
+    const q = id=>document.getElementById(id);
+    const cid = state.arqEmpresa; const c = state.clients.find(x=>x.id===cid);
+    if(q('arqEmpresaSel')) q('arqEmpresaSel').onchange = ()=>{ state.arqEmpresa = q('arqEmpresaSel').value; state.arqCarregadoPara = null; state.arqCarregando = false; state.arqDocs = []; state.arqAcesso = null; render(); };
+    document.querySelectorAll('[data-adoc-aba]').forEach(b=>{ b.onclick = ()=>{ state.arqAba = b.dataset.adocAba; render(); }; });
+    if(q('arqCopiarRegrasBtn')) q('arqCopiarRegrasBtn').onclick = ()=>{ try{ navigator.clipboard.writeText(ARQ_REGRAS); alert('Regras copiadas.'); }catch(e){ alert('Selecione o texto e copie com Ctrl+C.'); } };
+    if(q('arqRecarregarBtn')) q('arqRecarregarBtn').onclick = ()=>{ state.arqCarregadoPara = null; state.arqCarregando = false; render(); };
+    if(q('arqEnviarBtn')) q('arqEnviarBtn').onclick = async ()=>{
+      const fs = Array.from((q('arqFiles')||{}).files||[]); if(!fs.length){ alert('Escolha um ou mais arquivos.'); return; }
+      const b = q('arqEnviarBtn'); b.disabled = true; b.textContent = 'Enviando…';
+      const r = await arqEnviar(cid, fs, { categoria:q('arqCat').value, competencia:q('arqComp').value, descricao:q('arqDesc').value.trim() });
+      if(r.rej.length) alert('Não foram enviados:\n• '+r.rej.join('\n• ')+'\n\nCada arquivo pode ter até 5 MB.');
+      await arqCarregar(cid);
+    };
+    document.querySelectorAll('[data-adoc-baixar]').forEach(b=>{ b.onclick = ()=>{ const d = (state.arqDocs||[]).find(x=>x.id===b.dataset.adocBaixar); if(d) arqBaixar(d); }; });
+    document.querySelectorAll('[data-adoc-del]').forEach(b=>{ b.onclick = ()=>{ const d = (state.arqDocs||[]).find(x=>x.id===b.dataset.adocDel); if(d && confirm('Excluir "'+d.nome+'"? O cliente também deixa de ver este arquivo.')) arqExcluir(d); }; });
+    if(q('arqCriarAcessoBtn')) q('arqCriarAcessoBtn').onclick = async ()=>{
+      const email = (q('arqEmail').value||'').trim().toLowerCase();
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ alert('Informe um e-mail válido do cliente.'); return; }
+      const b = q('arqCriarAcessoBtn'); b.disabled = true; b.textContent = 'Criando…';
+      const senha = arqGerarSenha();
+      try{
+        const a = secondaryAuth(); const cred = await a.createUserWithEmailAndPassword(email, senha); const uidc = cred.user.uid; try{ await a.signOut(); }catch(e){}
+        await arqDb().collection(ARQ_ACESSO).doc(uidc).set({ clientId:cid, empresaNome:c.name||'', email, ativo:true, criadoEm:new Date().toISOString(), criadoPor:(state.user&&state.user.name)||'' });
+        state.arqMsgAcesso = { email, senha, texto: arqMensagemAcesso(c, email, senha), phone: String(c.phone||'').replace(/\D/g,'') };
+        state.modal = 'arqAcesso'; await arqCarregar(cid);
+      }catch(e){
+        b.disabled = false; b.textContent = 'Criar acesso do cliente';
+        const cod = e && e.code;
+        alert(cod==='auth/email-already-in-use' ? 'Este e-mail já tem um acesso (de outra empresa ou de um usuário do sistema). Use outro e-mail para esta empresa — por exemplo um alias como nome+empresa2@gmail.com.' : cod==='permission-denied' ? 'O banco recusou gravar o acesso. Confira se as regras do Firestore foram publicadas.' : 'Não foi possível criar o acesso: '+((e&&e.message)||'erro'));
+      }
+    };
+    if(q('arqResetBtn')) q('arqResetBtn').onclick = async ()=>{ try{ await secondaryAuth().sendPasswordResetEmail(state.arqAcesso.email); alert('E-mail de redefinição enviado para '+state.arqAcesso.email+'.'); }catch(e){ alert('Não foi possível enviar: '+((e&&e.message)||'erro')); } };
+    if(q('arqBloqBtn')) q('arqBloqBtn').onclick = async ()=>{ const ac = state.arqAcesso; try{ await arqDb().collection(ARQ_ACESSO).doc(ac.uid).update({ ativo: ac.ativo===false }); }catch(e){ alert('Falha: '+((e&&e.message)||'erro')); } await arqCarregar(cid); };
+    if(q('arqRemoverAcessoBtn')) q('arqRemoverAcessoBtn').onclick = async ()=>{ if(!confirm('Remover o acesso deste cliente ao portal? Os documentos continuam guardados.')) return; try{ await arqDb().collection(ARQ_ACESSO).doc(state.arqAcesso.uid).delete(); }catch(e){ alert('Falha: '+((e&&e.message)||'erro')); } await arqCarregar(cid); };
+    const m = state.arqMsgAcesso;
+    if(q('arqMsgFechar')) q('arqMsgFechar').onclick = ()=>{ state.modal = null; state.arqMsgAcesso = null; render(); };
+    if(q('arqMsgCopiar')) q('arqMsgCopiar').onclick = ()=>{ try{ navigator.clipboard.writeText(m.texto); alert('Mensagem copiada.'); }catch(e){ q('arqMsgTexto').select(); alert('Selecione o texto e copie com Ctrl+C.'); } };
+    if(q('arqMsgWhats')) q('arqMsgWhats').onclick = ()=>{ const tel = m.phone ? (m.phone.length<=11 ? '55'+m.phone : m.phone) : ''; window.open('https://wa.me/'+tel+'?text='+encodeURIComponent(m.texto), '_blank'); };
+  }
+  function arqAcessoModalHtml(){
+    const m = state.arqMsgAcesso; if(!m) return '';
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:640px;">
+      <h3>Acesso criado — envie ao cliente</h3>
+      <div class="form-hint" style="margin:-4px 0 8px; color:#b45309; font-weight:700;">A senha aparece só agora e não fica guardada no sistema. Copie e envie antes de fechar. (Se perder, use "Enviar e-mail para o cliente redefinir a senha".)</div>
+      <textarea id="arqMsgTexto" rows="11" style="width:100%;" readonly>${escapeHtml(m.texto)}</textarea>
+      <div class="modal-actions" style="justify-content:space-between;"><span style="display:flex; gap:8px;"><button type="button" class="btn-sm" id="arqMsgCopiar">Copiar mensagem</button><button type="button" class="btn-sm" id="arqMsgWhats">Abrir no WhatsApp</button></span><button type="button" class="btn-add" id="arqMsgFechar">Fechar</button></div>
+    </div></div>`;
+  }
+
   // Relatório para impressão das alterações contratuais (respeita empresa e filtro de situação da tela).
   function alteracoesListaTela(){
     const empresaId = deptOneSelectedClient();
@@ -23250,6 +23455,7 @@
       lancamentos:'Setor Financeiro',
       clientes:'Cadastro de Clientes',
       relatorios:'Relatórios',
+      arquivosdoc:'ARQUIVOS.DOC',
       admin:'Administração'
     })[state.view] || '';
   }
@@ -23515,6 +23721,7 @@
     }
     else if(state.view==='clientes') content = renderClientes();
     else if(state.view==='relatorios') content = renderRelatorios();
+    else if(state.view==='arquivosdoc') content = arquivosDocHtml();
     else if(state.view==='admin') content = renderAdmin();
 
     root.innerHTML = `
@@ -23576,7 +23783,7 @@
       ${state.modal==='inscricao' ? inscricaoModalHtml() : ''}
       ${state.modal==='alvara' ? alvaraModalHtml() : ''}
       ${state.modal==='processoFiscal' ? processoFiscalModalHtml() : ''}
-      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}${state.modal==='ttrt' ? ttrtModalHtml() : ''}${state.modal==='distrato' ? distratoModalHtml() : ''}${state.modal==='alteracaoDesc' ? alteracaoDescModalHtml() : ''}${state.modal==='alteracaoArq' ? alteracaoArqModalHtml() : ''}
+      ${state.modal==='alteracao' ? alteracaoModalHtml() : ''}${state.modal==='ttrt' ? ttrtModalHtml() : ''}${state.modal==='arqAcesso' ? arqAcessoModalHtml() : ''}${state.modal==='distrato' ? distratoModalHtml() : ''}${state.modal==='alteracaoDesc' ? alteracaoDescModalHtml() : ''}${state.modal==='alteracaoArq' ? alteracaoArqModalHtml() : ''}
       ${state.modal==='orientacao' ? orientacaoModalHtml() : ''}
       ${state.modal==='servicoEsporadico' ? servicoEsporadicoModalHtml() : ''}
       ${state.modal==='certidao' ? certidaoModalHtml() : ''}
@@ -26847,6 +27054,7 @@
     }
 
     // ===== Alterações Contratuais =====
+    if(document.getElementById('arqEmpresaSel') || document.getElementById('arqMsgFechar')) arqLigar();
     // ===== Distrato =====
     const disEmpSel = document.getElementById('distratoEmpresaSelect'); if(disEmpSel) disEmpSel.onchange = ()=>{ state.distratoEmpresaAtiva = disEmpSel.value; render(); };
     const disDedupBtn = document.getElementById('disDedupBtn'); if(disDedupBtn) disDedupBtn.onclick = ()=> removerDuplicados('distratos:', state.distratos, loadDistratos);
