@@ -10270,6 +10270,48 @@
       'Solicitamos a gentileza de providenciar a renovação o quanto antes, para evitar interrupções nas obrigações fiscais que dependem do certificado (emissão de notas, eSocial, declarações, etc.). Qualquer dúvida, estamos à disposição.';
   }
 
+
+  // Notificação no Painel Geral: documentos recebidos dos clientes (ARQUIVOS.DOC)
+  function nomeSentenca(t){ t = String(t==null?'':t).trim().toLowerCase(); return t ? t.charAt(0).toUpperCase()+t.slice(1) : ''; }
+  async function arqCarregarPendentes(){
+    state.arqPendCarregando = true;
+    try{
+      const db = arqDb(); if(!db){ state.arqPend = []; }
+      else{
+        const r = await db.collection(ARQ_COL).where('sentido','==','recebido').where('baixadoEm','==','').get();
+        state.arqPend = r.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
+      }
+      state.arqPendErro = '';
+    }catch(e){ state.arqPend = []; state.arqPendErro = (e&&e.code)||(e&&e.message)||'erro'; }
+    state.arqPendCarregando = false; state.arqPendTs = Date.now(); render();
+  }
+  function arqPendentesPanelHtml(){
+    if(!arqDb()) return '';
+    const velho = !state.arqPendTs || (Date.now()-state.arqPendTs) > 60000;
+    if(velho && !state.arqPendCarregando){ state.arqPendCarregando = true; setTimeout(arqCarregarPendentes, 0); }
+    const lista = state.arqPend || [];
+    if(!lista.length) return '';
+    const grupos = {};
+    lista.forEach(d=>{ (grupos[d.clientId] = grupos[d.clientId] || []).push(d); });
+    const linhas = Object.keys(grupos).map(cid=>{
+      const c = state.clients.find(x=>x.id===cid); const ds = grupos[cid];
+      return `
+        <div class="cc-row" style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <div class="cr-main">
+            <div class="cr-title">${escapeHtml(nomeSentenca(c ? c.name : 'Empresa não encontrada'))}</div>
+            <div class="cr-meta">${ds.length} documento(s) novo(s) · último em ${ds[0].criadoEm ? fmtDate(String(ds[0].criadoEm).slice(0,10)) : '—'}: ${escapeHtml(ds[0].nome||'')}</div>
+          </div>
+          <button type="button" class="btn-sm" data-arq-pend-abrir="${escapeHtml(cid)}">Abrir</button>
+        </div>`;
+    }).join('');
+    return `
+      <div class="panel" style="border-left:4px solid #2563eb;">
+        <div class="panel-head"><h3>📥 Documentos recebidos dos clientes (${lista.length})</h3></div>
+        <div class="form-hint" style="margin:-4px 0 14px;">Arquivos enviados pelos clientes no portal e ainda não abertos. A notificação some quando o arquivo é baixado em ARQUIVOS.DOC.</div>
+        <div class="cc-list">${linhas}</div>
+      </div>`;
+  }
+
   function certificadosNotificacoesPanelHtml(){
     const alertas = certificadosNotificacoesVencimento();
     if(!alertas.length) return '';
@@ -15083,6 +15125,7 @@
         ${impostosCardHtml()}
         ${folhaCardHtml()}
       </div>
+      ${arqPendentesPanelHtml()}
       ${certificadosNotificacoesPanelHtml()}
     `;
     else if(state.painelGeralTab==='calendario') tabContent = calendarioHtml();
@@ -22922,7 +22965,7 @@
       state.arqDocs = ds.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
       state.arqAcesso = ac.docs.length ? Object.assign({uid:ac.docs[0].id}, ac.docs[0].data()) : null;
     }catch(e){ state.arqErro = (e && e.code==='permission-denied') ? 'REGRAS' : (e && e.message==='SEM_FIREBASE' ? 'SEM_FIREBASE' : (e&&e.message)||'erro'); state.arqDocs = []; state.arqAcesso = null; }
-    state.arqCarregando = false; state.arqCarregadoPara = clientId; render();
+    state.arqCarregando = false; state.arqCarregadoPara = clientId; state.arqPendTs = 0; render();
   }
   async function arqEnviar(clientId, files, meta){
     const db = arqDb(); const ok = [], rej = [];
@@ -25083,6 +25126,9 @@
     });
 
     // ===== Painel Geral: abas =====
+    root.querySelectorAll('[data-arq-pend-abrir]').forEach(el=>{
+      el.onclick = ()=>{ state.arqEmpresa = el.getAttribute('data-arq-pend-abrir'); state.arqAba = 'recebido'; state.arqCarregadoPara = null; state.arqCarregando = false; state.arqDocs = []; state.arqAcesso = null; state.view = 'arquivosdoc'; render(); };
+    });
     root.querySelectorAll('[data-painel-geral-tab]').forEach(el=>{
       el.onclick = ()=>{ state.painelGeralTab = el.getAttribute('data-painel-geral-tab'); render(); };
     });
