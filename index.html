@@ -10271,7 +10271,7 @@
   }
 
 
-  // Notificação no Painel Geral: documentos recebidos dos clientes (ARQUIVOS.DOC)
+  // Notificação no Painel Geral: documentos recebidos dos clientes (Arquivo.Doc)
   function nomeSentenca(t){ t = String(t==null?'':t).trim().toLowerCase(); return t ? t.charAt(0).toUpperCase()+t.slice(1) : ''; }
   async function arqCarregarPendentes(){
     state.arqPendCarregando = true;
@@ -10282,6 +10282,10 @@
         state.arqPend = r.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
       }
       state.arqPendErro = '';
+      try{
+        const rm = await db.collection(ARQ_MSG).where('de','==','cliente').where('lidoEm','==','').get();
+        state.arqPendMsg = rm.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
+      }catch(e2){ state.arqPendMsg = []; }
     }catch(e){ state.arqPend = []; state.arqPendErro = (e&&e.code)||(e&&e.message)||'erro'; }
     state.arqPendCarregando = false; state.arqPendTs = Date.now(); render();
   }
@@ -10290,7 +10294,8 @@
     const velho = !state.arqPendTs || (Date.now()-state.arqPendTs) > 60000;
     if(velho && !state.arqPendCarregando){ state.arqPendCarregando = true; setTimeout(arqCarregarPendentes, 0); }
     const lista = state.arqPend || [];
-    if(!lista.length) return '';
+    const msgsP = state.arqPendMsg || [];
+    if(!lista.length && !msgsP.length) return '';
     const grupos = {};
     lista.forEach(d=>{ (grupos[d.clientId] = grupos[d.clientId] || []).push(d); });
     const linhas = Object.keys(grupos).map(cid=>{
@@ -10298,16 +10303,35 @@
       return `
         <div class="cc-row" style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
           <div class="cr-main">
-            <div class="cr-title">${escapeHtml(nomeSentenca(c ? c.name : 'Empresa não encontrada'))}</div>
+            <div class="cr-title">${escapeHtml(c ? c.name : 'Empresa não encontrada')}</div>
             <div class="cr-meta">${ds.length} documento(s) novo(s) · último em ${ds[0].criadoEm ? fmtDate(String(ds[0].criadoEm).slice(0,10)) : '—'}: ${escapeHtml(ds[0].nome||'')}</div>
           </div>
           <button type="button" class="btn-sm" data-arq-pend-abrir="${escapeHtml(cid)}">Abrir</button>
         </div>`;
     }).join('');
-    return `
+    const gm = {}; msgsP.forEach(m=>{ (gm[m.clientId] = gm[m.clientId] || []).push(m); });
+    const linhasMsg = Object.keys(gm).map(cid=>{
+      const c = state.clients.find(x=>x.id===cid); const ms = gm[cid];
+      return `
+        <div class="cc-row" style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <div class="cr-main">
+            <div class="cr-title">${escapeHtml(c ? c.name : 'Empresa não encontrada')}</div>
+            <div class="cr-meta">${ms.length} mensagem(ns) nova(s)${ms[0].assunto?' · '+escapeHtml(ms[0].assunto):''}</div>
+          </div>
+          <button type="button" class="btn-sm" data-arq-pend-abrir="${escapeHtml(cid)}" data-aba="msgs">Responder</button>
+        </div>`;
+    }).join('');
+    const painelMsg = msgsP.length ? `
+      <div class="panel" style="border-left:4px solid #7c3aed;">
+        <div class="panel-head"><h3>✉️ Mensagens dos clientes (${msgsP.length})</h3></div>
+        <div class="form-hint" style="margin:-4px 0 14px;">Mensagens enviadas pelo portal. Ao abrir a conversa em Arquivo.Doc, elas saem desta lista.</div>
+        <div class="cc-list">${linhasMsg}</div>
+      </div>` : '';
+    if(!lista.length) return painelMsg;
+    return painelMsg + `
       <div class="panel" style="border-left:4px solid #2563eb;">
         <div class="panel-head"><h3>📥 Documentos recebidos dos clientes (${lista.length})</h3></div>
-        <div class="form-hint" style="margin:-4px 0 14px;">Arquivos enviados pelos clientes no portal e ainda não abertos. A notificação some quando o arquivo é baixado em ARQUIVOS.DOC.</div>
+        <div class="form-hint" style="margin:-4px 0 14px;">Arquivos enviados pelos clientes no portal e ainda não abertos. A notificação some quando o arquivo é baixado em Arquivo.Doc.</div>
         <div class="cc-list">${linhas}</div>
       </div>`;
   }
@@ -14651,7 +14675,7 @@
       {k:'lancamentos', label:'Setor Financeiro', subtitle:'Fluxo e Lançamentos', icon:ICONS.lanc, dept:'Setor Financeiro'},
       {k:'servicos-contabeis', label:'Serviços Contábeis', subtitle:'Propostas e Honorários', icon:ICONS.proposta, dept:'Serviços Contábeis'},
       {k:'relatorios', label:'Relatórios', subtitle:'Gráficos e resumos', icon:ICONS.relatorios},
-      {k:'arquivosdoc', label:'ARQUIVOS.DOC', subtitle:'Documentos com o cliente', icon:ICONS.proposta},
+      {k:'arquivosdoc', label:'Arquivo.Doc', subtitle:'Documentos com o cliente', icon:ICONS.proposta},
     ].filter(it => !it.dept || userHasDeptAccess(state.user, it.dept));
     if(state.user.role==='admin'){
       navItems.push({k:'admin', label:'Administração', subtitle:'Usuários do sistema', icon:ICONS.admin});
@@ -22916,10 +22940,10 @@
     pdfSalvar(doc, 'notificacao-encerramento-' + String(c.name||'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
-  // ===== ARQUIVOS.DOC — troca de documentos com o cliente (portal do cliente) =====
+  // ===== Arquivo.Doc — troca de documentos com o cliente (portal do cliente) =====
   // Fica à parte dos departamentos. O cliente entra em portal.html com e-mail e senha e só enxerga os
   // documentos da própria empresa. Os arquivos ficam no Firestore em partes (limite de 1 MB por documento).
-  const ARQ_COL = 'jp_portal', ARQ_PARTES = 'jp_portal_arq', ARQ_ACESSO = 'jp_portal_acesso';
+  const ARQ_COL = 'jp_portal', ARQ_PARTES = 'jp_portal_arq', ARQ_ACESSO = 'jp_portal_acesso', ARQ_MSG = 'jp_portal_msg';
   const ARQ_PORTAL_URL = 'https://sistema.jpconsultoriacontabil.com.br/portal.html';
   const ARQ_PARTE_TAM = 600000, ARQ_MAX = 5*1024*1024;
   const ARQ_CATEGORIAS = {
@@ -22950,6 +22974,12 @@
       allow read: if jpStaff() || jpCliente(resource.data.clientId);
       allow create: if jpStaff() || jpCliente(request.resource.data.clientId);
       allow update, delete: if jpStaff();
+    }
+    match /jp_portal_msg/{id} {
+      allow read: if jpStaff() || jpCliente(resource.data.clientId);
+      allow create: if jpStaff() || (jpCliente(request.resource.data.clientId) && request.resource.data.de == 'cliente');
+      allow update: if jpStaff() || (jpCliente(resource.data.clientId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lidoEm']));
+      allow delete: if jpStaff();
     }`;
   function arqDb(){ return USING_FIREBASE && FirebaseStore.db ? FirebaseStore.db : null; }
   function arqTam(n){ n = Number(n)||0; return n>=1048576 ? (n/1048576).toFixed(1).replace('.',',')+' MB' : Math.max(1,Math.round(n/1024))+' KB'; }
@@ -22965,7 +22995,44 @@
       state.arqDocs = ds.docs.map(d=>d.data()).sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||''));
       state.arqAcesso = ac.docs.length ? Object.assign({uid:ac.docs[0].id}, ac.docs[0].data()) : null;
     }catch(e){ state.arqErro = (e && e.code==='permission-denied') ? 'REGRAS' : (e && e.message==='SEM_FIREBASE' ? 'SEM_FIREBASE' : (e&&e.message)||'erro'); state.arqDocs = []; state.arqAcesso = null; }
+    state.arqMsgs = []; state.arqMsgErro = '';
+    try{
+      const rm = await arqDb().collection(ARQ_MSG).where('clientId','==',clientId).get();
+      state.arqMsgs = rm.docs.map(d=>d.data()).sort((a,b)=>(a.criadoEm||'').localeCompare(b.criadoEm||''));
+    }catch(e){ state.arqMsgErro = (e && e.code==='permission-denied') ? 'REGRAS' : ((e&&e.message)||'erro'); }
     state.arqCarregando = false; state.arqCarregadoPara = clientId; state.arqPendTs = 0; render();
+  }
+  async function arqMsgEnviar(clientId, assunto, texto){
+    const id = uid();
+    await arqDb().collection(ARQ_MSG).doc(id).set({ id, clientId, de:'escritorio', autor:(state.user&&state.user.name)||'Escritório', assunto, texto, criadoEm:new Date().toISOString(), lidoEm:'' });
+    await arqCarregar(clientId);
+  }
+  async function arqMsgMarcarLidas(clientId){
+    if(state._arqMarcando) return; state._arqMarcando = true;
+    try{
+      for(const m of (state.arqMsgs||[]).filter(x=>x.de==='cliente' && !x.lidoEm)) await arqDb().collection(ARQ_MSG).doc(m.id).update({ lidoEm:new Date().toISOString() });
+      await arqCarregar(clientId);
+    }catch(e){}
+    state._arqMarcando = false;
+  }
+  function arqMsgsHtml(){
+    if(state.arqMsgErro==='REGRAS') return arqRegrasHtml();
+    if(state.arqMsgErro) return `<div class="empty">Erro ao carregar mensagens: ${escapeHtml(state.arqMsgErro)}</div>`;
+    const ms = state.arqMsgs||[];
+    if(ms.some(x=>x.de==='cliente' && !x.lidoEm) && !state._arqMarcando) setTimeout(()=>arqMsgMarcarLidas(state.arqEmpresa), 0);
+    const lista = !ms.length ? `<div class="empty">Nenhuma mensagem ainda. Escreva abaixo ou aguarde o cliente.</div>` : ms.map(m=>{
+      const meu = m.de==='escritorio';
+      return `<div style="display:flex; justify-content:${meu?'flex-end':'flex-start'}; margin:0 0 10px;"><div style="max-width:78%; background:${meu?'#E8EEFB':'#F3F4F6'}; border-radius:10px; padding:9px 12px;">
+        <div style="font-size:11px; color:var(--ink-soft); margin-bottom:2px;"><b>${meu?escapeHtml(m.autor||'Escritório'):'Cliente'}</b> · ${m.criadoEm?fmtDate(String(m.criadoEm).slice(0,10))+' '+String(m.criadoEm).slice(11,16):''}</div>
+        ${m.assunto?`<div style="font-weight:700;">${escapeHtml(m.assunto)}</div>`:''}
+        <div style="white-space:pre-wrap;">${escapeHtml(m.texto||'')}</div></div></div>`;
+    }).join('');
+    return `<div class="form-hint" style="margin:0 0 10px;">Mensagens trocadas com o cliente pelo portal. O cliente escreve na aba "Mensagens" do portal e você responde aqui.</div>
+      <div class="panel" style="margin-bottom:14px; max-height:420px; overflow:auto;">${lista}</div>
+      <div class="panel"><div style="font-weight:700; margin-bottom:6px;">Responder ao cliente</div>
+        <div class="field"><label>Assunto (opcional)</label><input type="text" id="arqRespAssunto"/></div>
+        <div class="field"><label>Mensagem</label><textarea id="arqRespTexto" rows="4" style="width:100%;"></textarea></div>
+        <button type="button" class="btn-add" id="arqRespBtn">Enviar mensagem</button></div>`;
   }
   async function arqEnviar(clientId, files, meta){
     const db = arqDb(); const ok = [], rej = [];
@@ -23013,7 +23080,7 @@
     const cid = state.arqEmpresa || ''; const c = state.clients.find(x=>x.id===cid);
     const aba = state.arqAba || 'enviado';
     let corpo = '';
-    if(!arqDb()) corpo = `<div class="empty">O ARQUIVOS.DOC precisa do banco de dados online (Firebase). Neste modo local ele não funciona.</div>`;
+    if(!arqDb()) corpo = `<div class="empty">O Arquivo.Doc precisa do banco de dados online (Firebase). Neste modo local ele não funciona.</div>`;
     else if(!c) corpo = `<div class="empty">Escolha uma empresa acima para ver, enviar e receber documentos.</div>`;
     else if(state.arqCarregando || state.arqCarregadoPara!==cid){
       if(!state.arqCarregando && state.arqCarregadoPara!==cid){ state.arqCarregando = true; setTimeout(()=>arqCarregar(cid), 0); }
@@ -23038,7 +23105,9 @@
         <div style="display:flex; gap:8px; margin:0 0 12px; flex-wrap:wrap;">
           <button type="button" class="btn-sm ${aba==='enviado'?'primary':''}" data-adoc-aba="enviado">Enviados ao cliente (${(state.arqDocs||[]).filter(d=>d.sentido==='enviado').length})</button>
           <button type="button" class="btn-sm ${aba==='recebido'?'primary':''}" data-adoc-aba="recebido">Recebidos do cliente (${(state.arqDocs||[]).filter(d=>d.sentido==='recebido').length})${novos?' · <b style="color:#b45309;">'+novos+' novo(s)</b>':''}</button>
+          <button type="button" class="btn-sm ${aba==='msgs'?'primary':''}" data-adoc-aba="msgs">Mensagens (${(state.arqMsgs||[]).length})${(state.arqMsgs||[]).some(x=>x.de==='cliente'&&!x.lidoEm)?' · <b style="color:#b45309;">nova(s)</b>':''}</button>
         </div>
+        ${aba==='msgs' ? arqMsgsHtml() : `
         ${aba==='enviado' ? `<div class="panel" style="margin-bottom:14px;">
           <div style="font-weight:700; margin-bottom:6px;">Enviar documentos ao cliente</div>
           <div class="form-row">
@@ -23054,11 +23123,11 @@
           ${docs.map(d=>`<tr><td>${escapeHtml(d.nome)}${d.descricao?`<div style="font-size:11px; color:var(--ink-soft);">${escapeHtml(d.descricao)}</div>`:''}</td><td>${escapeHtml(d.categoria||'')}</td><td>${d.competencia?monthLabel(d.competencia)+'/'+d.competencia.slice(0,4):'—'}</td><td>${arqTam(d.tamanho)}</td><td>${fmtDate(String(d.criadoEm||'').slice(0,10))}</td>
             <td>${aba==='enviado' ? (d.baixadoEm?'<span class="tag sit-ativa">Sim, em '+fmtDate(String(d.baixadoEm).slice(0,10))+'</span>':'<span class="tag sit-pendente">Ainda não</span>') : (d.baixadoEm?'<span class="tag sit-ativa">Visto</span>':'<span class="tag sit-pendente">Novo</span>')}</td>
             <td style="display:flex; gap:6px;"><button type="button" class="btn-detail" data-adoc-baixar="${d.id}">Baixar</button><button type="button" class="btn-sm danger" data-adoc-del="${d.id}">Excluir</button></td></tr>`).join('')}
-        </tbody></table>`}`;
+        </tbody></table>`}`}`;
     }
     return `
       <div class="panel">
-        <div class="panel-head"><h3>ARQUIVOS.DOC</h3></div>
+        <div class="panel-head"><h3>Arquivo.Doc</h3></div>
         <div class="form-hint" style="margin:-4px 0 12px;">Troca de documentos com o cliente, separada dos departamentos: você envia guias, folha, inscrição estadual, cartão CNPJ etc. e o cliente envia extratos, notas e comprovantes. O cliente entra no portal com e-mail e senha e só vê os documentos da própria empresa.</div>
         <div class="field" style="max-width:380px; margin-bottom:14px;"><label>Empresa</label><select id="arqEmpresaSel" class="filter-select" style="width:100%;"><option value="">— Selecione uma empresa —</option>${clientes.map(x=>`<option value="${x.id}" ${cid===x.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('')}</select></div>
         ${corpo}
@@ -23066,7 +23135,7 @@
   }
   function arqRegrasHtml(){
     return `<div class="attach-box" style="line-height:1.5;"><b>Falta uma configuração, feita uma única vez, no Firebase.</b><br>
-      O banco ainda não libera a coleção do ARQUIVOS.DOC. Abra o <b>Firebase Console › Firestore Database › Regras</b> e, <b>sem apagar as regras que já existem</b>, cole o trecho abaixo logo antes do fechamento final <code>}</code> do bloco <code>match /databases/{database}/documents</code>. Depois clique em <b>Publicar</b> e recarregue esta tela.
+      O banco ainda não libera a coleção do Arquivo.Doc. Abra o <b>Firebase Console › Firestore Database › Regras</b> e, <b>sem apagar as regras que já existem</b>, cole o trecho abaixo logo antes do fechamento final <code>}</code> do bloco <code>match /databases/{database}/documents</code>. Depois clique em <b>Publicar</b> e recarregue esta tela.
       <textarea readonly rows="14" style="width:100%; font-family:monospace; font-size:12px; margin-top:8px;">${escapeHtml(ARQ_REGRAS)}</textarea>
       <div style="margin-top:8px; display:flex; gap:8px;"><button type="button" class="btn-sm" id="arqCopiarRegrasBtn">Copiar regras</button><button type="button" class="btn-sm" id="arqRecarregarBtn">Já publiquei — tentar de novo</button></div></div>`;
   }
@@ -23076,6 +23145,11 @@
     if(q('arqEmpresaSel')) q('arqEmpresaSel').onchange = ()=>{ state.arqEmpresa = q('arqEmpresaSel').value; state.arqCarregadoPara = null; state.arqCarregando = false; state.arqDocs = []; state.arqAcesso = null; render(); };
     document.querySelectorAll('[data-adoc-aba]').forEach(b=>{ b.onclick = ()=>{ state.arqAba = b.dataset.adocAba; render(); }; });
     if(q('arqCopiarRegrasBtn')) q('arqCopiarRegrasBtn').onclick = ()=>{ try{ navigator.clipboard.writeText(ARQ_REGRAS); alert('Regras copiadas.'); }catch(e){ alert('Selecione o texto e copie com Ctrl+C.'); } };
+    if(q('arqRespBtn')) q('arqRespBtn').onclick = async ()=>{
+      const t = q('arqRespTexto').value.trim(); if(!t){ alert('Escreva a mensagem.'); return; }
+      const b = q('arqRespBtn'); b.disabled = true; b.textContent = 'Enviando…';
+      try{ await arqMsgEnviar(cid, q('arqRespAssunto').value.trim(), t); }catch(e){ b.disabled = false; b.textContent = 'Enviar mensagem'; alert('Não foi possível enviar: '+((e&&e.message)||'erro')); }
+    };
     if(q('arqRecarregarBtn')) q('arqRecarregarBtn').onclick = ()=>{ state.arqCarregadoPara = null; state.arqCarregando = false; render(); };
     if(q('arqEnviarBtn')) q('arqEnviarBtn').onclick = async ()=>{
       const fs = Array.from((q('arqFiles')||{}).files||[]); if(!fs.length){ alert('Escolha um ou mais arquivos.'); return; }
@@ -23498,7 +23572,7 @@
       lancamentos:'Setor Financeiro',
       clientes:'Cadastro de Clientes',
       relatorios:'Relatórios',
-      arquivosdoc:'ARQUIVOS.DOC',
+      arquivosdoc:'Arquivo.Doc',
       admin:'Administração'
     })[state.view] || '';
   }
@@ -25127,7 +25201,7 @@
 
     // ===== Painel Geral: abas =====
     root.querySelectorAll('[data-arq-pend-abrir]').forEach(el=>{
-      el.onclick = ()=>{ state.arqEmpresa = el.getAttribute('data-arq-pend-abrir'); state.arqAba = 'recebido'; state.arqCarregadoPara = null; state.arqCarregando = false; state.arqDocs = []; state.arqAcesso = null; state.view = 'arquivosdoc'; render(); };
+      el.onclick = ()=>{ state.arqEmpresa = el.getAttribute('data-arq-pend-abrir'); state.arqAba = el.getAttribute('data-aba')==='msgs' ? 'msgs' : 'recebido'; state.arqCarregadoPara = null; state.arqCarregando = false; state.arqDocs = []; state.arqAcesso = null; state.view = 'arquivosdoc'; render(); };
     });
     root.querySelectorAll('[data-painel-geral-tab]').forEach(el=>{
       el.onclick = ()=>{ state.painelGeralTab = el.getAttribute('data-painel-geral-tab'); render(); };
