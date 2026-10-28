@@ -22670,6 +22670,11 @@
     const end = c ? [c.address, c.cep ? 'CEP '+cepFmt(c.cep) : '', [c.city, c.uf].filter(Boolean).join('/')].filter(Boolean).join(', ') : '';
     return { nome:'JAILSON PEREIRA CONSULTORIA CONTÁBIL', cnpj:'49.307.112/0001-89', crc:'', end, tel:(c&&c.phone)||'', contador:'Jailson Pereira', crcContador:'CRC-PE 019219-O/8', categ:'Contador', email:(c&&c.email)||'' };
   }
+  // Local padrão de assinatura dos documentos: cidade/UF do próprio escritório (editável em cada documento).
+  function localPadraoDoc(){
+    const e = ttrtMeuEscritorio().end || '';
+    return (e.match(/,\s*([^,\/]+\/[A-Z]{2})\s*$/)||[])[1] || 'Paulista/PE';
+  }
   function ttrtLadoVazio(){ return { nome:'', cnpj:'', crc:'', end:'', tel:'', contador:'', crcContador:'', categ:'Contador', email:'' }; }
   function ttrtNovo(clientId){
     const c = state.clients.find(x=>x.id===clientId)||{};
@@ -22705,6 +22710,7 @@
           <div class="field"><label>Situação do meu escritório</label><select id="ttSentido"><option value="saindo" ${d.sentido==='saindo'?'selected':''}>Estou SAINDO — transferindo a empresa para outro contador</option><option value="entrando" ${d.sentido==='entrando'?'selected':''}>Estou ENTRANDO — assumindo a empresa de outro contador</option></select></div>
           <div class="field"><label>Termo nº</label><input type="text" id="ttNumero" value="${escapeHtml(d.numero||'')}" placeholder="Ex.: 001/2026"/></div>
           <div class="field"><label>Data da transferência</label><input type="date" id="ttData" value="${escapeHtml(d.data||'')}"/></div>
+          <div class="field"><label>Local da assinatura</label><input type="text" id="ttLocal" value="${escapeHtml(d.local||localPadraoDoc())}" placeholder="Ex.: Paulista/PE"/></div>
         </div>
         <div class="field"><label>Motivo da transferência</label><input type="text" id="ttMotivo" list="ttMotivos" value="${escapeHtml(d.motivo||'')}" placeholder="Escolha ou digite"/><datalist id="ttMotivos">${['Opção do contratante (cliente)','Rescisão do contrato de prestação de serviços','Redução de custos','Mudança de cidade/endereço da empresa','Aposentadoria / encerramento do escritório'].map(x=>`<option value="${x}"></option>`).join('')}</datalist></div>
         <div class="form-section-title" style="margin-top:14px;">Serviços prestados pelo contabilista que transfere</div>
@@ -22827,7 +22833,7 @@
     tit('8. RESPONSABILIDADES');
     par('a) O contabilista anterior prestará ao novo as informações de que este necessite para a continuidade dos serviços (Res. CFC nº 1.590/2020, art. 8º).\nb) Salvo disposição em contrário no distrato, o contabilista anterior responde pelas demonstrações contábeis do período sob sua responsabilidade e pelas obrigações acessórias cujo período de apuração tenha ocorrido na vigência do contrato (arts. 9º e 10).\nc) Os livros, documentos e arquivos serão devolvidos ao contratante, ou a quem ele indicar por escrito, na forma e prazo previstos no distrato (art. 7º).\nd) Este termo não substitui o distrato do contrato de prestação de serviços contábeis, que deve ser firmado separadamente.\ne) A transferência deverá ser registrada no TTRT-e do Conselho Regional de Contabilidade, conforme as normas do respectivo CRC.', {size:9.5, lh:4.8});
     y += 2; par('Declaramos que as informações prestadas neste termo são verdadeiras.', {size:9.5});
-    nova(70); y += 4; par('Local e data: ______________________________, ' + dtx(t.data), {size:10}); y += 16;
+    nova(70); y += 4; par('Local e data: ' + (t.local||localPadraoDoc()) + ', ' + dtx(t.data), {size:10}); y += 16;
     const assin = (x, rot1, rot2)=>{ doc.setDrawColor(60,60,60); doc.setLineWidth(0.3); doc.line(x, y, x+larg/2-6, y); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.text(rot1, x, y+4); doc.setFont('helvetica','normal'); doc.text(doc.splitTextToSize(rot2, larg/2-6), x, y+8); };
     assin(mx, 'CONTABILISTA ANTERIOR', (a.contador||'')+(a.crcContador?' — '+a.crcContador:'')); assin(mx+larg/2+3, 'CONTABILISTA NOVO', (n.contador||'')+(n.crcContador?' — '+n.crcContador:''));
     y += 24; nova(30); assin(mx, 'EMPRESA / REPRESENTANTE LEGAL', (c.name||'')+(c.doc?' — '+c.doc:'')); 
@@ -22904,7 +22910,7 @@
         <div class="form-row">${f('disPrazoDocs','Prazo de devolução (dias)',d.prazoDocs)}${f('disLocalDocs','Forma / local de entrega',d.localDocs)}</div>
         <div class="form-row">${f('disReceptor','Quem receberá os documentos (se não for o próprio contratante — exige autorização por escrito)',d.receptor,'Nome e CPF/CRC do representante autorizado')}${f('disNovoContador','Novo contabilista contratado (se já souber)',d.novoContador,'Nome e CRC')}</div>
         <div class="field"><label>Documentos que o contratante deixou de entregar (pendências)</label><textarea id="disPendDocs" rows="2" placeholder="Ex.: Extratos bancários (OFX/PDF) de 01/2025 a 09/2026 não entregues.">${escapeHtml(d.pendDocs||'')}</textarea></div>
-        <div class="form-row">${f('disHonor','Honorários pendentes',d.honorarios)}${f('disForo','Foro (comarca)',d.foro)}</div>
+        <div class="form-row">${f('disHonor','Honorários pendentes',d.honorarios)}${f('disForo','Foro (comarca)',d.foro)}${f('disLocal','Local da assinatura',d.local||localPadraoDoc(),'Ex.: Paulista/PE')}</div>
         <div class="field"><label>Observações</label><textarea id="disObs" rows="2">${escapeHtml(d.obs||'')}</textarea></div>
         <div class="form-row">${sel('disStatus','Situação',d.status,[['Rascunho','Rascunho'],['Assinado','Assinado']])}</div>
         <div class="modal-actions"><button type="button" class="btn-sm" id="disCancel">Cancelar</button><button type="submit" class="btn-add">Salvar distrato</button></div>
@@ -22985,7 +22991,7 @@
     cl('CLÁUSULA NONA — DO FORO', 'Fica eleito o foro da comarca de ' + bl(t.foro) + ' para dirimir eventuais controvérsias deste distrato.');
     if(t.obs) par('Observações: ' + t.obs, {size:10, after:3});
     par('E, por estarem de acordo, firmam o presente em duas vias de igual teor, na presença de duas testemunhas.', {after:4});
-    B.nova(75); y = B.getY(); par('______________________________, ' + dtx(t.data), {after:12});
+    B.nova(75); y = B.getY(); par((t.local||localPadraoDoc()) + ', ' + dtx(t.data), {after:12});
     y = B.getY(); const w = (B.larg-8)/2;
     B.assin(B.mx, w, 'CONTRATANTE', bl(t.repNome)+' — '+(c.name||'')); B.assin(B.mx+w+8, w, 'CONTRATADA', bl(t.ctdContador)+' — '+(t.ctdCrc||''));
     B.setY(B.getY()+26); y = B.getY(); B.assin(B.mx, w, 'TESTEMUNHA 1', 'Nome e CPF:'); B.assin(B.mx+w+8, w, 'TESTEMUNHA 2', 'Nome e CPF:');
@@ -23006,7 +23012,7 @@
     const B = distratoPdfBase(t); const {c, doc, par, dtx, bl} = B;
     par('NOTIFICAÇÃO DE ENCERRAMENTO DA RELAÇÃO CONTRATUAL', {bold:true, size:13, center:true, after:2, lh:6});
     par('(Resolução CFC nº 1.590/2020, art. 6º, parágrafo único)', {size:9.5, center:true, after:8});
-    par('Local e data: ______________________________, ' + dtx(t.data), {after:6});
+    par('Local e data: ' + (t.local||localPadraoDoc()) + ', ' + dtx(t.data), {after:6});
     par('À ' + bl(c.name) + '\nCNPJ/CPF: ' + bl(c.doc) + '\nA/C: ' + bl(t.repNome), {bold:true, after:6});
     par('Prezados,', {after:3});
     par('Comunicamos que, ' + (t.inic==='Por iniciativa do CONTRATANTE' ? 'em razão da decisão da CONTRATANTE, ' : t.inic==='Por iniciativa da CONTRATADA' ? 'por decisão desta organização contábil, ' : '') + 'a relação contratual de prestação de serviços contábeis firmada em ' + dtx(t.dataContrato) + ' encerra-se em ' + dtx(t.efeito) + (t.aviso ? ', observado o aviso prévio: ' + t.aviso : '') + '. Não tendo sido possível firmar o distrato, esta notificação confirma que, a partir da data indicada, cessam as responsabilidades de ambas as partes decorrentes do contrato.', {after:3, lh:5.4});
@@ -27314,7 +27320,7 @@
       e.preventDefault(); if(state._salvandoForm) return; state._salvandoForm = true;
       const sb = distratoForm.querySelector('button[type=submit]'); if(sb){ sb.disabled = true; sb.textContent = 'Salvando…'; }
       const base = state.distratoModalData || {}; if(!base.id) base.id = uid(); const g = id=>{ const el = document.getElementById(id); return el ? el.value.trim() : ''; };
-      const t = Object.assign({}, base, { numero:g('disNumero'), data:g('disData'), dataContrato:g('disDataContrato'), efeito:g('disEfeito'), inic:g('disInic'), aviso:g('disAviso'),
+      const t = Object.assign({}, base, { numero:g('disNumero'), data:g('disData'), local:g('disLocal'), dataContrato:g('disDataContrato'), efeito:g('disEfeito'), inic:g('disInic'), aviso:g('disAviso'),
         servicos:Array.from(document.querySelectorAll('.dis-srv')).filter(x=>x.checked).map(x=>x.value), repNome:g('disRepNome'), repCpf:g('disRepCpf'), repCargo:g('disRepCargo'),
         ctdNome:g('disCtdNome'), ctdCnpj:g('disCtdCnpj'), ctdEnd:g('disCtdEnd'), ctdContador:g('disCtdContador'), ctdCrc:g('disCtdCrc'),
         demonstr:g('disDemonstr'), obrig:g('disObrig'), docs:(document.getElementById('disDocs')||{}).value||'', prazoDocs:g('disPrazoDocs'), localDocs:g('disLocalDocs'), receptor:g('disReceptor'), novoContador:g('disNovoContador'),
@@ -27350,7 +27356,7 @@
       e.preventDefault(); if(state._salvandoForm) return; state._salvandoForm = true;
       const sb = ttrtForm.querySelector('button[type=submit]'); if(sb){ sb.disabled = true; sb.textContent = 'Salvando…'; }
       const base = state.ttrtModalData || {}; if(!base.id) base.id = uid(); const g = id=>{ const el = document.getElementById(id); return el ? el.value : ''; };
-      const t = Object.assign({}, base, { sentido:g('ttSentido'), numero:g('ttNumero').trim(), data:g('ttData'), motivo:g('ttMotivo').trim(),
+      const t = Object.assign({}, base, { sentido:g('ttSentido'), numero:g('ttNumero').trim(), data:g('ttData'), local:g('ttLocal').trim(), motivo:g('ttMotivo').trim(),
         servicos:Array.from(document.querySelectorAll('.tt-srv')).filter(x=>x.checked).map(x=>x.value), regime:g('ttRegime'), icms:g('ttIcms'),
         trab:(()=>{ const o = {}; TTRT_TRAB.forEach(([k])=>{ o[k] = { sit:(document.querySelector('.tt-trab-sit[data-k="'+k+'"]')||{}).value||'', dt:(document.querySelector('.tt-trab-dt[data-k="'+k+'"]')||{}).value||'', obs:((document.querySelector('.tt-trab-obs[data-k="'+k+'"]')||{}).value||'').trim() }; }); return o; })(),
         pend:Array.from(document.querySelectorAll('.tt-pend')).filter(x=>x.checked).map(x=>x.value), pendObs:g('ttPendObs').trim(),
