@@ -825,6 +825,7 @@
     comunicadoAssunto: '',
     comunicadoCorpo: '',
     comunicadoFilaEnviados: [],
+    comunicadoSel: [],
     funcModalData: null,
     folhaCalcData: null,
     feriasCalcData: null,
@@ -15086,8 +15087,12 @@
     const previewCliente = state.comunicadoDestino==='individual' ? clienteSel : null;
     const corpoPreview = comunicadoRenderTexto(state.comunicadoCorpo, previewCliente);
     let elegiveis = [];
+    const comSel = new Set(state.comunicadoSel||[]);
+    const comTem = c => state.comunicadoCanal==='whatsapp' ? !!c.phone : !!c.email;
     if(state.comunicadoDestino==='todos'){
-      elegiveis = clientesOrdenados.filter(c => state.comunicadoCanal==='whatsapp' ? !!c.phone : !!c.email);
+      elegiveis = clientesOrdenados.filter(comTem);
+    } else if(state.comunicadoDestino==='selecionados'){
+      elegiveis = clientesOrdenados.filter(c=>comSel.has(c.id) && comTem(c));
     }
     return `
       <div class="panel-head">
@@ -15105,6 +15110,7 @@
         <div class="field"><label>Destinatários</label>
           <select id="comDestino">
             <option value="individual" ${state.comunicadoDestino==='individual'?'selected':''}>Cliente específico</option>
+            <option value="selecionados" ${state.comunicadoDestino==='selecionados'?'selected':''}>Clientes selecionados (marcar vários)</option>
             <option value="todos" ${state.comunicadoDestino==='todos'?'selected':''}>Todos os clientes</option>
           </select>
         </div>
@@ -15113,10 +15119,22 @@
         <div class="field"><label>Cliente</label>
           <select id="comCliente">
             <option value="">— Selecione —</option>
+            <option value="__todos__">★ TODOS OS CLIENTES</option>
             ${clientesOrdenados.map(c=>`<option value="${c.id}" ${c.id===state.comunicadoClienteId?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
           </select>
         </div>
         ${clienteSel ? `<div class="form-hint" style="margin:-8px 0 12px;">${state.comunicadoCanal==='whatsapp' ? 'Telefone: '+escapeHtml(clienteSel.phone||'não cadastrado') : 'Email: '+escapeHtml(clienteSel.email||'não cadastrado')}</div>` : ''}
+      ` : state.comunicadoDestino==='selecionados' ? `
+        <div class="field"><label>Clientes (${comSel.size} marcado(s))</label>
+          <div style="display:flex; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+            <button type="button" class="btn-sm primary" id="comSelTodosBtn">Selecionar todos</button>
+            <button type="button" class="btn-sm" id="comSelNenhumBtn">Limpar seleção</button>
+          </div>
+          <div id="comSelLista" style="max-height:280px; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px 10px;">
+            ${clientesOrdenados.map(c=>`<label style="display:flex; align-items:center; gap:8px; padding:4px 0; font-weight:400; text-transform:none; letter-spacing:0; font-size:13px; color:var(--ink); cursor:pointer;"><input type="checkbox" data-com-sel="${c.id}" style="width:auto;" ${comSel.has(c.id)?'checked':''}/> ${escapeHtml(c.name)}${comTem(c)?'':' <span style="color:#b45309; font-size:11px;">(sem '+(state.comunicadoCanal==='whatsapp'?'telefone':'email')+')</span>'}</label>`).join('')}
+          </div>
+        </div>
+        <div class="form-hint" style="margin:0 0 12px;">${elegiveis.length} de ${comSel.size} cliente(s) marcado(s) têm ${state.comunicadoCanal==='whatsapp'?'telefone':'email'} cadastrado e vão receber este comunicado.</div>
       ` : `
         <div class="form-hint" style="margin:0 0 12px;">${elegiveis.length} de ${clientesOrdenados.length} clientes têm ${state.comunicadoCanal==='whatsapp'?'telefone':'email'} cadastrado e vão receber este comunicado.</div>
       `}
@@ -15133,7 +15151,7 @@
         </div>
       ` : state.comunicadoCanal==='email' ? `
         <div class="msg-actions" style="margin-top:14px;">
-          <button type="button" class="btn-add btn-send-system" id="comEnviarTodosEmailBtn">Enviar para todos por Email (${elegiveis.length})</button>
+          <button type="button" class="btn-add btn-send-system" id="comEnviarTodosEmailBtn">Enviar por Email (${elegiveis.length})</button>
         </div>
         <div class="form-hint" style="margin-top:6px;">Abre um único email com todos os destinatários em cópia oculta (CCO/BCC) — cada cliente só vê o próprio endereço.</div>
       ` : `
@@ -24342,8 +24360,20 @@
     if(comCanal) comCanal.onchange = (e)=>{ state.comunicadoCanal = e.target.value; state.comunicadoFilaEnviados = []; render(); };
     const comDestino = document.getElementById('comDestino');
     if(comDestino) comDestino.onchange = (e)=>{ state.comunicadoDestino = e.target.value; render(); };
+    const comSelLista = document.getElementById('comSelLista');
+    if(comSelLista){
+      comSelLista.scrollTop = state._comSelScroll || 0;
+      comSelLista.querySelectorAll('[data-com-sel]').forEach(cb=>{ cb.onchange = ()=>{
+        const set = new Set(state.comunicadoSel||[]); if(cb.checked) set.add(cb.getAttribute('data-com-sel')); else set.delete(cb.getAttribute('data-com-sel'));
+        state.comunicadoSel = Array.from(set); state._comSelScroll = comSelLista.scrollTop; state.comunicadoFilaEnviados = []; render();
+      }; });
+    }
+    const comSelTodosBtn = document.getElementById('comSelTodosBtn');
+    if(comSelTodosBtn) comSelTodosBtn.onclick = ()=>{ state.comunicadoSel = state.clients.map(c=>c.id); state._comSelScroll = 0; state.comunicadoFilaEnviados = []; render(); };
+    const comSelNenhumBtn = document.getElementById('comSelNenhumBtn');
+    if(comSelNenhumBtn) comSelNenhumBtn.onclick = ()=>{ state.comunicadoSel = []; state._comSelScroll = 0; state.comunicadoFilaEnviados = []; render(); };
     const comCliente = document.getElementById('comCliente');
-    if(comCliente) comCliente.onchange = (e)=>{ state.comunicadoClienteId = e.target.value; render(); };
+    if(comCliente) comCliente.onchange = (e)=>{ if(e.target.value==='__todos__'){ state.comunicadoDestino = 'todos'; state.comunicadoClienteId = ''; } else state.comunicadoClienteId = e.target.value; render(); };
     const comAssunto = document.getElementById('comAssunto');
     if(comAssunto) comAssunto.onchange = (e)=>{ state.comunicadoAssunto = e.target.value; render(); };
     const comCorpo = document.getElementById('comCorpo');
@@ -24414,8 +24444,9 @@
     const comEnviarTodosEmailBtn = document.getElementById('comEnviarTodosEmailBtn');
     if(comEnviarTodosEmailBtn){
       comEnviarTodosEmailBtn.onclick = async ()=>{
-        const elegiveis = state.clients.filter(c=>!!c.email);
-        if(!elegiveis.length){ alert('Nenhum cliente com email cadastrado.'); return; }
+        const selSet = new Set(state.comunicadoSel||[]);
+        const elegiveis = state.clients.filter(c=>!!c.email && (state.comunicadoDestino!=='selecionados' || selSet.has(c.id)));
+        if(!elegiveis.length){ alert('Nenhum cliente com email cadastrado entre os destinatários.'); return; }
         for(const client of elegiveis){
           await saveEnvio({ clientId: client.id, canal:'email', texto: comunicadoRenderTexto(state.comunicadoCorpo, client), assunto: state.comunicadoAssunto, isComunicado:true, sentAt: new Date().toISOString(), sentBy: state.user?state.user.username:'' });
         }
