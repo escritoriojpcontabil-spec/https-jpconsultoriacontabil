@@ -140,6 +140,9 @@
     if($('enviar')) $('enviar').onclick = enviar;
     if($('fSenha')) $('fSenha').onsubmit = trocarSenha;
     if($('msgEnviar')) $('msgEnviar').onclick = enviarMsg;
+    document.querySelectorAll('[data-anexo]').forEach(b=>{ b.onclick = async ()=>{
+      const [mid, i] = b.dataset.anexo.split(':'); const m = S.msgs.find(x=>x.id===mid); if(!m) return; baixar({ clientId:m.clientId, id:m.anexos[+i].id, partes:m.anexos[+i].partes, nome:m.anexos[+i].nome, mime:m.anexos[+i].mime, baixadoEm:'x' }, b);
+    }; });
     if(S.aba==='msgs') marcarLidas();
   }
   function msgsHtml(){
@@ -147,12 +150,14 @@
       const meu = m.de==='cliente';
       return `<div style="display:flex; justify-content:${meu?'flex-end':'flex-start'}; margin:0 0 10px;"><div style="max-width:82%; background:${meu?'#E8EEFB':'var(--bg)'}; color:#1b2430; border:1px solid var(--line); border-radius:10px; padding:9px 12px;">
         <div style="font-size:11px; color:#5b6878; margin-bottom:2px;"><b>${meu?'Você':esc(m.autor||'Escritório')}</b> · ${fmtData(m.criadoEm)} ${esc(String(m.criadoEm||'').slice(11,16))}</div>
-        ${m.assunto?`<div style="font-weight:700;">${esc(m.assunto)}</div>`:''}<div style="white-space:pre-wrap;">${esc(m.texto)}</div></div></div>`;
+        ${m.assunto?`<div style="font-weight:700;">${esc(m.assunto)}</div>`:''}<div style="white-space:pre-wrap;">${esc(m.texto)}</div>
+        ${(m.anexos||[]).map((a,i)=>`<div style="margin-top:6px;"><button type="button" data-anexo="${esc(m.id)}:${i}" style="padding:5px 10px; font-size:12px;">📎 ${esc(a.nome)} (${tam(a.tamanho)})</button></div>`).join('')}</div></div>`;
     }).join('');
     return `<div class="card"><h3>Mensagens com o escritório</h3>${S.msgErro?`<div class="msg err">${esc(S.msgErro)}</div>`:''}<div style="max-height:420px; overflow:auto; margin-top:8px;">${lista}</div></div>
       <div class="card"><h3>Nova mensagem</h3><p class="hint">Escreva sua dúvida ou recado. O escritório responde aqui mesmo, no portal.</p>
         <label>Assunto (opcional)</label><input id="msgAssunto" type="text"/>
         <label>Mensagem</label><textarea id="msgTexto" rows="5" style="width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; background:var(--card); color:var(--ink);"></textarea>
+        <label>Anexar arquivos (opcional — até 5 MB cada)</label><input id="msgArqs" type="file" multiple/>
         <div style="margin-top:12px;"><button class="primary" id="msgEnviar">Enviar ao escritório</button></div><div class="msg" id="msgMsg"></div></div>`;
   }
   async function enviarMsg(){
@@ -160,8 +165,18 @@
     if(!t){ m.className = 'msg err'; m.textContent = 'Escreva a mensagem.'; return; }
     const b = $('msgEnviar'); b.disabled = true; b.textContent = 'Enviando…';
     try{
-      const id = uid();
-      await db.collection(MSG).doc(id).set({ id, clientId:S.acesso.clientId, de:'cliente', autor:S.acesso.empresaNome||'Cliente', assunto:$('msgAssunto').value.trim(), texto:t, criadoEm:new Date().toISOString(), lidoEm:'' });
+      const id = uid(), cid = S.acesso.clientId, anexos = [], rej = [];
+      for(const f of Array.from($('msgArqs').files||[])){
+        if(f.size > MAX){ rej.push(f.name+' (maior que 5 MB)'); continue; }
+        try{
+          const bytes = new Uint8Array(await f.arrayBuffer()); let bin = ''; for(let i=0;i<bytes.length;i+=8192) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+8192));
+          const b64 = btoa(bin), aid = uid(), n = Math.max(1, Math.ceil(b64.length/PARTE_TAM));
+          for(let i=0;i<n;i++) await db.collection(PARTES).doc(aid+'_'+i).set({ clientId:cid, docId:aid, n:i, b64:b64.slice(i*PARTE_TAM,(i+1)*PARTE_TAM) });
+          anexos.push({ id:aid, nome:f.name, tamanho:f.size, mime:f.type||'', partes:n });
+        }catch(e){ rej.push(f.name+' (falha ao enviar)'); }
+      }
+      if(rej.length) alert('Não foram anexados: '+rej.join('; '));
+      await db.collection(MSG).doc(id).set({ id, clientId:cid, de:'cliente', autor:S.acesso.empresaNome||'Cliente', assunto:$('msgAssunto').value.trim(), texto:t, anexos, criadoEm:new Date().toISOString(), lidoEm:'' });
       await carregar(); S.aba = 'msgs'; telaPrincipal();
       const m2 = $('msgMsg'); if(m2){ m2.className = 'msg ok'; m2.textContent = 'Mensagem enviada. O escritório responderá aqui.'; }
     }catch(e){ b.disabled = false; b.textContent = 'Enviar ao escritório'; m.className = 'msg err'; m.textContent = 'Não foi possível enviar. Tente novamente.'; }

@@ -23002,10 +23002,15 @@
     }catch(e){ state.arqMsgErro = (e && e.code==='permission-denied') ? 'REGRAS' : ((e&&e.message)||'erro'); }
     state.arqCarregando = false; state.arqCarregadoPara = clientId; state.arqPendTs = 0; render();
   }
-  async function arqMsgEnviar(clientId, assunto, texto){
-    const id = uid();
-    await arqDb().collection(ARQ_MSG).doc(id).set({ id, clientId, de:'escritorio', autor:(state.user&&state.user.name)||'Escritório', assunto, texto, criadoEm:new Date().toISOString(), lidoEm:'' });
+  async function arqMsgEnviar(clientId, assunto, texto, files){
+    const id = uid(); const up = await arqSubirAnexos(clientId, files||[]);
+    if(up.rej.length) alert('Não foram anexados:\n• '+up.rej.join('\n• ')+'\n\nCada arquivo pode ter até 5 MB.');
+    await arqDb().collection(ARQ_MSG).doc(id).set({ id, clientId, de:'escritorio', autor:(state.user&&state.user.name)||'Escritório', assunto, texto, anexos:up.anexos, criadoEm:new Date().toISOString(), lidoEm:'' });
     await arqCarregar(clientId);
+  }
+  async function arqMsgBaixarAnexo(clientId, a){
+    try{ const b64 = await arqLerArquivo({ clientId, id:a.id, partes:a.partes }); baixarArquivoBase64(b64, a.nome, a.mime || alteracaoMime(a.nome)); }
+    catch(e){ alert('Não foi possível abrir este arquivo: '+((e&&e.message)||'erro')); }
   }
   async function arqMsgMarcarLidas(clientId){
     if(state._arqMarcando) return; state._arqMarcando = true;
@@ -23025,13 +23030,15 @@
       return `<div style="display:flex; justify-content:${meu?'flex-end':'flex-start'}; margin:0 0 10px;"><div style="max-width:78%; background:${meu?'#E8EEFB':'#F3F4F6'}; border-radius:10px; padding:9px 12px;">
         <div style="font-size:11px; color:var(--ink-soft); margin-bottom:2px;"><b>${meu?escapeHtml(m.autor||'Escritório'):'Cliente'}</b> · ${m.criadoEm?fmtDate(String(m.criadoEm).slice(0,10))+' '+String(m.criadoEm).slice(11,16):''}</div>
         ${m.assunto?`<div style="font-weight:700;">${escapeHtml(m.assunto)}</div>`:''}
-        <div style="white-space:pre-wrap;">${escapeHtml(m.texto||'')}</div></div></div>`;
+        <div style="white-space:pre-wrap;">${escapeHtml(m.texto||'')}</div>
+        ${(m.anexos||[]).map((a,i)=>`<div style="margin-top:6px;"><button type="button" class="btn-sm" data-msg-anexo="${m.id}:${i}">📎 ${escapeHtml(a.nome)} (${arqTam(a.tamanho)})</button></div>`).join('')}</div></div>`;
     }).join('');
     return `<div class="form-hint" style="margin:0 0 10px;">Mensagens trocadas com o cliente pelo portal. O cliente escreve na aba "Mensagens" do portal e você responde aqui.</div>
       <div class="panel" style="margin-bottom:14px; max-height:420px; overflow:auto;">${lista}</div>
       <div class="panel"><div style="font-weight:700; margin-bottom:6px;">Responder ao cliente</div>
         <div class="field"><label>Assunto (opcional)</label><input type="text" id="arqRespAssunto"/></div>
         <div class="field"><label>Mensagem</label><textarea id="arqRespTexto" rows="4" style="width:100%;"></textarea></div>
+        <div class="field"><label>Anexar arquivos (opcional — até 5 MB cada)</label><input type="file" id="arqRespFiles" multiple/></div>
         <button type="button" class="btn-add" id="arqRespBtn">Enviar mensagem</button></div>`;
   }
   async function arqEnviar(clientId, files, meta){
@@ -23048,6 +23055,20 @@
       }catch(e){ rej.push(f.name+' ('+((e&&e.message)||'erro')+')'); }
     }
     return {ok, rej};
+  }
+  async function arqSubirAnexos(clientId, files){
+    const db = arqDb(); const anexos = [], rej = [];
+    for(const f of files){
+      if(f.size > ARQ_MAX){ rej.push(f.name+' ('+arqTam(f.size)+')'); continue; }
+      try{
+        const bytes = new Uint8Array(await f.arrayBuffer()); let bin = '';
+        for(let i=0;i<bytes.length;i+=8192) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+8192));
+        const b64 = btoa(bin); const id = uid(); const n = Math.max(1, Math.ceil(b64.length/ARQ_PARTE_TAM));
+        for(let i=0;i<n;i++) await db.collection(ARQ_PARTES).doc(id+'_'+i).set({ clientId, docId:id, n:i, b64:b64.slice(i*ARQ_PARTE_TAM,(i+1)*ARQ_PARTE_TAM) });
+        anexos.push({ id, nome:f.name, tamanho:f.size, mime:f.type||'', partes:n });
+      }catch(e){ rej.push(f.name+' (falha ao enviar)'); }
+    }
+    return {anexos, rej};
   }
   async function arqLerArquivo(d){
     const db = arqDb();
@@ -23145,10 +23166,11 @@
     if(q('arqEmpresaSel')) q('arqEmpresaSel').onchange = ()=>{ state.arqEmpresa = q('arqEmpresaSel').value; state.arqCarregadoPara = null; state.arqCarregando = false; state.arqDocs = []; state.arqAcesso = null; render(); };
     document.querySelectorAll('[data-adoc-aba]').forEach(b=>{ b.onclick = ()=>{ state.arqAba = b.dataset.adocAba; render(); }; });
     if(q('arqCopiarRegrasBtn')) q('arqCopiarRegrasBtn').onclick = ()=>{ try{ navigator.clipboard.writeText(ARQ_REGRAS); alert('Regras copiadas.'); }catch(e){ alert('Selecione o texto e copie com Ctrl+C.'); } };
+    document.querySelectorAll('[data-msg-anexo]').forEach(b=>{ b.onclick = ()=>{ const [mid, i] = b.getAttribute('data-msg-anexo').split(':'); const m = (state.arqMsgs||[]).find(x=>x.id===mid); if(m && m.anexos && m.anexos[+i]) arqMsgBaixarAnexo(m.clientId, m.anexos[+i]); }; });
     if(q('arqRespBtn')) q('arqRespBtn').onclick = async ()=>{
       const t = q('arqRespTexto').value.trim(); if(!t){ alert('Escreva a mensagem.'); return; }
       const b = q('arqRespBtn'); b.disabled = true; b.textContent = 'Enviando…';
-      try{ await arqMsgEnviar(cid, q('arqRespAssunto').value.trim(), t); }catch(e){ b.disabled = false; b.textContent = 'Enviar mensagem'; alert('Não foi possível enviar: '+((e&&e.message)||'erro')); }
+      try{ await arqMsgEnviar(cid, q('arqRespAssunto').value.trim(), t, Array.from((q('arqRespFiles')||{}).files||[])); }catch(e){ b.disabled = false; b.textContent = 'Enviar mensagem'; alert('Não foi possível enviar: '+((e&&e.message)||'erro')); }
     };
     if(q('arqRecarregarBtn')) q('arqRecarregarBtn').onclick = ()=>{ state.arqCarregadoPara = null; state.arqCarregando = false; render(); };
     if(q('arqEnviarBtn')) q('arqEnviarBtn').onclick = async ()=>{
