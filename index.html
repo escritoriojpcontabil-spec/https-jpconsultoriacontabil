@@ -780,6 +780,8 @@
     decimoTerceiroCalcData: {},
     informeRendimentosData: {},
     sindicatos: [],
+    cctControle: [],
+    cctModalData: null,
     parcelasIndividuais: [],
     parcelamentoFluxoAtivo: '',
     parcelaIndividualModalData: null,
@@ -13691,6 +13693,128 @@
     `;
   }
 
+
+  // ===== Controle e Acompanhamento de Sindicatos e Convenções (CCT): data-base, vencimento, dias restantes e alerta =====
+  const CCT_MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  async function loadCctControle(){
+    state.cctControle = [];
+    try{
+      const keys = await Store.list('cctcontrole:', true);
+      if(keys && keys.keys){
+        for(const k of keys.keys){ try{ const r = await Store.get(k, true); if(r) state.cctControle.push(JSON.parse(r.value)); }catch(e){} }
+      }
+    }catch(e){}
+  }
+  async function saveCct(c){
+    if(!c.id) c.id = uid();
+    try{ await Store.set('cctcontrole:'+c.id, JSON.stringify(c), true); }
+    catch(e){ alert('Não foi possível salvar.\n\nDetalhe técnico: ' + ((e && e.message) || 'erro desconhecido')); return false; }
+    await loadCctControle(); render(); return true;
+  }
+  async function deleteCct(id){ await Store.delete('cctcontrole:'+id, true); await loadCctControle(); render(); }
+  // Dias restantes = vencimento − hoje. Status: < 0 VENCIDO · ≤ 30 PRÓXIMO · senão VIGENTE.
+  function cctDias(venc){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(venc||'')) return null;
+    const [a,m,d] = venc.split('-').map(Number); const hj = new Date(); hj.setHours(0,0,0,0);
+    return Math.round((new Date(a, m-1, d) - hj) / 86400000);
+  }
+  function cctStatus(dias){
+    if(dias===null) return { k:'-', txt:'—', cor:'#64748b', bg:'transparent', pdf:[100,116,139] };
+    if(dias<0) return { k:'vencido', txt:'⚠️ VENCIDO', cor:'#991b1b', bg:'#fee2e2', pdf:[254,226,226], pdfTxt:[153,27,27] };
+    if(dias<=30) return { k:'proximo', txt:'⏳ PRÓXIMO', cor:'#854d0e', bg:'#fef9c3', pdf:[254,249,195], pdfTxt:[133,77,14] };
+    return { k:'vigente', txt:'✅ VIGENTE', cor:'#166534', bg:'#dcfce7', pdf:[220,252,231], pdfTxt:[22,101,52] };
+  }
+  function cctDataBaseTxt(c){ return c.dbDia && c.dbMes ? String(c.dbDia).padStart(2,'0') + '/' + CCT_MESES[Number(c.dbMes)-1] : '—'; }
+  function cctSalarioTxt(c){ return c.salarioBase ? fmtBRL(Number(c.salarioBase)) : '—'; }
+  function cctListaOrdenada(){
+    return state.cctControle.slice().sort((a,b)=>{
+      const da = cctDias(a.vencimento), db = cctDias(b.vencimento);
+      if(da===null && db===null) return String(a.nome||'').localeCompare(String(b.nome||''));
+      if(da===null) return 1; if(db===null) return -1; return da - db;
+    });
+  }
+  function cctControlePanelHtml(){
+    const lista = cctListaOrdenada();
+    const cont = { vencido:0, proximo:0, vigente:0 }; lista.forEach(c=>{ const k = cctStatus(cctDias(c.vencimento)).k; if(cont[k]!==undefined) cont[k]++; });
+    return `
+      <div class="panel-head">
+        <h3>Controle e Acompanhamento de Sindicatos e Convenções (CCT)</h3>
+        <span style="display:inline-flex; gap:8px; flex-wrap:wrap;"><button type="button" class="btn-sm" id="cctPdfBtn" ${lista.length?'':'disabled'}>Imprimir / PDF</button><button type="button" class="btn-add" id="cctNovoBtn">+ Novo sindicato</button></span>
+      </div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Monitoramento de prazos, data-base e reajustes salariais. Os <b>dias restantes</b> e o <b>status</b> são calculados sozinhos todo dia a partir do vencimento da CCT: <b>vencida</b> (passou), <b>próximo</b> (vence em até 30 dias) ou <b>vigente</b>.</div>
+      ${lista.length ? `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+        <span class="tag" style="background:#dcfce7; color:#166534;">✅ Vigentes: ${cont.vigente}</span>
+        <span class="tag" style="background:#fef9c3; color:#854d0e;">⏳ Próximos: ${cont.proximo}</span>
+        <span class="tag" style="background:#fee2e2; color:#991b1b;">⚠️ Vencidos: ${cont.vencido}</span></div>` : ''}
+      ${lista.length ? `<div style="overflow-x:auto;"><table>
+        <thead><tr><th>Categoria / Sindicato</th><th>Acrônimo</th><th>Data-Base</th><th style="text-align:right;">Salário Base</th><th>Vencimento CCT</th><th style="text-align:right;">Dias Restantes</th><th>Status do Alerta</th><th>Reajuste</th><th></th></tr></thead>
+        <tbody>${lista.map(c=>{ const d = cctDias(c.vencimento), st = cctStatus(d); return `
+          <tr>
+            <td>${escapeHtml(c.nome||'—')}</td><td>${escapeHtml(c.acronimo||'—')}</td><td>${cctDataBaseTxt(c)}</td>
+            <td style="text-align:right;">${cctSalarioTxt(c)}</td><td>${c.vencimento?fmtDate(c.vencimento):'—'}</td>
+            <td style="text-align:right;">${d===null?'--':d}</td>
+            <td><span style="display:inline-block; padding:2px 10px; border-radius:6px; font-weight:700; font-size:12px; color:${st.cor}; background:${st.bg};">${st.txt}</span></td>
+            <td>${escapeHtml(c.reajuste||'—')}</td>
+            <td style="display:flex; gap:6px;"><button class="btn-sm" data-cct-edit="${c.id}">Editar</button><button class="btn-sm danger" data-cct-del="${c.id}">Excluir</button></td>
+          </tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">Nenhum sindicato cadastrado ainda. Clique em "+ Novo sindicato" para começar.</div>`}
+    `;
+  }
+  function cctModalHtml(){
+    const d = state.cctModalData; if(!d) return '';
+    return `<div class="modal-bg" id="modalBg"><div class="modal">
+      <h3>${d.id?'Editar':'Novo'} sindicato / convenção</h3>
+      <form id="cctForm">
+        <div class="field"><label>Categoria / Sindicato</label><input type="text" id="cctNome" value="${escapeHtml(d.nome||'')}" placeholder="Ex.: Sindicato dos Metalúrgicos - PE" required/></div>
+        <div class="form-row">
+          <div class="field"><label>Acrônimo</label><input type="text" id="cctAcr" value="${escapeHtml(d.acronimo||'')}" placeholder="Ex.: SINDMETAL-PE"/></div>
+          <div class="field"><label>Data-base — dia</label><input type="number" id="cctDbDia" min="1" max="31" value="${escapeHtml(d.dbDia||'')}" placeholder="01"/></div>
+          <div class="field"><label>Data-base — mês</label><select id="cctDbMes"><option value="">—</option>${CCT_MESES.map((m,i)=>`<option value="${i+1}" ${Number(d.dbMes)===i+1?'selected':''}>${m}</option>`).join('')}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Salário base (R$)</label><input type="text" inputmode="decimal" id="cctSal" value="${d.salarioBase?escapeHtml(String(d.salarioBase).replace('.',',')):''}" placeholder="1.850,00"/></div>
+          <div class="field"><label>Vencimento da CCT</label><input type="date" id="cctVenc" value="${escapeHtml(d.vencimento||'')}"/></div>
+          <div class="field"><label>Reajuste</label><input type="text" id="cctReaj" value="${escapeHtml(d.reajuste||'')}" placeholder="Ex.: 4,5% ou Em negoc."/></div>
+        </div>
+        <div class="modal-actions"><button type="button" class="btn-sm" id="cctCancel">Cancelar</button><button type="submit" class="btn-add">Salvar</button></div>
+      </form></div></div>`;
+  }
+  function gerarPdfCct(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const lista = cctListaOrdenada(); if(!lista.length) return;
+    const doc = new window.jspdf.jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12;
+    let y = pdfHeader(doc, 'Controle e Acompanhamento de Sindicatos e Convenções (CCT)', 'Departamento Pessoal');
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,105,120);
+    doc.text('Monitoramento de prazos, data-base e reajustes salariais — posição em ' + new Date().toLocaleDateString('pt-BR') + '.', M, y-3);
+    const cols = [['Categoria / Sindicato',72,'l'],['Acrônimo',32,'l'],['Data-Base',20,'l'],['Salário Base',28,'r'],['Vencimento CCT',27,'l'],['Dias Rest.',18,'r'],['Status do Alerta',30,'l'],['Reajuste',30,'l']];
+    const cab = ()=>{
+      doc.setFillColor(30,64,140); doc.rect(M, y, W-2*M, 8, 'F'); doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      let x = M; cols.forEach(([t,w,al])=>{ doc.text(t, al==='r' ? x+w-2 : x+2, y+5.3, al==='r' ? {align:'right'} : undefined); x += w; }); y += 8;
+    };
+    cab();
+    lista.forEach((c,i)=>{
+      if(y+8 > H-14){ doc.addPage(); y = 14; cab(); }
+      const d = cctDias(c.vencimento), st = cctStatus(d);
+      if(i%2){ doc.setFillColor(247,249,252); doc.rect(M, y, W-2*M, 8, 'F'); }
+      doc.setDrawColor(220,225,232); doc.line(M, y+8, W-M, y+8);
+      const stTxt = st.k==='vencido' ? 'VENCIDO' : st.k==='proximo' ? 'PRÓXIMO' : st.k==='vigente' ? 'VIGENTE' : '—';
+      const vals = [String(c.nome||'—').slice(0,48), c.acronimo||'—', cctDataBaseTxt(c), cctSalarioTxt(c), c.vencimento?fmtDate(c.vencimento):'—', d===null?'--':String(d), stTxt, c.reajuste||'—'];
+      let x = M; doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+      cols.forEach(([t,w,al],k)=>{
+        if(k===6 && st.pdfTxt){ doc.setFillColor(...st.pdf); doc.roundedRect(x+1.5, y+1.4, w-3, 5.2, 1, 1, 'F'); doc.setTextColor(...st.pdfTxt); doc.setFont('helvetica','bold'); }
+        else { doc.setTextColor(20,25,30); doc.setFont('helvetica','normal'); }
+        doc.text(String(vals[k]), al==='r' ? x+w-2 : x+2, y+5.4, al==='r' ? {align:'right'} : undefined); x += w;
+      });
+      y += 8;
+    });
+    y += 6; if(y+16 > H-12){ doc.addPage(); y = 16; }
+    doc.setFillColor(241,245,250); doc.rect(M, y, W-2*M, 13, 'F'); doc.setFillColor(30,64,140); doc.rect(M, y, 1.2, 13, 'F');
+    doc.setTextColor(20,25,30); doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.text('Como o alerta é calculado', M+4, y+5);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.text('Dias restantes = vencimento da CCT − data de hoje.  VENCIDO: já passou  ·  PRÓXIMO: vence em até 30 dias  ·  VIGENTE: acima de 30 dias.', M+4, y+10);
+    pdfSalvar(doc, 'controle-sindicatos-cct.pdf');
+  }
+
   function sindicatoModalHtml(){
     const d = state.sindicatoModalData;
     if(!d) return '';
@@ -13986,6 +14110,7 @@
     await loadPontoRegistros();
     await loadDecimosTerceiros();
     await loadSindicatos();
+    await loadCctControle();
     await loadParcelasIndividuais();
     await loadPlanoContas();
     await loadPlanoContasReferencial();
@@ -14075,6 +14200,7 @@
       decimosTerceiros: state.decimosTerceiros,
       pontoRegistros: state.pontoRegistros,
       sindicatos: state.sindicatos,
+      cctControle: state.cctControle,
       parcelasIndividuais: state.parcelasIndividuais,
       recibosHonorarios: state.recibosHonorarios,
       inscricoes: state.inscricoes,
@@ -14166,6 +14292,7 @@
       {key:'decimosTerceiros', prefix:'decimosterceiros:', idField:'id'},
       {key:'pontoRegistros', prefix:'pontoregistros:', idField:'id'},
       {key:'sindicatos', prefix:'sindicatos:', idField:'id'},
+      {key:'cctControle', prefix:'cctcontrole:', idField:'id'},
       {key:'parcelasIndividuais', prefix:'parcelasindividuais:', idField:'id'},
       {key:'recibosHonorarios', prefix:'recibosHonorarios:', idField:'id'},
       {key:'inscricoes', prefix:'inscricoes:', idField:'id'},
@@ -16972,7 +17099,6 @@
       <div class="form-hint" style="margin:-4px 0 14px;">Cada empresa tem seu próprio plano de contas, histórico e lançamentos, totalmente separados dos demais clientes.</div>
       ${empresaContabilSelectorHtml()}
       ${empresa && planoDuplicadasDaEmpresa(empresa.id) ? `<div class="attach-box" style="border-left:4px solid #d97706; margin:10px 0; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;"><div>⚠️ Este plano tem <b>${planoDuplicadasDaEmpresa(empresa.id)}</b> conta(s) repetida(s) (mesmo código). Os lançamentos que usam as repetidas são ligados à conta mantida — nada é perdido.</div><button type="button" class="btn-add" id="planoDedupBtn">Remover contas repetidas</button></div>` : ''}
-      ${empresa && planoPessoasForaDoGrupo(empresa.id).length ? `<div class="attach-box" style="border-left:4px solid #2563eb; margin:10px 0; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;"><div>📂 ${planoPessoasForaDoGrupo(empresa.id).length} conta(s) de clientes/fornecedores estão misturadas com outras contas. Elas podem ficar num <b>grupo próprio</b> ("Contas de Clientes" / "Contas de Fornecedores"). Os lançamentos continuam ligados às mesmas contas.</div><button type="button" class="btn-add" id="planoPessoasBtn">Mover para grupo próprio</button></div>` : ''}
       ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar o plano de contas dela.</div>` : !temContas ? `
         <div class="form-hint" style="margin-bottom:10px;">${escapeHtml(empresa.name)} ainda não tem nenhuma conta cadastrada.</div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
@@ -17752,46 +17878,6 @@
     if(!chave) return null;
     return { tipo: entrada ? 'fornecedor' : 'cliente', nome: nome ? nomeProprio(nome) : ('Documento ' + doc), doc, chave };
   }
-  // Contas individuais de clientes/fornecedores ficam num GRUPO PRÓPRIO (conta sintética nova, ao lado da genérica),
-  // em vez de misturadas com Adiantamentos, Provisões etc. Se o pai já é "Clientes…/Fornecedores…", usa o próprio pai.
-  async function nfGrupoDaPessoa(clientId, tipo, generica){
-    const todas = state.planoContas.filter(c=>c.clientId===clientId);
-    const ded = todas.find(c=>c.tipo==='Sintética' && c.pessoaGrupo===tipo); if(ded) return ded;
-    const partes = String(generica.codigo).split('.'); partes.pop(); const pai = partes.join('.');
-    const paiConta = todas.find(c=>c.codigo===pai && c.tipo==='Sintética');
-    if(paiConta && /^(clientes|fornecedores)\b/i.test(paiConta.nome||'')) return paiConta;
-    const sub = partes.slice(0,-1).join('.');
-    if(!sub) return paiConta || null;
-    let max = 0;
-    todas.forEach(c=>{ if(c.tipo==='Sintética' && String(c.codigo).startsWith(sub+'.')){ const r = String(c.codigo).slice(sub.length+1); if(/^\d+$/.test(r)) max = Math.max(max, parseInt(r,10)); } });
-    const g = { id: uid(), clientId, codigo: sub + '.' + String(max+1).padStart(2,'0'), nome: tipo==='cliente' ? 'Contas de Clientes' : 'Contas de Fornecedores',
-      tipo:'Sintética', natureza: generica.natureza, contaSuperior: sub, pessoaGrupo: tipo, origemAutomatica: true };
-    if(generica.modelo) g.modelo = generica.modelo;
-    await Store.set('planocontas:'+g.id, JSON.stringify(g), true);
-    state.planoContas.push(g);
-    return g;
-  }
-  function planoPessoasForaDoGrupo(clientId){
-    const todas = state.planoContas.filter(c=>c.clientId===clientId);
-    return todas.filter(c=>{
-      if(!c.pessoaTipo || c.tipo!=='Analítica') return false;
-      const partes = String(c.codigo).split('.'); partes.pop(); const pai = todas.find(x=>x.codigo===partes.join('.') && x.tipo==='Sintética');
-      return !(pai && (pai.pessoaGrupo===c.pessoaTipo || /^(clientes|fornecedores)\b/i.test(pai.nome||'')));
-    });
-  }
-  async function reorganizarPessoasEmGrupo(clientId){
-    const lista = planoPessoasForaDoGrupo(clientId).sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}));
-    let n = 0;
-    for(const c of lista){
-      const g = await nfGrupoDaPessoa(clientId, c.pessoaTipo, { codigo:c.codigo, natureza:c.natureza, modelo:c.modelo });
-      if(!g) continue;
-      let max = 0;
-      state.planoContas.forEach(x=>{ if(x.clientId===clientId && String(x.codigo).startsWith(g.codigo+'.')){ const r = String(x.codigo).slice(g.codigo.length+1); if(/^\d+$/.test(r)) max = Math.max(max, parseInt(r,10)); } });
-      c.codigo = g.codigo + '.' + String(max+1).padStart(4,'0'); c.contaSuperior = g.codigo;
-      await Store.set('planocontas:'+c.id, JSON.stringify(c), true); n++;
-    }
-    return n;
-  }
   async function nfContaDaPessoa(clientId, n, generica){
     const p = nfPessoaDaNota(n);
     if(!p || !generica || !planoMascaraNova(clientId)) return null;
@@ -17800,10 +17886,10 @@
     if(ja) return ja;
     const partes = String(generica.codigo).split('.');
     if(partes.length < 2) return null;
-    const grupo = await nfGrupoDaPessoa(clientId, p.tipo, generica);
-    const pai = grupo ? grupo.codigo : (partes.pop(), partes.join('.'));
+    partes.pop();
+    const pai = partes.join('.');
     let max = 0;
-    state.planoContas.filter(c=>c.clientId===clientId).forEach(c=>{ if(String(c.codigo).startsWith(pai+'.')){ const resto = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(resto)) max = Math.max(max, parseInt(resto,10)); } });
+    todas.forEach(c=>{ if(String(c.codigo).startsWith(pai+'.')){ const resto = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(resto)) max = Math.max(max, parseInt(resto,10)); } });
     const conta = { id: uid(), clientId, codigo: pai + '.' + String(max+1).padStart(4,'0'), nome: p.nome.slice(0,70),
       tipo:'Analítica', natureza: generica.natureza, contaSuperior: pai,
       pessoaTipo: p.tipo, pessoaChave: p.chave, pessoaDoc: p.doc, origemAutomatica: true };
@@ -21870,6 +21956,7 @@
     {k:'esocial-eventos', label:'eSocial Empresas (S-1200/S-1210/S-1299)'},
     {k:'informe-rendimentos', label:'Informe de Rendimentos'},
     {k:'sindicatos', label:'Sindicatos & CCT'},
+    {k:'cct-controle', label:'Controle de Sindicatos (data-base)'},
     {k:'fichas', label:'Fichas & Contratos CLT/PF'},
     {k:'rescisao', label:'Rescisões & Multa FGTS'},
     {k:'simuladores', label:'Simuladores Trabalhistas (Férias/13º/Rescisão)'},
@@ -21892,6 +21979,7 @@
     else if(state.dpTab==='esocial-eventos') tabContent = esocialEventosPanelHtml();
     else if(state.dpTab==='informe-rendimentos') tabContent = informeRendimentosPanelHtml();
     else if(state.dpTab==='sindicatos') tabContent = sindicatosPanelHtml();
+    else if(state.dpTab==='cct-controle') tabContent = cctControlePanelHtml();
     else if(state.dpTab==='fichas') tabContent = fichasContratosTabHtml();
     else if(state.dpTab==='simuladores') tabContent = simuladoresTrabalhistasPanelHtml();
     return `
@@ -24087,6 +24175,7 @@
       ${state.modal==='declaracao' ? declaracaoModalHtml() : ''}
       ${state.modal==='ponto' ? pontoModalHtml() : ''}
       ${state.modal==='sindicato' ? sindicatoModalHtml() : ''}
+      ${state.modal==='cctControle' ? cctModalHtml() : ''}
       ${state.modal==='parcelaIndividual' ? parcelaIndividualModalHtml() : ''}
       ${state.modal==='baixaEmpresa' ? baixaEmpresaModalHtml() : ''}
       ${state.modal==='baixaDocumento' ? baixaDocumentoModalHtml() : ''}
@@ -26404,6 +26493,27 @@
       gerarInformeRendimentosPDF(func, ano);
     };
 
+    // ===== Controle de Sindicatos (CCT) =====
+    const cctNovoBtn = document.getElementById('cctNovoBtn'); if(cctNovoBtn) cctNovoBtn.onclick = ()=>{ state.cctModalData = {}; state.modal='cctControle'; render(); };
+    const cctPdfBtn = document.getElementById('cctPdfBtn'); if(cctPdfBtn) cctPdfBtn.onclick = gerarPdfCct;
+    const cctCancel = document.getElementById('cctCancel'); if(cctCancel) cctCancel.onclick = ()=>{ state.modal=null; state.cctModalData=null; render(); };
+    root.querySelectorAll('[data-cct-edit]').forEach(el=>{ el.onclick = ()=>{ const c = state.cctControle.find(x=>x.id===el.getAttribute('data-cct-edit')); if(!c) return; state.cctModalData = Object.assign({}, c); state.modal='cctControle'; render(); }; });
+    root.querySelectorAll('[data-cct-del]').forEach(el=>{ el.onclick = ()=>{ const c = state.cctControle.find(x=>x.id===el.getAttribute('data-cct-del')); if(c && confirm('Excluir "'+(c.nome||'este sindicato')+'" do controle?')) deleteCct(c.id); }; });
+    const cctForm = document.getElementById('cctForm');
+    if(cctForm) cctForm.onsubmit = async (e)=>{
+      e.preventDefault(); if(state._salvandoForm) return;
+      const sal = siNum(document.getElementById('cctSal').value);
+      if(isNaN(sal)){ alert('Salário base inválido. Digite só números, com vírgula nos centavos (ex.: 1850,00).'); return; }
+      const dia = Number(document.getElementById('cctDbDia').value)||0;
+      if(dia && (dia<1 || dia>31)){ alert('O dia da data-base deve ser de 1 a 31.'); return; }
+      state._salvandoForm = true;
+      const base = state.cctModalData || {};
+      const c = Object.assign({}, base, { nome:document.getElementById('cctNome').value.trim(), acronimo:document.getElementById('cctAcr').value.trim(), dbDia: dia||'', dbMes: document.getElementById('cctDbMes').value, salarioBase: sal||0, vencimento:document.getElementById('cctVenc').value, reajuste:document.getElementById('cctReaj').value.trim() });
+      const sb = cctForm.querySelector('button[type=submit]'); if(sb){ sb.disabled = true; sb.textContent = 'Salvando…'; }
+      let ok = false; try{ ok = await saveCct(c); } finally { state._salvandoForm = false; }
+      if(ok){ state.modal=null; state.cctModalData=null; render(); } else if(sb){ sb.disabled = false; sb.textContent = 'Salvar'; }
+    };
+
     // ===== Sindicatos & CCT =====
     const novoSindicatoBtn = document.getElementById('novoSindicatoBtn');
     if(novoSindicatoBtn) novoSindicatoBtn.onclick = ()=>{ state.sindicatoModalData = { clientId: deptOneSelectedClient()||'' }; state.modal='sindicato'; render(); };
@@ -27788,15 +27898,6 @@
       };
     }
 
-    const planoPessoasBtn = document.getElementById('planoPessoasBtn');
-    if(planoPessoasBtn) planoPessoasBtn.onclick = async ()=>{
-      const cid = state.contabilEmpresaAtiva; const n = planoPessoasForaDoGrupo(cid).length;
-      if(!confirm('Mover '+n+' conta(s) de clientes/fornecedores de '+clientName(cid)+' para um grupo próprio? Os códigos delas mudam (ex.: 1.01.04.0005 passa a 1.01.07.0001); os lançamentos continuam ligados às mesmas contas.')) return;
-      planoPessoasBtn.disabled = true; planoPessoasBtn.textContent = 'Movendo…';
-      try{ const r = await reorganizarPessoasEmGrupo(cid); alert(r+' conta(s) movida(s) para o grupo próprio.'); }
-      catch(e){ alert('Não foi possível concluir: '+((e&&e.message)||'erro')+'. Clique de novo para continuar.'); }
-      await loadPlanoContas(); render();
-    };
     const planoDedupBtn = document.getElementById('planoDedupBtn');
     if(planoDedupBtn) planoDedupBtn.onclick = async ()=>{
       const cid = state.contabilEmpresaAtiva; const n = planoDuplicadasDaEmpresa(cid);
