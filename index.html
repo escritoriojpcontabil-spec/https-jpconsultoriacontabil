@@ -16972,6 +16972,7 @@
       <div class="form-hint" style="margin:-4px 0 14px;">Cada empresa tem seu próprio plano de contas, histórico e lançamentos, totalmente separados dos demais clientes.</div>
       ${empresaContabilSelectorHtml()}
       ${empresa && planoDuplicadasDaEmpresa(empresa.id) ? `<div class="attach-box" style="border-left:4px solid #d97706; margin:10px 0; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;"><div>⚠️ Este plano tem <b>${planoDuplicadasDaEmpresa(empresa.id)}</b> conta(s) repetida(s) (mesmo código). Os lançamentos que usam as repetidas são ligados à conta mantida — nada é perdido.</div><button type="button" class="btn-add" id="planoDedupBtn">Remover contas repetidas</button></div>` : ''}
+      ${empresa && planoPessoasForaDoGrupo(empresa.id).length ? `<div class="attach-box" style="border-left:4px solid #2563eb; margin:10px 0; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;"><div>📂 ${planoPessoasForaDoGrupo(empresa.id).length} conta(s) de clientes/fornecedores estão misturadas com outras contas. Elas podem ficar num <b>grupo próprio</b> ("Contas de Clientes" / "Contas de Fornecedores"). Os lançamentos continuam ligados às mesmas contas.</div><button type="button" class="btn-add" id="planoPessoasBtn">Mover para grupo próprio</button></div>` : ''}
       ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar o plano de contas dela.</div>` : !temContas ? `
         <div class="form-hint" style="margin-bottom:10px;">${escapeHtml(empresa.name)} ainda não tem nenhuma conta cadastrada.</div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
@@ -17751,6 +17752,46 @@
     if(!chave) return null;
     return { tipo: entrada ? 'fornecedor' : 'cliente', nome: nome ? nomeProprio(nome) : ('Documento ' + doc), doc, chave };
   }
+  // Contas individuais de clientes/fornecedores ficam num GRUPO PRÓPRIO (conta sintética nova, ao lado da genérica),
+  // em vez de misturadas com Adiantamentos, Provisões etc. Se o pai já é "Clientes…/Fornecedores…", usa o próprio pai.
+  async function nfGrupoDaPessoa(clientId, tipo, generica){
+    const todas = state.planoContas.filter(c=>c.clientId===clientId);
+    const ded = todas.find(c=>c.tipo==='Sintética' && c.pessoaGrupo===tipo); if(ded) return ded;
+    const partes = String(generica.codigo).split('.'); partes.pop(); const pai = partes.join('.');
+    const paiConta = todas.find(c=>c.codigo===pai && c.tipo==='Sintética');
+    if(paiConta && /^(clientes|fornecedores)\b/i.test(paiConta.nome||'')) return paiConta;
+    const sub = partes.slice(0,-1).join('.');
+    if(!sub) return paiConta || null;
+    let max = 0;
+    todas.forEach(c=>{ if(c.tipo==='Sintética' && String(c.codigo).startsWith(sub+'.')){ const r = String(c.codigo).slice(sub.length+1); if(/^\d+$/.test(r)) max = Math.max(max, parseInt(r,10)); } });
+    const g = { id: uid(), clientId, codigo: sub + '.' + String(max+1).padStart(2,'0'), nome: tipo==='cliente' ? 'Contas de Clientes' : 'Contas de Fornecedores',
+      tipo:'Sintética', natureza: generica.natureza, contaSuperior: sub, pessoaGrupo: tipo, origemAutomatica: true };
+    if(generica.modelo) g.modelo = generica.modelo;
+    await Store.set('planocontas:'+g.id, JSON.stringify(g), true);
+    state.planoContas.push(g);
+    return g;
+  }
+  function planoPessoasForaDoGrupo(clientId){
+    const todas = state.planoContas.filter(c=>c.clientId===clientId);
+    return todas.filter(c=>{
+      if(!c.pessoaTipo || c.tipo!=='Analítica') return false;
+      const partes = String(c.codigo).split('.'); partes.pop(); const pai = todas.find(x=>x.codigo===partes.join('.') && x.tipo==='Sintética');
+      return !(pai && (pai.pessoaGrupo===c.pessoaTipo || /^(clientes|fornecedores)\b/i.test(pai.nome||'')));
+    });
+  }
+  async function reorganizarPessoasEmGrupo(clientId){
+    const lista = planoPessoasForaDoGrupo(clientId).sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}));
+    let n = 0;
+    for(const c of lista){
+      const g = await nfGrupoDaPessoa(clientId, c.pessoaTipo, { codigo:c.codigo, natureza:c.natureza, modelo:c.modelo });
+      if(!g) continue;
+      let max = 0;
+      state.planoContas.forEach(x=>{ if(x.clientId===clientId && String(x.codigo).startsWith(g.codigo+'.')){ const r = String(x.codigo).slice(g.codigo.length+1); if(/^\d+$/.test(r)) max = Math.max(max, parseInt(r,10)); } });
+      c.codigo = g.codigo + '.' + String(max+1).padStart(4,'0'); c.contaSuperior = g.codigo;
+      await Store.set('planocontas:'+c.id, JSON.stringify(c), true); n++;
+    }
+    return n;
+  }
   async function nfContaDaPessoa(clientId, n, generica){
     const p = nfPessoaDaNota(n);
     if(!p || !generica || !planoMascaraNova(clientId)) return null;
@@ -17759,10 +17800,10 @@
     if(ja) return ja;
     const partes = String(generica.codigo).split('.');
     if(partes.length < 2) return null;
-    partes.pop();
-    const pai = partes.join('.');
+    const grupo = await nfGrupoDaPessoa(clientId, p.tipo, generica);
+    const pai = grupo ? grupo.codigo : (partes.pop(), partes.join('.'));
     let max = 0;
-    todas.forEach(c=>{ if(String(c.codigo).startsWith(pai+'.')){ const resto = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(resto)) max = Math.max(max, parseInt(resto,10)); } });
+    state.planoContas.filter(c=>c.clientId===clientId).forEach(c=>{ if(String(c.codigo).startsWith(pai+'.')){ const resto = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(resto)) max = Math.max(max, parseInt(resto,10)); } });
     const conta = { id: uid(), clientId, codigo: pai + '.' + String(max+1).padStart(4,'0'), nome: p.nome.slice(0,70),
       tipo:'Analítica', natureza: generica.natureza, contaSuperior: pai,
       pessoaTipo: p.tipo, pessoaChave: p.chave, pessoaDoc: p.doc, origemAutomatica: true };
@@ -27747,6 +27788,15 @@
       };
     }
 
+    const planoPessoasBtn = document.getElementById('planoPessoasBtn');
+    if(planoPessoasBtn) planoPessoasBtn.onclick = async ()=>{
+      const cid = state.contabilEmpresaAtiva; const n = planoPessoasForaDoGrupo(cid).length;
+      if(!confirm('Mover '+n+' conta(s) de clientes/fornecedores de '+clientName(cid)+' para um grupo próprio? Os códigos delas mudam (ex.: 1.01.04.0005 passa a 1.01.07.0001); os lançamentos continuam ligados às mesmas contas.')) return;
+      planoPessoasBtn.disabled = true; planoPessoasBtn.textContent = 'Movendo…';
+      try{ const r = await reorganizarPessoasEmGrupo(cid); alert(r+' conta(s) movida(s) para o grupo próprio.'); }
+      catch(e){ alert('Não foi possível concluir: '+((e&&e.message)||'erro')+'. Clique de novo para continuar.'); }
+      await loadPlanoContas(); render();
+    };
     const planoDedupBtn = document.getElementById('planoDedupBtn');
     if(planoDedupBtn) planoDedupBtn.onclick = async ()=>{
       const cid = state.contabilEmpresaAtiva; const n = planoDuplicadasDaEmpresa(cid);
