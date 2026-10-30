@@ -782,6 +782,7 @@
     sindicatos: [],
     cctControle: [],
     cctModalData: null,
+    cctArqId: null,
     parcelasIndividuais: [],
     parcelamentoFluxoAtivo: '',
     parcelaIndividualModalData: null,
@@ -13711,7 +13712,60 @@
     catch(e){ alert('Não foi possível salvar.\n\nDetalhe técnico: ' + ((e && e.message) || 'erro desconhecido')); return false; }
     await loadCctControle(); render(); return true;
   }
-  async function deleteCct(id){ await Store.delete('cctcontrole:'+id, true); await loadCctControle(); render(); }
+  async function deleteCct(id){
+    const c = state.cctControle.find(x=>x.id===id);
+    for(const a of ((c&&c.anexos)||[])){ for(let n=0;n<(a.partes||1);n++){ try{ await Store.delete('cctarq:'+id+':'+a.id+':'+n, true); }catch(e){} } }
+    await Store.delete('cctcontrole:'+id, true); await loadCctControle(); render();
+  }
+  // Arquivos da CCT (PDF, Word, Excel, imagens…): até 5 MB cada, gravados em partes de ~450 KB no banco.
+  const CCT_PARTE = 600000, CCT_MAX = 5*1024*1024;
+  async function cctAddArquivos(cctId, files){
+    const c = state.cctControle.find(x=>x.id===cctId); if(!c) return 0;
+    const anexos = (c.anexos||[]).slice(); const rej = []; let ok = 0;
+    for(const f of files){
+      if(f.size > CCT_MAX){ rej.push(f.name+' ('+alteracaoTamanhoTxt(f.size)+')'); continue; }
+      const fid = uid(); let partes = 0;
+      try{
+        const bytes = new Uint8Array(await f.arrayBuffer()); let bin = '';
+        for(let i=0;i<bytes.length;i+=8192) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+8192));
+        const b64 = btoa(bin); partes = Math.max(1, Math.ceil(b64.length/CCT_PARTE));
+        for(let n=0;n<partes;n++) await Store.set('cctarq:'+cctId+':'+fid+':'+n, JSON.stringify({ id:fid, cctId, n, b64:b64.slice(n*CCT_PARTE,(n+1)*CCT_PARTE) }), true);
+        anexos.push({ id:fid, nome:f.name, tamanho:f.size, mime:f.type||alteracaoMime(f.name), data:todayStr(), partes }); ok++;
+      }catch(e){ rej.push(f.name+' (erro ao gravar)'); for(let n=0;n<partes;n++){ try{ await Store.delete('cctarq:'+cctId+':'+fid+':'+n, true); }catch(_){} } }
+    }
+    if(ok) await saveCct(Object.assign({}, c, {anexos}));
+    if(rej.length) alert('Não foi possível guardar:\n• '+rej.join('\n• ')+'\n\nCada arquivo pode ter até 5 MB.');
+    return ok;
+  }
+  async function cctLerArquivo(cctId, a){
+    let b64 = '';
+    for(let n=0;n<(a.partes||1);n++){ const r = await Store.get('cctarq:'+cctId+':'+a.id+':'+n, true); if(!r) throw new Error('Arquivo incompleto.'); b64 += JSON.parse(r.value).b64; }
+    return b64;
+  }
+  async function cctAbrirArquivo(cctId, fid, baixar){
+    const c = state.cctControle.find(x=>x.id===cctId); const a = c && (c.anexos||[]).find(x=>x.id===fid); if(!a) return;
+    try{ const b64 = await cctLerArquivo(cctId, a); const mime = a.mime || alteracaoMime(a.nome); if(baixar) baixarArquivoBase64(b64, a.nome, mime); else visualizarArquivoBase64(b64, a.nome, mime); }
+    catch(e){ alert('Não foi possível ler este arquivo: '+((e&&e.message)||'erro')); }
+  }
+  async function cctExcluirArquivo(cctId, fid){
+    const c = state.cctControle.find(x=>x.id===cctId); const a = c && (c.anexos||[]).find(x=>x.id===fid); if(!a) return;
+    for(let n=0;n<(a.partes||1);n++){ try{ await Store.delete('cctarq:'+cctId+':'+fid+':'+n, true); }catch(e){} }
+    await saveCct(Object.assign({}, c, {anexos:(c.anexos||[]).filter(x=>x.id!==fid)}));
+  }
+  function cctArqModalHtml(){
+    const c = state.cctControle.find(x=>x.id===state.cctArqId); if(!c) return '';
+    const l = c.anexos||[]; const vis = (n)=>/\.(pdf|png|jpe?g|gif|webp|txt|html)$/i.test(n||'');
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:720px;">
+      <h3>Arquivos da CCT</h3>
+      <div class="form-hint" style="margin:-4px 0 10px; font-weight:700;">${escapeHtml(c.nome||'Sindicato')}${c.acronimo?' — '+escapeHtml(c.acronimo):''}</div>
+      ${l.length ? `<div class="cc-list">${l.map(x=>`<div class="cc-row"><div class="cr-main"><div class="cr-title">${escapeHtml(x.nome)}</div><div class="cr-meta">${alteracaoTamanhoTxt(x.tamanho)} · guardado em ${fmtDate(x.data)}</div></div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">${vis(x.nome)?`<button type="button" class="btn-detail" data-cctarq-ver="${x.id}">Visualizar</button>`:''}<button type="button" class="btn-detail" data-cctarq-baixar="${x.id}">Baixar</button><button type="button" class="btn-sm danger" data-cctarq-del="${x.id}">Excluir</button></div></div>`).join('')}</div>` : `<div class="empty">Nenhum arquivo guardado ainda.</div>`}
+      <div class="field" style="margin-top:12px;"><label>Guardar a CCT (PDF, Word, Excel, imagens, ZIP… vários de uma vez)</label>
+        <input type="file" id="cctArqInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.rtf,.odt,.ods,.csv,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.webp,.zip,.xml,.html"/>
+        <div class="form-hint" style="margin-top:4px;">Cada arquivo pode ter até 5 MB.</div></div>
+      <div class="modal-actions"><button type="button" class="btn-sm" id="cctArqFechar">Fechar</button><button type="button" class="btn-add" id="cctArqAdd">Guardar arquivos selecionados</button></div>
+    </div></div>`;
+  }
   // Dias restantes = vencimento − hoje. Status: < 0 VENCIDO · ≤ 30 PRÓXIMO · senão VIGENTE.
   function cctDias(venc){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(venc||'')) return null;
@@ -13747,7 +13801,7 @@
         <span class="tag" style="background:#fef9c3; color:#854d0e;">⏳ Próximos: ${cont.proximo}</span>
         <span class="tag" style="background:#fee2e2; color:#991b1b;">⚠️ Vencidos: ${cont.vencido}</span></div>` : ''}
       ${lista.length ? `<div style="overflow-x:auto;"><table>
-        <thead><tr><th>Categoria / Sindicato</th><th>Acrônimo</th><th>Data-Base</th><th style="text-align:right;">Salário Base</th><th>Vencimento CCT</th><th style="text-align:right;">Dias Restantes</th><th>Status do Alerta</th><th>Reajuste</th><th></th></tr></thead>
+        <thead><tr><th>Categoria / Sindicato</th><th>Acrônimo</th><th>Data-Base</th><th style="text-align:right;">Salário Base</th><th>Vencimento CCT</th><th style="text-align:right;">Dias Restantes</th><th>Status do Alerta</th><th>Reajuste</th><th>CCT (arquivos)</th><th></th></tr></thead>
         <tbody>${lista.map(c=>{ const d = cctDias(c.vencimento), st = cctStatus(d); return `
           <tr>
             <td>${escapeHtml(c.nome||'—')}</td><td>${escapeHtml(c.acronimo||'—')}</td><td>${cctDataBaseTxt(c)}</td>
@@ -13755,6 +13809,7 @@
             <td style="text-align:right;">${d===null?'--':d}</td>
             <td><span style="display:inline-block; padding:2px 10px; border-radius:6px; font-weight:700; font-size:12px; color:${st.cor}; background:${st.bg};">${st.txt}</span></td>
             <td>${escapeHtml(c.reajuste||'—')}</td>
+            <td><button class="btn-detail" data-cct-arq="${c.id}">📎 Arquivos${(c.anexos&&c.anexos.length)?' ('+c.anexos.length+')':''}</button></td>
             <td style="display:flex; gap:6px;"><button class="btn-sm" data-cct-edit="${c.id}">Editar</button><button class="btn-sm danger" data-cct-del="${c.id}">Excluir</button></td>
           </tr>`; }).join('')}</tbody></table></div>`
       : `<div class="empty">Nenhum sindicato cadastrado ainda. Clique em "+ Novo sindicato" para começar.</div>`}
@@ -24176,6 +24231,7 @@
       ${state.modal==='ponto' ? pontoModalHtml() : ''}
       ${state.modal==='sindicato' ? sindicatoModalHtml() : ''}
       ${state.modal==='cctControle' ? cctModalHtml() : ''}
+      ${state.modal==='cctArq' ? cctArqModalHtml() : ''}
       ${state.modal==='parcelaIndividual' ? parcelaIndividualModalHtml() : ''}
       ${state.modal==='baixaEmpresa' ? baixaEmpresaModalHtml() : ''}
       ${state.modal==='baixaDocumento' ? baixaDocumentoModalHtml() : ''}
@@ -26499,6 +26555,18 @@
     const cctCancel = document.getElementById('cctCancel'); if(cctCancel) cctCancel.onclick = ()=>{ state.modal=null; state.cctModalData=null; render(); };
     root.querySelectorAll('[data-cct-edit]').forEach(el=>{ el.onclick = ()=>{ const c = state.cctControle.find(x=>x.id===el.getAttribute('data-cct-edit')); if(!c) return; state.cctModalData = Object.assign({}, c); state.modal='cctControle'; render(); }; });
     root.querySelectorAll('[data-cct-del]').forEach(el=>{ el.onclick = ()=>{ const c = state.cctControle.find(x=>x.id===el.getAttribute('data-cct-del')); if(c && confirm('Excluir "'+(c.nome||'este sindicato')+'" do controle?')) deleteCct(c.id); }; });
+    root.querySelectorAll('[data-cct-arq]').forEach(el=>{ el.onclick = ()=>{ state.cctArqId = el.getAttribute('data-cct-arq'); state.modal = 'cctArq'; render(); }; });
+    const cctArqFechar = document.getElementById('cctArqFechar'); if(cctArqFechar) cctArqFechar.onclick = ()=>{ state.modal=null; state.cctArqId=null; render(); };
+    const cctArqAdd = document.getElementById('cctArqAdd');
+    if(cctArqAdd) cctArqAdd.onclick = async ()=>{
+      const inp = document.getElementById('cctArqInput'); const fs = inp && inp.files ? Array.from(inp.files) : [];
+      if(!fs.length){ alert('Escolha um ou mais arquivos primeiro.'); return; }
+      cctArqAdd.disabled = true; cctArqAdd.textContent = 'Guardando…';
+      await cctAddArquivos(state.cctArqId, fs); render();
+    };
+    root.querySelectorAll('[data-cctarq-ver]').forEach(el=>{ el.onclick = ()=> cctAbrirArquivo(state.cctArqId, el.getAttribute('data-cctarq-ver'), false); });
+    root.querySelectorAll('[data-cctarq-baixar]').forEach(el=>{ el.onclick = ()=> cctAbrirArquivo(state.cctArqId, el.getAttribute('data-cctarq-baixar'), true); });
+    root.querySelectorAll('[data-cctarq-del]').forEach(el=>{ el.onclick = ()=>{ if(confirm('Excluir este arquivo?')) cctExcluirArquivo(state.cctArqId, el.getAttribute('data-cctarq-del')); }; });
     const cctForm = document.getElementById('cctForm');
     if(cctForm) cctForm.onsubmit = async (e)=>{
       e.preventDefault(); if(state._salvandoForm) return;
