@@ -10555,6 +10555,27 @@
     await loadPlanoContasReferencial(); render();
   }
 
+  // Histórico Contábil ÚNICO: um só catálogo padrão, valendo para todas as empresas (clientId '*').
+  const HIST_PADRAO_CLI = '*';
+  function historicosPadrao(){ return state.historicos.filter(h=>h.clientId===HIST_PADRAO_CLI).sort((a,b)=>String(a.codigo||'').localeCompare(String(b.codigo||''), undefined, {numeric:true})); }
+  let _histMigrando = false;
+  async function migrarHistoricoUnico(){
+    if(_histMigrando) return; _histMigrando = true;
+    try{
+      if(state.historicos.some(h=>h.clientId===HIST_PADRAO_CLI)) return;
+      const marker = await Store.get('historicos_unico_v1', true).catch(()=>null);
+      if(marker) return;
+      // junta o que as empresas já tinham (por código; vale o primeiro) e completa com o padrão do sistema
+      const porCod = new Map();
+      state.historicos.filter(h=>h.clientId && h.clientId!==HIST_PADRAO_CLI).forEach(h=>{ const k = String(h.codigo||'').trim(); if(k && !porCod.has(k)) porCod.set(k, h.descricao); });
+      HISTORICOS_PADRAO.forEach(h=>{ if(!porCod.has(h.codigo)) porCod.set(h.codigo, h.descricao); });
+      for(const [codigo, descricao] of porCod){
+        const hh = { id: uid(), clientId: HIST_PADRAO_CLI, codigo, descricao };
+        await Store.set('historicos:'+hh.id, JSON.stringify(hh), true); state.historicos.push(hh);
+      }
+      await Store.set('historicos_unico_v1', '1', true);
+    }catch(e){} finally { _histMigrando = false; }
+  }
   async function loadHistoricos(){
     state.historicos = [];
     try{
@@ -10588,6 +10609,7 @@
         await Store.set('historicos_seed_v2', '1', true);
       }
     }catch(e){}
+    await migrarHistoricoUnico();
     state.historicos.sort((a,b)=> (a.codigo||'').localeCompare(b.codigo||''));
   }
   async function saveHistoricoItem(h){
@@ -10840,7 +10862,7 @@
     return c ? c.id : null;
   }
   function historicoCatalogoTexto(historicoCodigo, complemento, clientId){
-    const h = state.historicos.find(x=>x.codigo===historicoCodigo && x.clientId===clientId);
+    const h = state.historicos.find(x=>x.codigo===historicoCodigo && x.clientId===HIST_PADRAO_CLI) || state.historicos.find(x=>x.codigo===historicoCodigo && x.clientId===clientId);
     const base = h ? (h.codigo + ' — ' + h.descricao) : complemento;
     return h ? base + ' · ' + complemento : base;
   }
@@ -17139,18 +17161,17 @@
   }
 
   function historicosPanelHtml(){
-    const empresa = state.clients.find(c=>c.id===state.contabilEmpresaAtiva);
-    const historicos = state.historicos.filter(h=>h.clientId===state.contabilEmpresaAtiva);
+    const historicos = historicosPadrao();
+    const proprios = state.historicos.filter(h=>h.clientId && h.clientId!==HIST_PADRAO_CLI).length;
     return `
       <div class="panel-head">
-        <h3>Histórico Contábil</h3>
-        ${empresa ? `<button type="button" class="btn-add" id="novoHistoricoBtn">+ Novo histórico</button>` : ''}
+        <h3>Histórico Contábil — padrão único</h3>
+        <button type="button" class="btn-add" id="novoHistoricoBtn">+ Novo histórico</button>
       </div>
-      <div class="form-hint" style="margin:-4px 0 14px;">Descrições padronizadas para uso nos lançamentos contábeis desta empresa.</div>
-      ${empresaContabilSelectorHtml()}
-      ${!empresa ? `<div class="empty">Selecione uma empresa acima para ver ou cadastrar o histórico contábil dela.</div>` : !historicos.length ? `
-        <div class="form-hint" style="margin-bottom:10px;">${escapeHtml(empresa.name)} ainda não tem nenhum histórico cadastrado.</div>
-        <button type="button" class="btn-calc" id="criarHistoricoPadraoBtn">Criar histórico padrão para esta empresa</button>
+      <div class="form-hint" style="margin:-4px 0 14px;">Um só catálogo de descrições padronizadas, <b>vinculado a todas as empresas</b>: o que for criado, editado ou excluído aqui vale para todas, nos lançamentos contábeis e nas integrações automáticas.</div>
+      ${!historicos.length ? `
+        <div class="form-hint" style="margin-bottom:10px;">Ainda não há nenhum histórico padrão cadastrado.</div>
+        <button type="button" class="btn-calc" id="criarHistoricoPadraoBtn">Criar histórico padrão</button>
       ` : `
         <div id="historicosContainer">
           <table>
@@ -17166,6 +17187,7 @@
             </tbody>
           </table>
         </div>
+        ${proprios ? `<div class="form-hint" style="margin-top:10px;">Existem ${proprios} histórico(s) antigos cadastrados por empresa; os códigos deles foram reunidos neste catálogo único e os antigos não são mais usados.</div>` : ''}
       `}
     `;
   }
@@ -17173,7 +17195,7 @@
   // Próximo código de histórico da empresa: maior código numérico + 1, com 3 dígitos (001, 002, ...).
   function proximoCodigoHistorico(clientId){
     let max = 0;
-    state.historicos.filter(h=>h.clientId===clientId).forEach(h=>{ const n = parseInt(String(h.codigo||'').replace(/\D/g,''),10); if(!isNaN(n) && n>max) max=n; });
+    historicosPadrao().forEach(h=>{ const n = parseInt(String(h.codigo||'').replace(/\D/g,''),10); if(!isNaN(n) && n>max) max=n; });
     return String(max+1).padStart(3,'0');
   }
   function historicoModalHtml(){
@@ -18747,7 +18769,7 @@
             <div class="field"><label style="display:flex; justify-content:space-between; align-items:center; gap:6px;">Histórico padrão <button type="button" class="btn-detail" id="lcNovoHist" style="text-transform:none; font-size:11px; padding:2px 8px;">+ Novo histórico</button></label>
               <select id="lcHistoricoSelect">
                 <option value="">— Digitar manualmente —</option>
-                ${state.historicos.filter(h=>h.clientId===clienteId).map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('')}
+                ${historicosPadrao().map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('')}
               </select>
             </div>
             <div class="field"><label>Histórico (texto do lançamento)</label><input type="text" id="lcHistorico" value="${escapeHtml(d.historico||'')}" required/></div>
@@ -27784,9 +27806,9 @@
     const criarHistoricoPadraoBtn = document.getElementById('criarHistoricoPadraoBtn');
     if(criarHistoricoPadraoBtn){
       criarHistoricoPadraoBtn.onclick = async ()=>{
-        const clientId = state.contabilEmpresaAtiva;
-        if(!clientId) return;
+        const clientId = HIST_PADRAO_CLI;
         for(const h of HISTORICOS_PADRAO){
+          if(state.historicos.some(x=>x.clientId===clientId && x.codigo===h.codigo)) continue;
           const hh = Object.assign({id: uid(), clientId}, h);
           await Store.set('historicos:'+hh.id, JSON.stringify(hh), true);
         }
@@ -27959,19 +27981,18 @@
 
     // Histórico Contábil
     const novoHistoricoBtn = document.getElementById('novoHistoricoBtn');
-    if(novoHistoricoBtn) novoHistoricoBtn.onclick = ()=>{ state.historicoModalData = { clientId: state.contabilEmpresaAtiva, codigo: proximoCodigoHistorico(state.contabilEmpresaAtiva) }; state.modal='historico'; render(); };
+    if(novoHistoricoBtn) novoHistoricoBtn.onclick = ()=>{ state.historicoModalData = { clientId: HIST_PADRAO_CLI, codigo: proximoCodigoHistorico(HIST_PADRAO_CLI) }; state.modal='historico'; render(); };
     const htCancel = document.getElementById('htCancel');
     if(htCancel) htCancel.onclick = ()=>{ state.modal=null; state.historicoModalData=null; render(); };
     const historicoForm = document.getElementById('historicoForm');
     if(historicoForm){
       historicoForm.onsubmit = (e)=>{
         e.preventDefault();
-        const clientId = (state.historicoModalData && state.historicoModalData.clientId) || state.contabilEmpresaAtiva;
-        if(!clientId){ alert('Selecione uma empresa antes de cadastrar um histórico.'); return; }
+        const clientId = HIST_PADRAO_CLI;
         const idEd = (state.historicoModalData && state.historicoModalData.id) || undefined;
         let cod = document.getElementById('htCodigo').value.trim() || proximoCodigoHistorico(clientId);
         if(state.historicos.some(x=>x.clientId===clientId && x.id!==idEd && String(x.codigo).trim()===cod)){
-          alert('Já existe um histórico com o código '+cod+' nesta empresa. Use outro código (sugestão: '+proximoCodigoHistorico(clientId)+').'); return;
+          alert('Já existe um histórico com o código '+cod+' no catálogo. Use outro código (sugestão: '+proximoCodigoHistorico(clientId)+').'); return;
         }
         const h = {
           id: idEd,
@@ -28098,7 +28119,7 @@
         document.getElementById('lcContaCredito').innerHTML = '<option value="">— Selecione —</option>' + contasAnaliticasOptionsHtml(null, clienteId);
         aplicarBuscaSelects(document.getElementById('lancContabilForm'));
         document.getElementById('lcHistoricoSelect').innerHTML = '<option value="">— Digitar manualmente —</option>' +
-          state.historicos.filter(h=>h.clientId===clienteId).map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('');
+          historicosPadrao().map(h=>`<option value="${escapeHtml(h.descricao)}">${escapeHtml(h.codigo)} — ${escapeHtml(h.descricao)}</option>`).join('');
         const hint = document.getElementById('lcEmpresaHint');
         if(hint) hint.textContent = clienteId && !state.planoContas.some(c=>c.clientId===clienteId) ? 'Esta empresa ainda não tem plano de contas — cadastre em Plano de Contas antes de lançar.' : '';
       };
@@ -28183,9 +28204,9 @@
         document.getElementById('qhSalvar').onclick = async ()=>{
           const cod = document.getElementById('qhCodigo').value.trim(), desc = document.getElementById('qhDesc').value.trim();
           if(!cod || !desc){ alert('Informe o código e a descrição.'); return; }
-          if(state.historicos.some(x=>x.clientId===clientId && String(x.codigo).trim()===cod)){ alert('Já existe um histórico com o código '+cod+' nesta empresa.'); return; }
+          if(state.historicos.some(x=>x.clientId===HIST_PADRAO_CLI && String(x.codigo).trim()===cod)){ alert('Já existe um histórico com o código '+cod+' no catálogo.'); return; }
           const b = document.getElementById('qhSalvar'); b.disabled = true;
-          const h = { id: uid(), clientId, codigo: cod, descricao: desc };
+          const h = { id: uid(), clientId: HIST_PADRAO_CLI, codigo: cod, descricao: desc };
           try{ await Store.set('historicos:'+h.id, JSON.stringify(h), true); }
           catch(e){ alert('Não foi possível criar o histórico: '+((e&&e.message)||'erro')); b.disabled=false; return; }
           state.historicos.push(h);
