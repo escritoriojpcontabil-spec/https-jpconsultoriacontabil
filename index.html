@@ -17465,6 +17465,15 @@
     }
     return state.si;
   }
+  // Aceita 1234,56 · 1.234,56 · 1234.56 · R$ 1.234,56 (o campo antigo, numérico, apagava o valor digitado com ponto de milhar).
+  function siNum(t){
+    let x = String(t==null?'':t).replace(/R\$|\s/g,'');
+    if(!x) return 0;
+    if(x.indexOf(',')>=0) x = x.replace(/\./g,'').replace(',','.');
+    else if(/^\d{1,3}(\.\d{3})+$/.test(x)) x = x.replace(/\./g,'');
+    const v = parseFloat(x); return isNaN(v) ? NaN : Math.round(v*100)/100;
+  }
+  function siFmtCampo(v){ if(v===''||v==null) return ''; const n = Number(v); return isNaN(n) ? String(v) : n.toFixed(2).replace('.',','); }
   function siCapturar(){
     if(!state.si) return;
     document.querySelectorAll('.si-valor').forEach(inp=>{
@@ -17529,7 +17538,7 @@
           const val = r ? r.valor : (ex ? ex.valor : '');
           return `<tr>
             <td>${escapeHtml(c.codigo)} — ${escapeHtml(c.nome)}</td>
-            <td><input type="number" step="0.01" min="0" class="si-valor" data-conta="${c.id}" value="${val}" placeholder="0,00" style="width:100%;"/></td>
+            <td><input type="text" inputmode="decimal" autocomplete="off" class="si-valor" data-conta="${c.id}" value="${escapeHtml(r ? String(val) : siFmtCampo(val))}" placeholder="0,00" style="width:100%; text-align:right;"/></td>
             <td><select class="si-dc" data-nobusca="1" data-conta="${c.id}"><option value="D" ${dc==='D'?'selected':''}>Devedor (D)</option><option value="C" ${dc==='C'?'selected':''}>Credor (C)</option></select></td>
             <td><button type="button" class="btn-sm danger" data-si-rem="${c.id}" title="Tirar esta conta da lista">✕</button></td>
           </tr>`; }).join('') : '<tr><td colspan="4" class="empty">Nenhuma conta na lista. Use o campo acima para adicionar as contas que têm saldo inicial.</td></tr>'}
@@ -17550,10 +17559,13 @@
     const contra = document.getElementById('siContra').value;
     if(!data){ show('Informe a data do saldo.', 'error'); return; }
     if(!contra){ show('Escolha a conta de contrapartida (Patrimônio Líquido).', 'error'); return; }
-    const novos = [], iguais = [];
+    const novos = [], iguais = [], invalidos = [], vazios = [];
+    const nomeC = id=>{ const c = state.planoContas.find(x=>x.id===id); return c ? c.codigo+' — '+c.nome : id; };
     document.querySelectorAll('.si-valor').forEach(inp=>{
-      const v = Math.round((parseFloat(inp.value)||0)*100)/100;
-      if(v<=0) return;
+      const cid0 = inp.getAttribute('data-conta');
+      const v = siNum(inp.value);
+      if(isNaN(v)){ invalidos.push(nomeC(cid0)+' ("'+inp.value+'")'); return; }
+      if(v<=0){ vazios.push(cid0); return; }
       const cid = inp.getAttribute('data-conta');
       const cc = state.planoContas.find(x=>x.id===cid), ct = state.planoContas.find(x=>x.id===contra);
       if(cid===contra || (cc && ct && cc.codigo===ct.codigo)){ iguais.push(cc ? cc.codigo+' — '+cc.nome : cid); return; }
@@ -17562,10 +17574,14 @@
         contaDebito: dc==='D' ? cid : contra, contaCredito: dc==='D' ? contra : cid,
         historico: 'Saldo inicial em ' + fmtDate(data), aberturaSaldo: true });
     });
+    if(invalidos.length){ show('Valor inválido em: ' + invalidos.join('; ') + '. Digite só números, com vírgula nos centavos (ex.: 12345,67).', 'error'); return; }
     if(iguais.length){ show('A conta ' + iguais[0] + ' é a própria contrapartida — o saldo se anularia e nada seria lançado. Troque a "Contrapartida" por outra conta do Patrimônio Líquido (ex.: Lucros/Prejuízos Acumulados) ou use outra conta no saldo.', 'error'); return; }
     if(!novos.length && !siAberturas(empresa).length){ show('Nenhum valor informado: digite o saldo (maior que zero) em pelo menos uma conta.', 'error'); return; }
     const manter = {}; novos.forEach(n=>manter[n.id]=1);
     const apagar = siAberturas(empresa).filter(l=>!manter[l.id]).map(l=>l.id);
+    // Proteção: não apagar em silêncio um saldo já gravado cujo campo ficou vazio.
+    const perdas = siAberturas(empresa).filter(l=>apagar.includes(l.id)).map(l=>{ const cp = document.getElementById('siContra').value; const outra = l.contaDebito===cp ? l.contaCredito : l.contaDebito; return nomeC(outra)+' ('+fmtBRL(l.valor)+')'; });
+    if(perdas.length && !confirm('ATENÇÃO: os saldos abaixo já estão gravados, mas o campo deles está vazio/zero e eles serão REMOVIDOS:\n\n• '+perdas.join('\n• ')+'\n\nContinuar e remover?')) return;
     const btn = document.getElementById('siSalvarBtn'); if(btn) btn.disabled = true;
     try{
       for(const n of novos){ await saveLancamentoContabilSilent(n); }
@@ -17586,13 +17602,13 @@
     const el = document.getElementById('siResumo'); if(!el) return;
     let d=0, c=0;
     document.querySelectorAll('.si-valor').forEach(inp=>{
-      const v=parseFloat(inp.value)||0; if(v<=0) return;
+      const v=siNum(inp.value); if(!(v>0)) return;
       const dc=document.querySelector('.si-dc[data-conta="'+inp.getAttribute('data-conta')+'"]').value;
       if(dc==='D') d+=v; else c+=v;
     });
     const dif = Math.round((d-c)*100)/100;
     const ctEl = document.getElementById('siContra'); const ct = ctEl && state.planoContas.find(x=>x.id===ctEl.value);
-    const mesma = ct && [...document.querySelectorAll('.si-valor')].some(inp=>{ if(!(parseFloat(inp.value)>0)) return false; const cc = state.planoContas.find(x=>x.id===inp.getAttribute('data-conta')); return cc && cc.codigo===ct.codigo; });
+    const mesma = ct && [...document.querySelectorAll('.si-valor')].some(inp=>{ if(!(siNum(inp.value)>0)) return false; const cc = state.planoContas.find(x=>x.id===inp.getAttribute('data-conta')); return cc && cc.codigo===ct.codigo; });
     el.innerHTML = (mesma ? '<span style="color:#b45309;font-weight:700;">Atenção: uma das contas é a própria contrapartida — troque a contrapartida, senão o saldo se anula.</span><br>' : '') + 'Devedores: <b>'+fmtBRL(d)+'</b> · Credores: <b>'+fmtBRL(c)+'</b> · A diferença <b>'+fmtBRL(Math.abs(dif))+'</b> '+(dif>0?'vai a crédito':dif<0?'vai a débito':'(zerada)')+' na conta de contrapartida (Patrimônio Líquido).';
   }
 
@@ -28295,7 +28311,7 @@
     });
     const siBtn = document.getElementById('siSalvarBtn');
     if(siBtn){ siBtn.onclick = siSalvar;
-      root.querySelectorAll('.si-valor, .si-dc, #siContra').forEach(el=>{ el.oninput = siAtualizarResumo; el.onchange = siAtualizarResumo; });
+      root.querySelectorAll('.si-valor, .si-dc, #siContra').forEach(el=>{ el.oninput = ()=>{ siCapturar(); siAtualizarResumo(); }; el.onchange = ()=>{ siCapturar(); siAtualizarResumo(); }; });
       siAtualizarResumo(); }
     ['ofxExcluirTodasRegrasBtn','ofxExcluirTodasRegrasBtn2'].forEach(idb=>{
       const b = document.getElementById(idb); if(!b) return;
