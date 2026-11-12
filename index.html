@@ -861,6 +861,8 @@
     competenciaAtiva: new Date().toISOString().slice(0,7),
     tabelaHonCompetencia: new Date().toISOString().slice(0,7),
     tabelaHonNovoCliente: '',
+    tabHonImportSel: [],
+    tabHonImportBusca: '',
     ccClientFilter: 'all',
     impostosViewMode: 'todos',
     folhaViewMode: 'todos',
@@ -4424,6 +4426,7 @@
           <select id="tabHonNovoCliente" class="filter-select" style="width:100%;"><option value="">— Selecione —</option>${empresas.map(c=>`<option value="${c.id}" ${state.tabelaHonNovoCliente===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
         </div>
         <button type="button" class="btn-add" id="tabHonNovoBtn">+ Novo lançamento</button>
+        <button type="button" class="btn-add" id="tabHonImportBtn" style="background:#2E7D32;">☑ Importar empresas do sistema</button>
         <button type="button" class="btn-detail" id="tabHonPdfBtn">Baixar PDF</button>
         <button type="button" class="btn-detail" id="tabHonCsvBtn">Baixar Excel (CSV)</button>
       </div>
@@ -4433,7 +4436,7 @@
         <div class="panel" style="margin:0; padding:10px 16px; background:#F8F9FB;"><div style="color:var(--ink-soft);">Total recebido</div><div style="font-weight:700; font-size:16px; color:#2E7D32;">${fmtBRL(tot.rec)}</div></div>
         <div class="panel" style="margin:0; padding:10px 16px; background:#F8F9FB;"><div style="color:var(--ink-soft);">Falta receber</div><div style="font-weight:700; font-size:16px; color:${tot.aberto>0.005?'var(--red)':'inherit'};">${fmtBRL(tot.aberto)}</div></div>
       </div>
-      ${!linhas.length ? `<div class="empty">Nenhum honorário lançado para ${titulo}. Use "+ Novo lançamento" acima ou a aba Honorários.</div>` : `
+      ${!linhas.length ? `<div class="empty">Nenhum honorário lançado para ${titulo}. Use "Importar empresas do sistema" ou "+ Novo lançamento" acima.</div>` : `
       <div style="overflow:auto;">
         <table style="border-collapse:collapse; min-width:1100px;">
           <thead><tr>
@@ -4452,7 +4455,7 @@
               <td ${td('#FFC000','text-align:center;')}>${l.dia?fmtDate(l.dia):''}</td>
               <td ${td('#FCE4D6','text-align:center;')}>${escapeHtml(l.formaRec)}</td>
               <td ${td('#fff','text-align:center;')}><span class="tag ${honorarioStatusClass(l.status)}">${l.status}</span></td>
-              <td ${td('#fff','white-space:nowrap;')}><button class="btn-detail" data-edit-honorario="${l.h.id}">Editar</button></td>
+              <td ${td('#fff','white-space:nowrap;')}><button class="btn-detail" data-edit-honorario="${l.h.id}">Editar</button> <button class="btn-sm danger" data-del-honorario="${l.h.id}">Excluir</button></td>
             </tr>`).join('')}
             <tr style="font-weight:700;">
               <td ${td('#BFBFBF')} colspan="3">TOTAL</td>
@@ -4464,6 +4467,71 @@
       </div>`}
     `;
   }
+
+  // Importar empresas cadastradas no sistema para a Tabela de Honorários (cria o lançamento do mês).
+  function tabHonJaLancada(clientId, comp){ return state.honorarios.some(h=>h.clientId===clientId && (h.competencia||'')===comp && h.tipoServico===RJ_MENSAL); }
+  function tabHonImportLista(){
+    const comp = state.tabelaHonCompetencia;
+    const q = (state.tabHonImportBusca||'').toLowerCase();
+    return state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''))
+      .filter(c=>!q || (c.name||'').toLowerCase().includes(q) || (c.doc||'').includes(q))
+      .map(c=>({c, valor: rjValorAtual(c), ja: tabHonJaLancada(c.id, comp)}));
+  }
+  function tabHonImportModalHtml(){
+    const comp = state.tabelaHonCompetencia, [ano,mes] = comp.split('-');
+    const lista = tabHonImportLista();
+    const sel = new Set(state.tabHonImportSel||[]);
+    const nSel = [...sel].filter(id=>!tabHonJaLancada(id, comp)).length;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:760px;">
+          <h3>Importar empresas para ${MESES_PT[parseInt(mes,10)-1]}/${ano}</h3>
+          <div class="form-hint" style="margin:0 0 10px;">Marque as empresas cadastradas no sistema que entram na tabela deste mês. Será criado um honorário mensal para cada uma, com o valor do cadastro (ou do último mês lançado) e vencimento no mês seguinte. Empresas já lançadas neste mês ficam bloqueadas.</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+            <input type="text" id="tabHonImportBusca" class="filter-select" style="flex:1; min-width:180px;" placeholder="Buscar empresa ou CNPJ" value="${escapeHtml(state.tabHonImportBusca||'')}"/>
+            <button type="button" class="btn-sm" id="tabHonImportTodas">Marcar todas</button>
+            <button type="button" class="btn-sm" id="tabHonImportNenhuma">Desmarcar todas</button>
+            <button type="button" class="btn-sm" id="tabHonImportAtivas">Só contratos ativos</button>
+          </div>
+          <div style="max-height:380px; overflow:auto; border:1px solid var(--line,#ddd); border-radius:8px;">
+            <table style="width:100%;">
+              <thead><tr><th style="width:34px;"></th><th>Empresa</th><th>CNPJ</th><th style="text-align:right">Honorário</th><th></th></tr></thead>
+              <tbody>
+                ${lista.length ? lista.map(x=>`<tr style="${x.ja?'opacity:.55;':''}">
+                  <td><input type="checkbox" class="tabhon-imp-chk" value="${x.c.id}" ${x.ja?'disabled':''} ${sel.has(x.c.id)&&!x.ja?'checked':''}/></td>
+                  <td>${escapeHtml(x.c.name)}</td><td style="white-space:nowrap;">${escapeHtml(x.c.doc||'')}</td>
+                  <td style="text-align:right" class="mono">${x.valor>0?fmtBRL(x.valor):'<span style="color:#b45309;">sem valor</span>'}</td>
+                  <td>${x.ja?'<span class="tag sit-ativa">Já lançada</span>':(x.c.contractStatus&&x.c.contractStatus!=='Ativo'?'<span class="tag sit-outra">'+escapeHtml(x.c.contractStatus)+'</span>':'')}</td>
+                </tr>`).join('') : `<tr><td colspan="5" style="color:var(--ink-soft);">Nenhuma empresa encontrada.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+          <div class="modal-actions" style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:14px;">
+            <span style="font-size:13px; color:var(--ink-soft);">${nSel} empresa(s) selecionada(s)</span>
+            <span style="display:flex; gap:8px;"><button type="button" class="btn-sm" id="tabHonImportCancel">Cancelar</button>
+            <button type="button" class="btn-add" id="tabHonImportOk" ${nSel?'':'disabled'}>Importar para a tabela</button></span>
+          </div>
+        </div>
+      </div>`;
+  }
+  async function tabHonImportar(){
+    const comp = state.tabelaHonCompetencia;
+    const ids = (state.tabHonImportSel||[]).filter(id=>!tabHonJaLancada(id, comp));
+    let n=0, semValor=0;
+    for(const id of ids){
+      const c = state.clients.find(x=>x.id===id); if(!c) continue;
+      const ult = rjUltimoMensal(id);
+      const dia = ult && ult.dataVencimento ? Number(ult.dataVencimento.slice(8,10))||10 : 10;
+      const valor = rjValorAtual(c);
+      if(!(valor>0)) semValor++;
+      const h = { id: uid(), clientId: id, tipoServico: RJ_MENSAL, tipoCobranca: (ult && ult.tipoCobranca) || 'Boleto', competencia: comp, dataVencimento: rjVenc(comp, dia), valor: valor>0?valor:'', observacoes:'' };
+      await Store.set('honorarios:'+h.id, JSON.stringify(h), true); n++;
+    }
+    state.modal = null; state.tabHonImportSel = [];
+    await loadHonorarios(); render();
+    alert(n+' empresa(s) importada(s) para a tabela.' + (semValor ? '\n'+semValor+' está(ão) sem valor de honorário — clique em Editar para informar.' : ''));
+  }
+
   function tabelaHonCsv(){
     const comp = state.tabelaHonCompetencia, { linhas, tot } = tabelaHonLinhas(comp);
     const q = v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
@@ -4483,23 +4551,42 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Tabela de Honorários Contábeis — ' + MESES_PT[parseInt(mes,10)-1] + '/' + ano, 'Competência ' + mes + '/' + ano);
-    const cols = [ ['CLIENTES',14,'l'], ['CNPJ',82,'l'], ['VENC.',118,'l'], ['A RECEBER',152,'r'], ['FORMA',184,'l'], ['RECEBIDO',226,'r'], ['BANCO',230,'l'], ['DIA REC.',254,'l'], ['FORMA REC.',272,'l'] ];
-    const head = ()=>{ doc.setFillColor(191,191,191); doc.rect(14, y-4.5, pageW-28, 6.5, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
-      cols.forEach(c=>doc.text(c[0], c[1], y, {align:c[2]==='r'?'right':'left'})); y += 6; doc.setFont('helvetica','normal'); doc.setFontSize(7.5); };
+    let y = pdfHeader(doc, 'Tabela de Honorários Contábeis', MESES_PT[parseInt(mes,10)-1] + '/' + ano);
+    const rgb = h=>[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+    // larguras somam 269 mm (A4 paisagem com margem de 14)
+    const cols = [
+      {t:'CLIENTES', w:62, bg:'#DCE6F2'}, {t:'CNPJ', w:34, bg:'#FFFFFF'}, {t:'VENCIMENTO', w:22, bg:'#FCE4D6'},
+      {t:'VL. A RECEBER', w:25, bg:'#C6E0B4'}, {t:'FORMA DE RECEBIM.', w:28, bg:'#9DC3E6'}, {t:'VL. RECEBIDO', w:25, bg:'#FFC000'},
+      {t:'BANCO RECEB.', w:27, bg:'#FFC000'}, {t:'DIA RECEBTO.', w:22, bg:'#FFC000'}, {t:'FORMA RECEBTO', w:24, bg:'#FCE4D6'} ];
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
+    doc.text('Competência ' + mes + '/' + ano, 14, y); y += 6;
+    doc.setDrawColor(120,120,120); doc.setLineWidth(0.2);
+    const cell = (x,yy,w,h,txt,bg,align,bold)=>{
+      doc.setFillColor.apply(doc, rgb(bg)); doc.rect(x,yy,w,h,'FD');
+      doc.setFont('helvetica', bold?'bold':'normal'); doc.setFontSize(bold?7.2:7.6); doc.setTextColor(20,25,30);
+      const lines = Array.isArray(txt) ? txt : [String(txt==null?'':txt)];
+      const lh = 3.4, top = yy + (h - lines.length*lh)/2 + 2.5;
+      lines.forEach((ln,k)=>{ const tx = align==='l' ? x+1.5 : x+w/2; doc.text(ln, tx, top + k*lh, {align: align==='l'?'left':'center'}); });
+    };
+    const head = ()=>{ let x=14; cols.forEach(c=>{ cell(x,y,c.w,8,doc.splitTextToSize(c.t,c.w-2),'#BFBFBF','c',true); x+=c.w; }); y += 8; };
     head();
-    const cut = (t,m)=>{ t=String(t||''); return t.length>m ? t.slice(0,m-1)+'…' : t; };
     linhas.forEach(l=>{
-      if(y > 190){ doc.addPage(); y = 20; head(); }
-      doc.text(cut(l.nome,40), 14, y); doc.text(cut(l.cnpj,20), 82, y); doc.text(l.venc?fmtDate(l.venc):'', 118, y);
-      doc.text(fmtBRL(l.valor), 152, y, {align:'right'}); doc.text(cut(l.forma,22), 184, y);
-      doc.text(l.rec>0.005?fmtBRL(l.rec):'', 226, y, {align:'right'}); doc.text(cut(l.banco,12), 230, y);
-      doc.text(l.dia?fmtDate(l.dia):'', 254, y); doc.text(cut(l.formaRec,10), 272, y);
-      y += 5.2;
+      const vals = [ l.nome, l.cnpj, l.venc?fmtDate(l.venc):'', fmtBRL(l.valor), l.forma, l.rec>0.005?fmtBRL(l.rec):'', l.banco, l.dia?fmtDate(l.dia):'', l.formaRec ];
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.6);
+      const wr = vals.map((v,i)=> doc.splitTextToSize(String(v), cols[i].w-3));
+      const h = Math.max(7, Math.max.apply(null, wr.map(a=>a.length))*3.4 + 3);
+      if(y + h > 190){ doc.addPage(); y = 18; head(); }
+      let x=14; cols.forEach((c,i)=>{ cell(x,y,c.w,h,wr[i],c.bg,i===0?'l':'c', i===3); x+=c.w; }); y += h;
     });
-    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
-    y += 2; doc.text('TOTAL', 14, y); doc.text(fmtBRL(tot.valor), 152, y, {align:'right'}); doc.text(fmtBRL(tot.rec), 226, y, {align:'right'});
-    y += 6; doc.text('Falta receber: ' + fmtBRL(tot.aberto), 14, y);
+    if(y + 18 > 190){ doc.addPage(); y = 18; }
+    const wTot = cols[0].w+cols[1].w+cols[2].w;
+    let x = 14; cell(x,y,wTot,8,'TOTAL','#BFBFBF','l',true); x+=wTot;
+    cell(x,y,cols[3].w,8,fmtBRL(tot.valor),'#BFBFBF','c',true); x+=cols[3].w;
+    cell(x,y,cols[4].w,8,'','#BFBFBF','c',true); x+=cols[4].w;
+    cell(x,y,cols[5].w,8,fmtBRL(tot.rec),'#BFBFBF','c',true); x+=cols[5].w;
+    cell(x,y,cols[6].w+cols[7].w+cols[8].w,8,'','#BFBFBF','c',true);
+    y += 14; doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(20,25,30);
+    doc.text('Falta receber: ' + fmtBRL(tot.aberto) + '     ·     Lançamentos: ' + linhas.length, 14, y);
     pdfSalvar(doc, 'tabela-honorarios-' + comp + '.pdf');
   }
 
@@ -24363,7 +24450,7 @@
       ${state.modal==='historico' ? historicoModalHtml() : ''}
       ${state.modal==='dupLanc' ? dupModalHtml() : ''}
       ${state.modal==='cpMes' ? cpModalHtml() : ''}
-      ${state.modal==='honorario' ? honorarioModalHtml() : ''}${state.modal==='reajusteHon' ? reajusteModalHtml() : ''}
+      ${state.modal==='tabHonImport' ? tabHonImportModalHtml() : ''}${state.modal==='honorario' ? honorarioModalHtml() : ''}${state.modal==='reajusteHon' ? reajusteModalHtml() : ''}
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
       ${state.modal==='documentoSocietario' ? documentoSocietarioModalHtml() : ''}
@@ -27163,6 +27250,22 @@
       state.honorarioModalData = { clientId: state.tabelaHonNovoCliente, competencia: comp, dataVencimento: honorarioVencimentoSugerido(comp) };
       state.modal = 'honorario'; render();
     };
+
+    const tabHonImportBtn = document.getElementById('tabHonImportBtn');
+    if(tabHonImportBtn) tabHonImportBtn.onclick = ()=>{ state.tabHonImportSel = []; state.tabHonImportBusca = ''; state.modal = 'tabHonImport'; render(); };
+    if(state.modal==='tabHonImport'){
+      const comp = state.tabelaHonCompetencia;
+      root.querySelectorAll('.tabhon-imp-chk').forEach(el=>{ el.onchange = ()=>{
+        const set = new Set(state.tabHonImportSel||[]); if(el.checked) set.add(el.value); else set.delete(el.value);
+        state.tabHonImportSel = [...set]; render(); }; });
+      const setSel = (fn)=>{ state.tabHonImportSel = tabHonImportLista().filter(x=>!x.ja && fn(x)).map(x=>x.c.id); render(); };
+      const b1=document.getElementById('tabHonImportTodas'); if(b1) b1.onclick = ()=> setSel(()=>true);
+      const b2=document.getElementById('tabHonImportNenhuma'); if(b2) b2.onclick = ()=>{ state.tabHonImportSel = []; render(); };
+      const b3=document.getElementById('tabHonImportAtivas'); if(b3) b3.onclick = ()=> setSel(x=>!x.c.contractStatus || x.c.contractStatus==='Ativo');
+      const bs=document.getElementById('tabHonImportBusca'); if(bs) bs.oninput = (e)=>{ state.tabHonImportBusca = e.target.value; const pos=e.target.selectionStart; render(); const n=document.getElementById('tabHonImportBusca'); if(n){ n.focus(); try{ n.setSelectionRange(pos,pos); }catch(_){} } };
+      const bc=document.getElementById('tabHonImportCancel'); if(bc) bc.onclick = ()=>{ state.modal=null; render(); };
+      const bo=document.getElementById('tabHonImportOk'); if(bo) bo.onclick = ()=>{ bo.disabled=true; tabHonImportar(); };
+    }
     const tabHonPdfBtn = document.getElementById('tabHonPdfBtn');
     if(tabHonPdfBtn) tabHonPdfBtn.onclick = ()=> tabelaHonPdf();
     const tabHonCsvBtn = document.getElementById('tabHonCsvBtn');
