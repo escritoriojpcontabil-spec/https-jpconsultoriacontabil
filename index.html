@@ -859,6 +859,8 @@
     deptSelectedClients: [],
     clientSelectFilter: 'all',
     competenciaAtiva: new Date().toISOString().slice(0,7),
+    tabelaHonCompetencia: new Date().toISOString().slice(0,7),
+    tabelaHonNovoCliente: '',
     ccClientFilter: 'all',
     impostosViewMode: 'todos',
     folhaViewMode: 'todos',
@@ -4197,6 +4199,7 @@
   const SERVICOS_TABS = [
     {k:'proposta', label:'Proposta Comercial'},
     {k:'honorarios', label:'Honorários'},
+    {k:'tabela-honorarios', label:'Tabela de Honorários Contábeis'},
     {k:'recibo-honorarios', label:'Recibo de Honorários'},
     {k:'orientacoes', label:'Orientações'},
     {k:'esporadicos', label:'Serviços Esporádicos'},
@@ -4209,6 +4212,7 @@
     let tabContent = '';
     if(state.servicosTab==='proposta') tabContent = propostaComercialPanelHtml();
     else if(state.servicosTab==='honorarios') tabContent = honorariosSectionHtml();
+    else if(state.servicosTab==='tabela-honorarios') tabContent = tabelaHonorariosHtml();
     else if(state.servicosTab==='recibo-honorarios') tabContent = reciboHonorariosPanelHtml();
     else if(state.servicosTab==='orientacoes') tabContent = orientacoesSectionHtml();
     else if(state.servicosTab==='esporadicos') tabContent = servicosEsporadicosSectionHtml();
@@ -4386,6 +4390,117 @@
     const totalPagoGeral = round2(grupos.reduce((s,g)=>s+g.totalPago,0));
     const empresasComPendencia = grupos.filter(g=>g.totalAberto > 0.005).length;
     return { grupos, totalAbertoGeral, totalPagoGeral, empresasComPendencia };
+  }
+
+
+  // ===== Tabela de Honorários Contábeis (modelo da planilha de receitas, uma competência por vez) =====
+  function tabelaHonLinhas(comp){
+    const linhas = state.honorarios.filter(h=>(h.competencia||'')===comp).map(h=>{
+      const cli = state.clients.find(c=>c.id===h.clientId) || {};
+      const valor = Number(h.valor)||0, rec = honorarioValorRecebido(h);
+      return { h, nome: cli.name||'(empresa removida)', cnpj: cli.doc||'', venc: honorarioVencimento(h)||'',
+        valor, rec, forma: h.tipoCobranca||'', banco: h.bancoRecebimento || h.detalheRecebimento || '',
+        dia: h.dataPagamento || h.dataRecebimentoParcial || '', formaRec: h.formaPagamento||'', status: honorarioStatus(h) };
+    });
+    linhas.sort((a,b)=> (a.venc||'9999').localeCompare(b.venc||'9999') || a.nome.localeCompare(b.nome));
+    const tot = { valor: round2(linhas.reduce((s,l)=>s+l.valor,0)), rec: round2(linhas.reduce((s,l)=>s+l.rec,0)) };
+    tot.aberto = round2(Math.max(0, tot.valor - tot.rec));
+    return { linhas, tot };
+  }
+  function tabelaHonorariosHtml(){
+    const comp = state.tabelaHonCompetencia || new Date().toISOString().slice(0,7);
+    const { linhas, tot } = tabelaHonLinhas(comp);
+    const [ano, mes] = comp.split('-');
+    const titulo = (MESES_PT[parseInt(mes,10)-1]||'') + '/' + ano;
+    const th = 'style="background:#BFBFBF; text-align:center; font-weight:700; font-size:12px; padding:6px 8px; border:1px solid #888; white-space:nowrap;"';
+    const td = (bg,extra)=>`style="background:${bg}; border:1px solid #888; padding:5px 8px; font-size:12.5px; ${extra||''}"`;
+    const empresas = state.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return `
+      <div class="form-section-title">Tabela de Honorários Contábeis — ${titulo}</div>
+      <div class="form-hint" style="margin:-4px 0 14px;">Mostra os honorários da competência escolhida, no modelo da planilha de receitas. Os dados vêm dos lançamentos de honorários de cada empresa (aba Honorários) — use "Editar" para informar recebimento, banco e forma.</div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-bottom:14px;">
+        <div class="field" style="margin:0;"><label>Competência (mês)</label><input type="month" id="tabHonCompetencia" value="${comp}"/></div>
+        <div class="field" style="margin:0; min-width:240px;"><label>Novo lançamento para a empresa</label>
+          <select id="tabHonNovoCliente" class="filter-select" style="width:100%;"><option value="">— Selecione —</option>${empresas.map(c=>`<option value="${c.id}" ${state.tabelaHonNovoCliente===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+        </div>
+        <button type="button" class="btn-add" id="tabHonNovoBtn">+ Novo lançamento</button>
+        <button type="button" class="btn-detail" id="tabHonPdfBtn">Baixar PDF</button>
+        <button type="button" class="btn-detail" id="tabHonCsvBtn">Baixar Excel (CSV)</button>
+      </div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px; font-size:13px;">
+        <div class="panel" style="margin:0; padding:10px 16px; background:#F8F9FB;"><div style="color:var(--ink-soft);">Lançamentos</div><div style="font-weight:700; font-size:16px;">${linhas.length}</div></div>
+        <div class="panel" style="margin:0; padding:10px 16px; background:#F8F9FB;"><div style="color:var(--ink-soft);">Total a receber</div><div style="font-weight:700; font-size:16px;">${fmtBRL(tot.valor)}</div></div>
+        <div class="panel" style="margin:0; padding:10px 16px; background:#F8F9FB;"><div style="color:var(--ink-soft);">Total recebido</div><div style="font-weight:700; font-size:16px; color:#2E7D32;">${fmtBRL(tot.rec)}</div></div>
+        <div class="panel" style="margin:0; padding:10px 16px; background:#F8F9FB;"><div style="color:var(--ink-soft);">Falta receber</div><div style="font-weight:700; font-size:16px; color:${tot.aberto>0.005?'var(--red)':'inherit'};">${fmtBRL(tot.aberto)}</div></div>
+      </div>
+      ${!linhas.length ? `<div class="empty">Nenhum honorário lançado para ${titulo}. Use "+ Novo lançamento" acima ou a aba Honorários.</div>` : `
+      <div style="overflow:auto;">
+        <table style="border-collapse:collapse; min-width:1100px;">
+          <thead><tr>
+            <th ${th}>CLIENTES</th><th ${th}>CNPJ</th><th ${th}>VENCIMENTOS</th><th ${th}>VL. A RECEBER</th><th ${th}>FORMA DE RECEBIM.</th>
+            <th ${th}>VL. RECEBIDOS</th><th ${th}>BANCO RECEB.</th><th ${th}>DIA RECEBTO.</th><th ${th}>FORMA RECEBTO</th><th ${th}>STATUS</th><th ${th}></th>
+          </tr></thead>
+          <tbody>
+            ${linhas.map(l=>`<tr>
+              <td ${td('#DCE6F2','text-align:center; min-width:240px;')}>${escapeHtml(l.nome)}</td>
+              <td ${td('#fff','text-align:center; white-space:nowrap;')}>${escapeHtml(l.cnpj)}</td>
+              <td ${td('#FCE4D6','text-align:center;')}>${l.venc?fmtDate(l.venc):''}</td>
+              <td ${td('#C6E0B4','text-align:center; font-weight:600;')}>${fmtBRL(l.valor)}</td>
+              <td ${td('#9DC3E6','text-align:center;')}>${escapeHtml(l.forma)}</td>
+              <td ${td('#FFC000','text-align:center;')}>${l.rec>0.005?fmtBRL(l.rec):''}</td>
+              <td ${td('#FFC000','text-align:center;')}>${escapeHtml(l.banco)}</td>
+              <td ${td('#FFC000','text-align:center;')}>${l.dia?fmtDate(l.dia):''}</td>
+              <td ${td('#FCE4D6','text-align:center;')}>${escapeHtml(l.formaRec)}</td>
+              <td ${td('#fff','text-align:center;')}><span class="tag ${honorarioStatusClass(l.status)}">${l.status}</span></td>
+              <td ${td('#fff','white-space:nowrap;')}><button class="btn-detail" data-edit-honorario="${l.h.id}">Editar</button></td>
+            </tr>`).join('')}
+            <tr style="font-weight:700;">
+              <td ${td('#BFBFBF')} colspan="3">TOTAL</td>
+              <td ${td('#BFBFBF','text-align:center;')}>${fmtBRL(tot.valor)}</td><td ${td('#BFBFBF')}></td>
+              <td ${td('#BFBFBF','text-align:center;')}>${fmtBRL(tot.rec)}</td><td ${td('#BFBFBF')} colspan="5"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>`}
+    `;
+  }
+  function tabelaHonCsv(){
+    const comp = state.tabelaHonCompetencia, { linhas, tot } = tabelaHonLinhas(comp);
+    const q = v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+    const n = v=>(Number(v)||0).toFixed(2).replace('.',',');
+    const rows = [['CLIENTES','CNPJ','VENCIMENTOS','VL. A RECEBER','FORMA DE RECEBIM.','VL. RECEBIDOS','BANCO RECEB.','DIA RECEBTO.','FORMA RECEBTO'].map(q).join(';')];
+    linhas.forEach(l=>rows.push([q(l.nome),q(l.cnpj),q(l.venc?fmtDate(l.venc):''),n(l.valor),q(l.forma),l.rec>0.005?n(l.rec):'',q(l.banco),q(l.dia?fmtDate(l.dia):''),q(l.formaRec)].join(';')));
+    rows.push([q('TOTAL'),'','',n(tot.valor),'',n(tot.rec),'','',''].join(';'));
+    const blob = new Blob(['﻿'+rows.join('\r\n')], {type:'text/csv;charset=utf-8'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'tabela-honorarios-'+comp+'.csv';
+    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+  function tabelaHonPdf(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const comp = state.tabelaHonCompetencia, { linhas, tot } = tabelaHonLinhas(comp);
+    if(!linhas.length){ alert('Nenhum honorário lançado nesta competência.'); return; }
+    const [ano, mes] = comp.split('-');
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    const pageW = doc.internal.pageSize.getWidth();
+    let y = pdfHeader(doc, 'Tabela de Honorários Contábeis — ' + MESES_PT[parseInt(mes,10)-1] + '/' + ano, 'Competência ' + mes + '/' + ano);
+    const cols = [ ['CLIENTES',14,'l'], ['CNPJ',82,'l'], ['VENC.',118,'l'], ['A RECEBER',152,'r'], ['FORMA',184,'l'], ['RECEBIDO',226,'r'], ['BANCO',230,'l'], ['DIA REC.',254,'l'], ['FORMA REC.',272,'l'] ];
+    const head = ()=>{ doc.setFillColor(191,191,191); doc.rect(14, y-4.5, pageW-28, 6.5, 'F'); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      cols.forEach(c=>doc.text(c[0], c[1], y, {align:c[2]==='r'?'right':'left'})); y += 6; doc.setFont('helvetica','normal'); doc.setFontSize(7.5); };
+    head();
+    const cut = (t,m)=>{ t=String(t||''); return t.length>m ? t.slice(0,m-1)+'…' : t; };
+    linhas.forEach(l=>{
+      if(y > 190){ doc.addPage(); y = 20; head(); }
+      doc.text(cut(l.nome,40), 14, y); doc.text(cut(l.cnpj,20), 82, y); doc.text(l.venc?fmtDate(l.venc):'', 118, y);
+      doc.text(fmtBRL(l.valor), 152, y, {align:'right'}); doc.text(cut(l.forma,22), 184, y);
+      doc.text(l.rec>0.005?fmtBRL(l.rec):'', 226, y, {align:'right'}); doc.text(cut(l.banco,12), 230, y);
+      doc.text(l.dia?fmtDate(l.dia):'', 254, y); doc.text(cut(l.formaRec,10), 272, y);
+      y += 5.2;
+    });
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    y += 2; doc.text('TOTAL', 14, y); doc.text(fmtBRL(tot.valor), 152, y, {align:'right'}); doc.text(fmtBRL(tot.rec), 226, y, {align:'right'});
+    y += 6; doc.text('Falta receber: ' + fmtBRL(tot.aberto), 14, y);
+    pdfSalvar(doc, 'tabela-honorarios-' + comp + '.pdf');
   }
 
   function honorariosSectionHtml(){
@@ -4935,6 +5050,7 @@
                 </select>
               </div>
             </div>
+            <div class="field"><label>Banco de recebimento (aparece na Tabela de Honorários Contábeis)</label><input type="text" id="honBancoRecebimento" value="${escapeHtml(d.bancoRecebimento||'')}" placeholder="Ex: Banco Cora, Banco Nubank"/></div>
             <div class="field"><label>Detalhe do recebimento (opcional — ex: "Banco Nubank - Junho")</label><input type="text" id="honDetalheRecebimento" value="${escapeHtml(d.detalheRecebimento||'')}" placeholder="Ex: Banco Nubank - referente a Março/Abril/Maio"/></div>
             <div class="form-row">
               <div class="field"><label>Valor já recebido (para pagamento parcial)</label><input type="number" step="0.01" min="0" id="honValorRecebido" value="${d.valorRecebido!==undefined?d.valorRecebido:''}" placeholder="Deixe em branco se pago integral ou nada recebido"/></div>
@@ -27030,10 +27146,27 @@
         document.getElementById('honDataPagamento').value = '';
         document.getElementById('honFormaPagamento').value = '';
         document.getElementById('honDetalheRecebimento').value = '';
+        document.getElementById('honBancoRecebimento').value = '';
         document.getElementById('honValorRecebido').value = '';
         document.getElementById('honDataRecebimentoParcial').value = '';
       };
     }
+
+    const tabHonCompetencia = document.getElementById('tabHonCompetencia');
+    if(tabHonCompetencia) tabHonCompetencia.onchange = (e)=>{ if(e.target.value){ state.tabelaHonCompetencia = e.target.value; render(); } };
+    const tabHonNovoCliente = document.getElementById('tabHonNovoCliente');
+    if(tabHonNovoCliente) tabHonNovoCliente.onchange = (e)=>{ state.tabelaHonNovoCliente = e.target.value; };
+    const tabHonNovoBtn = document.getElementById('tabHonNovoBtn');
+    if(tabHonNovoBtn) tabHonNovoBtn.onclick = ()=>{
+      if(!state.tabelaHonNovoCliente){ alert('Selecione a empresa para o novo lançamento.'); return; }
+      const comp = state.tabelaHonCompetencia;
+      state.honorarioModalData = { clientId: state.tabelaHonNovoCliente, competencia: comp, dataVencimento: honorarioVencimentoSugerido(comp) };
+      state.modal = 'honorario'; render();
+    };
+    const tabHonPdfBtn = document.getElementById('tabHonPdfBtn');
+    if(tabHonPdfBtn) tabHonPdfBtn.onclick = ()=> tabelaHonPdf();
+    const tabHonCsvBtn = document.getElementById('tabHonCsvBtn');
+    if(tabHonCsvBtn) tabHonCsvBtn.onclick = ()=> tabelaHonCsv();
     const honorarioForm = document.getElementById('honorarioForm');
     if(honorarioForm){
       honorarioForm.onsubmit = (e)=>{
@@ -27051,6 +27184,7 @@
           dataPagamento: document.getElementById('honDataPagamento').value,
           formaPagamento: document.getElementById('honFormaPagamento').value,
           detalheRecebimento: document.getElementById('honDetalheRecebimento').value,
+          bancoRecebimento: document.getElementById('honBancoRecebimento').value,
           valorRecebido: document.getElementById('honValorRecebido').value !== '' ? document.getElementById('honValorRecebido').value : undefined,
           dataRecebimentoParcial: document.getElementById('honDataRecebimentoParcial').value,
           observacoes: document.getElementById('honObs').value,
