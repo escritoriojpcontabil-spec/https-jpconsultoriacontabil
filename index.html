@@ -2202,6 +2202,7 @@
             mes: MESES_PT[m-1], vencimento: honorarioVencimento(h), historico: (h.tipoServico || 'HONORÁRIOS CONTÁBEIS') + (statusTxt==='Parcial' ? ' (pago parcial)' : ''),
             aReceber: valor, recebido, saldoFinal: saldoAcumulado,
             dataRec: h.dataPagamento || h.dataRecebimentoParcial || null, formaRec: formaRecTexto,
+            banco: h.bancoRecebimento || '', status: statusTxt,
           });
         });
       }
@@ -2640,59 +2641,95 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
     const pageW = doc.internal.pageSize.getWidth();
-    let y = pdfHeader(doc, 'Cobrancas Mensais - Ano ' + ano, cliente ? cliente.name : '\u2014', cliente ? cliente.logo : '');
-    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-    if(cliente && cliente.doc){ doc.text('CNPJ/CPF: ' + cliente.doc, 14, y); y += 6; }
-    if(cliente && cliente.contractStart){ doc.text('Inicio contratual: ' + fmtDate(cliente.contractStart), 14, y); y += 6; }
-    y += 3;
-    doc.setFillColor(252,228,204);
-    doc.rect(14, y-5, pageW-28, 8, 'F');
-    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(50,40,20);
-    doc.text('COBRANÇAS MENSAIS — ANO ' + ano, pageW/2, y, {align:'center'});
-    doc.setTextColor(20,25,30);
-    y += 10;
+    let y = pdfHeader(doc, 'Extrato de Cobranças — Ano ' + ano, cliente ? cliente.name : '—', cliente ? cliente.logo : '');
+    const rgb = h=>[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+    const ink = [20,25,30];
 
-    // Posições das colunas — espaçadas com folga (paisagem dá ~270mm úteis) para não sobrepor,
-    // mesmo com nomes longos de forma de pagamento (ex: "Transferência (TED/DOC)").
-    const colMes = 14, colVencto = 46, colHist = 76, colAReceber = 158, colRecebido = 183, colSaldo = 208, colDataRec = 216, colFormaRec = pageW-8;
-    const fillAReceberX = 140, fillAReceberW = 21, fillRecebidoX = 165, fillRecebidoW = 21;
+    // Dados da empresa
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor.apply(doc, ink);
+    const info = [];
+    if(cliente && cliente.doc) info.push('CNPJ/CPF: ' + cliente.doc);
+    if(cliente && cliente.contractStart) info.push('Início contratual: ' + fmtDate(cliente.contractStart));
+    info.push('Emitido em: ' + fmtDate(todayStr()));
+    doc.text(info.join('     ·     '), 14, y); y += 7;
 
-    doc.setFillColor(183,210,237); doc.rect(fillAReceberX, y-4.5, fillAReceberW, 6, 'F');
-    doc.setFillColor(191,224,184); doc.rect(fillRecebidoX, y-4.5, fillRecebidoW, 6, 'F');
-    doc.setFontSize(8.5); doc.setFont('helvetica','bold');
-    doc.setFillColor(240,240,240); doc.rect(14, y-4.5, fillAReceberX-14, 6, 'F');
-    doc.setFillColor(240,240,240); doc.rect(fillRecebidoX+fillRecebidoW, y-4.5, (pageW-8)-(fillRecebidoX+fillRecebidoW), 6, 'F');
-    doc.text('Meses/Servicos', colMes, y);
-    doc.text('Vencto', colVencto, y);
-    doc.text('Historico', colHist, y);
-    doc.text('A Receber', colAReceber, y, {align:'right'});
-    doc.text('Recebido', colRecebido, y, {align:'right'});
-    doc.text('Saldo', colSaldo, y, {align:'right'});
-    doc.text('Data Rec.', colDataRec, y);
-    doc.text('Forma Rec.', colFormaRec, y, {align:'right'});
-    y += 6.5; doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
-    ex.linhas.forEach(l=>{
-      if(y > 190){ doc.addPage(); y = 20; }
-      doc.setFillColor(220,233,247); doc.rect(fillAReceberX, y-4.3, fillAReceberW, 5.8, 'F');
-      doc.setFillColor(223,240,219); doc.rect(fillRecebidoX, y-4.3, fillRecebidoW, 5.8, 'F');
-      if(l.ehSaldoAnterior) doc.setFont('helvetica','bold'); else doc.setFont('helvetica','normal');
-      doc.text(l.mes, colMes, y);
-      doc.text(l.vencimento ? fmtDate(l.vencimento) : '-', colVencto, y);
-      doc.text((l.historico||'').slice(0,38), colHist, y);
-      doc.text(fmtBRL(l.aReceber), colAReceber, y, {align:'right'});
-      doc.text(fmtBRL(l.recebido), colRecebido, y, {align:'right'});
-      doc.text(fmtBRL(l.saldoFinal), colSaldo, y, {align:'right'});
-      doc.text(l.dataRec ? fmtDate(l.dataRec) : '-', colDataRec, y);
-      doc.setFontSize(6.8);
-      doc.text((l.formaRec||'-').slice(0,38), colFormaRec, y, {align:'right'});
-      doc.setFontSize(8.5);
-      y += 6.2;
+    // Quadros-resumo
+    const abertoVenc = state.honorarios.filter(h=>h.clientId===clientId && (h.competencia||'').slice(0,4)===String(ano) && honorarioStatus(h)==='Vencido')
+      .reduce((s,h)=>s+Math.max(0,(Number(h.valor)||0)-honorarioValorRecebido(h)),0);
+    const cards = [
+      ['Saldo anterior', fmtBRL(ex.saldoAnterior), '#F3F4F6', ink],
+      ['Total a receber no ano', fmtBRL(ex.totalAReceber), '#DCE9F7', ink],
+      ['Total recebido', fmtBRL(ex.totalRecebido), '#DFF0DB', [46,125,50]],
+      ['Vencido e não pago', fmtBRL(round2(abertoVenc)), abertoVenc>0.005?'#FADBD8':'#F3F4F6', abertoVenc>0.005?[176,42,42]:ink],
+      ['Saldo em aberto (final)', fmtBRL(ex.saldoFinalAno), ex.saldoFinalAno>0.005?'#FCE4D6':'#DFF0DB', ex.saldoFinalAno>0.005?[176,42,42]:[46,125,50]],
+    ];
+    const cw = (pageW-28-4*4)/5;
+    cards.forEach((c,k)=>{
+      const x = 14 + k*(cw+4);
+      doc.setFillColor.apply(doc, rgb(c[2])); doc.setDrawColor(200,200,200); doc.roundedRect(x, y, cw, 14, 1.5, 1.5, 'FD');
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(90,100,110); doc.text(c[0], x+3, y+5);
+      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor.apply(doc, c[3]); doc.text(c[1], x+3, y+11.2);
     });
-    doc.setDrawColor(200,200,200); doc.line(14, y, pageW-14, y); y += 7;
-    doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
-    doc.text('Total a receber: ' + fmtBRL(ex.totalAReceber) + '   \u00b7   Total recebido: ' + fmtBRL(ex.totalRecebido), 16, y);
+    y += 18; doc.setTextColor.apply(doc, ink);
 
-    pdfFooterDisclaimer(doc, 'Extrato anual de cobrancas referente ao ano de ' + ano + ', incluindo o saldo anterior e o saldo acumulado mes a mes.');
+    // Tabela (larguras somam 269 mm)
+    const cols = [
+      {t:'MÊS', w:22, a:'l'}, {t:'VENCIMENTO', w:21, a:'c'}, {t:'HISTÓRICO', w:54, a:'l'},
+      {t:'A RECEBER', w:25, a:'r', bg:'#DCE9F7'}, {t:'RECEBIDO', w:25, a:'r', bg:'#DFF0DB'}, {t:'SALDO', w:25, a:'r'},
+      {t:'DATA REC.', w:22, a:'c'}, {t:'FORMA REC.', w:35, a:'c'}, {t:'BANCO', w:40, a:'c'} ];
+    doc.setLineWidth(0.15);
+    const cell = (x,yy,w,h,txt,o)=>{
+      o = o||{};
+      doc.setDrawColor(190,190,190);
+      if(o.bg){ doc.setFillColor.apply(doc, rgb(o.bg)); doc.rect(x,yy,w,h,'FD'); } else doc.rect(x,yy,w,h,'S');
+      doc.setFont('helvetica', o.bold?'bold':(o.italic?'italic':'normal')); doc.setFontSize(o.size||8);
+      doc.setTextColor.apply(doc, o.color||ink);
+      const lines = Array.isArray(txt)?txt:[String(txt==null?'':txt)];
+      const lh=3.3, top = yy + (h-lines.length*lh)/2 + 2.4;
+      lines.forEach((ln,k)=>{ const tx = o.a==='r' ? x+w-1.8 : (o.a==='l' ? x+1.8 : x+w/2); doc.text(ln, tx, top+k*lh, {align: o.a==='r'?'right':(o.a==='l'?'left':'center')}); });
+    };
+    const head = ()=>{ let x=14; cols.forEach(c=>{ cell(x,y,c.w,7.5,c.t,{bg:'#BFBFBF',bold:true,a:'c',size:7.6}); x+=c.w; }); y += 7.5; };
+    head();
+    ex.linhas.forEach((l,idx)=>{
+      const vazio = !l.ehSaldoAnterior && !l.vencimento && !(l.aReceber>0.005) && !(l.recebido>0.005);
+      const forma = (l.formaRec||'').replace(/\s*-\s*$/,'');
+      doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      const hist = doc.splitTextToSize(vazio ? 'Sem lançamento' : String(l.historico||''), cols[2].w-3.6);
+      const fr = doc.splitTextToSize(forma||'', cols[7].w-3);
+      const bk = doc.splitTextToSize(String(l.banco||''), cols[8].w-3);
+      const h = Math.max(vazio ? 5.2 : 6, Math.max(hist.length, fr.length, bk.length)*3.3 + 2.4);
+      if(y + h > 190){ doc.addPage(); y = 18; head(); }
+      const zebra = idx%2===1 ? '#F7F8FA' : '#FFFFFF';
+      const cinza = vazio ? [150,155,160] : ink;
+      const base = {bg: l.ehSaldoAnterior?'#EEF1F5':zebra, color:cinza, bold:!!l.ehSaldoAnterior, italic:vazio};
+      const sc = l.saldoFinal>0.005 ? [176,42,42] : [46,125,50];
+      let x=14;
+      cell(x,y,cols[0].w,h,l.mes==='-'?'—':l.mes,Object.assign({},base,{a:'l'})); x+=cols[0].w;
+      cell(x,y,cols[1].w,h,l.vencimento?fmtDate(l.vencimento):'—',Object.assign({},base,{a:'c'})); x+=cols[1].w;
+      cell(x,y,cols[2].w,h,hist,Object.assign({},base,{a:'l'})); x+=cols[2].w;
+      cell(x,y,cols[3].w,h,vazio?'—':fmtBRL(l.aReceber),Object.assign({},base,{a:'r',bg:l.ehSaldoAnterior?'#EEF1F5':'#EAF2FB'})); x+=cols[3].w;
+      cell(x,y,cols[4].w,h,vazio?'—':fmtBRL(l.recebido),Object.assign({},base,{a:'r',bg:l.ehSaldoAnterior?'#EEF1F5':'#EEF7EB'})); x+=cols[4].w;
+      cell(x,y,cols[5].w,h,fmtBRL(l.saldoFinal),Object.assign({},base,{a:'r',bold:true,color:vazio?cinza:sc})); x+=cols[5].w;
+      cell(x,y,cols[6].w,h,l.dataRec?fmtDate(l.dataRec):'—',Object.assign({},base,{a:'c'})); x+=cols[6].w;
+      cell(x,y,cols[7].w,h,fr.length?fr:'—',Object.assign({},base,{a:'c'})); x+=cols[7].w;
+      cell(x,y,cols[8].w,h,bk.length?bk:'—',Object.assign({},base,{a:'c'}));
+      y += h;
+    });
+    // Totais
+    if(y + 17 > 192){ doc.addPage(); y = 18; }
+    const wl = cols[0].w+cols[1].w+cols[2].w; let x = 14;
+    cell(x,y,wl,8,'TOTAL DO ANO',{bg:'#BFBFBF',bold:true,a:'l',size:8.5}); x+=wl;
+    cell(x,y,cols[3].w,8,fmtBRL(ex.totalAReceber),{bg:'#BFBFBF',bold:true,a:'r',size:8.5}); x+=cols[3].w;
+    cell(x,y,cols[4].w,8,fmtBRL(ex.totalRecebido),{bg:'#BFBFBF',bold:true,a:'r',size:8.5}); x+=cols[4].w;
+    cell(x,y,cols[5].w,8,fmtBRL(ex.saldoFinalAno),{bg:'#BFBFBF',bold:true,a:'r',size:8.5,color:ex.saldoFinalAno>0.005?[176,42,42]:[46,125,50]}); x+=cols[5].w;
+    cell(x,y,cols[6].w+cols[7].w+cols[8].w,8,'',{bg:'#BFBFBF'});
+    y += 13; doc.setTextColor.apply(doc, ink); doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+    doc.text(ex.saldoFinalAno>0.005 ? 'Saldo em aberto em 31/12/' + ano + ': ' + fmtBRL(ex.saldoFinalAno) : 'Sem saldo em aberto em 31/12/' + ano + '.', 14, y);
+
+    const pH = doc.internal.pageSize.getHeight();
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120,130,140);
+    doc.text('Extrato anual de cobranças referente ao ano de ' + ano + ', com saldo anterior e saldo acumulado mês a mês. Saldo em vermelho = valor em aberto; em verde = quitado.', 14, pH-15);
+    doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil', 14, pH-10);
     pdfSalvar(doc, 'extrato-honorarios-' + ano + '-' + (cliente?cliente.name:'cliente').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
   }
 
