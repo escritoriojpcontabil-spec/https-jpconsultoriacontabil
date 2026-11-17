@@ -14482,25 +14482,33 @@
   // registradas de importações repetidas antes desta trava existir — mantém a mais antiga.
   async function dedupNotasFiscais(){
     const vistos = new Map();
+    const dupIds = new Set();
     const duplicadas = [];
     const ordenadasPorCriacao = state.notasFiscais.slice().sort((a,b)=> (a.id||'').localeCompare(b.id||''));
     for(const n of ordenadasPorCriacao){
       const chave = (n.clientId||'') + '|' + String(n.numero||'').trim() + '|' + String(n.serie||'').trim();
-      if(vistos.has(chave)) duplicadas.push(n);
+      if(vistos.has(chave)){ duplicadas.push(n); dupIds.add(n.id); }
       else vistos.set(chave, n.id);
     }
-    // Segunda passada: mesmo hash de arquivo (pega duplicatas que passaram pela primeira
-    // checagem por terem número/série levemente diferentes, mas são o mesmo arquivo XML).
-    const restantes = state.notasFiscais.filter(n=>!duplicadas.some(d=>d.id===n.id)).sort((a,b)=>(a.id||'').localeCompare(b.id||''));
+    // Segunda passada: mesmo hash de arquivo.
     const vistosHash = new Map();
-    for(const n of restantes){
-      if(!n.xmlHash) continue;
-      if(vistosHash.has(n.xmlHash)) duplicadas.push(n);
+    for(const n of ordenadasPorCriacao){
+      if(dupIds.has(n.id) || !n.xmlHash) continue;
+      if(vistosHash.has(n.xmlHash)){ duplicadas.push(n); dupIds.add(n.id); }
       else vistosHash.set(n.xmlHash, n.id);
     }
     if(!duplicadas.length) return;
-    for(const n of duplicadas){ await Store.delete('notasfiscais:'+n.id, true); try{ await Store.delete('notasxml:'+n.id, true); NF_XML.delete(n.id); }catch(e){} }
-    state.notasFiscais = state.notasFiscais.filter(n=>!duplicadas.some(d=>d.id===n.id));
+    // Exclusão em lotes paralelos (antes era uma por vez, o que travava o carregamento com muitas duplicadas).
+    for(let i=0;i<duplicadas.length;i+=25){
+      await Promise.all(duplicadas.slice(i,i+25).map(async n=>{
+        try{ await Store.delete('notasfiscais:'+n.id, true); }catch(e){}
+        try{ await Store.delete('notasxml:'+n.id, true); NF_XML.delete(n.id); }catch(e){}
+      }));
+      BOOT_LAST = Date.now();
+      const el = document.getElementById('jp-load-msg');
+      if(el) el.textContent = 'Carregando… removendo notas duplicadas ' + Math.min(i+25, duplicadas.length) + '/' + duplicadas.length;
+    }
+    state.notasFiscais = state.notasFiscais.filter(n=>!dupIds.has(n.id));
   }
 
   async function saveNotaFiscal(nf){
@@ -14522,66 +14530,75 @@
     if(nf && nf.clientId && nf.dataEmissao){ try{ await fiscalSincronizar([{clientId:nf.clientId, comp:String(nf.dataEmissao).slice(0,7)}]); render(); }catch(e){} }
   }
 
+  // Mostra na tela de carregamento em qual etapa o sistema está (e evita o falso aviso de "sem conexão").
+  async function __et(nome, fn){
+    BOOT_STAGE = 'etapa: ' + nome; BOOT_LAST = Date.now();
+    const el = document.getElementById('jp-load-msg');
+    if(el) el.textContent = 'Carregando… ' + BOOT_COUNT + ' registros lidos · ' + nome.replace(/^load/,'');
+    const t0 = Date.now();
+    try{ return await fn(); }
+    finally{ BOOT_LAST = Date.now(); const ms = Date.now()-t0; if(ms > 3000) console.warn('[boot] etapa lenta', nome, ms+'ms'); }
+  }
   async function loadCentroControleData(){
-    await loadObrigacoes();
-    await loadAvisos();
-    await loadMensagens();
-    await loadEnvios();
-    await loadNotasFiscais();
-    await dedupNotasFiscais();
-    await loadParcelamentos();
-    await loadImpostosPagar();
-    await loadTiposImpostoCustom();
-    await loadObrigacoesAcessorias();
-    await loadSpedFiscal();
-    await loadDomestico();
-    await loadLivroCfgs();
-    await loadDeclaracoesFaturamento();
-    await loadRelatoriosFiscais();
-    await loadFuncionarios();
-    await loadFolhas();
-    await loadFerias();
-    await loadRescisoes();
-    await loadProlabores();
-    await loadPontoRegistros();
-    await loadDecimosTerceiros();
-    await loadSindicatos();
-    await loadCctControle();
-    await loadParcelasIndividuais();
-    await loadPlanoContas();
-    await loadPlanoContasReferencial();
-    await loadHistoricos();
-    await loadLancamentosContabeis();
-    await loadRegrasOfx();
-    await dedupPlanoContas();
-    await dedupHistoricos();
-    await migrarContabilParaEmpresaUnica();
-    await loadPropostas();
-    await loadHonorarios();
-    await loadContratos();
-    await loadOrientacoes();
-    await loadServicosEsporadicos();
-    await loadCertidoes();
-    await loadCertificadosDigitais();
-    await loadDocumentosSocietarios();
-    await loadBaixasEmpresas();
-    await loadBaixaEmpresaDocumentos();
-    await loadRecibosHonorarios();
-    await loadProdutosMonofasicos();
-    await loadIcmsAntecipado();
-    await loadPrecf();
-    await loadEsocialEmp();
-    await loadNcmMonofasicoCustom();
-    await loadTabelasFolha();
-    await loadFaturamentosManuais();
-    await loadImpostosCalculados();
-    await loadEmpresasConstituicao();
-    await loadInscricoes();
-    await loadAlvaras();
-    await loadProcessosFiscais();
-    await loadAlteracoesContratuais();
-    await loadTtrts();
-    await loadDistratos();
+    await __et('loadObrigacoes', loadObrigacoes);
+    await __et('loadAvisos', loadAvisos);
+    await __et('loadMensagens', loadMensagens);
+    await __et('loadEnvios', loadEnvios);
+    await __et('loadNotasFiscais', loadNotasFiscais);
+    await __et('dedupNotasFiscais', dedupNotasFiscais);
+    await __et('loadParcelamentos', loadParcelamentos);
+    await __et('loadImpostosPagar', loadImpostosPagar);
+    await __et('loadTiposImpostoCustom', loadTiposImpostoCustom);
+    await __et('loadObrigacoesAcessorias', loadObrigacoesAcessorias);
+    await __et('loadSpedFiscal', loadSpedFiscal);
+    await __et('loadDomestico', loadDomestico);
+    await __et('loadLivroCfgs', loadLivroCfgs);
+    await __et('loadDeclaracoesFaturamento', loadDeclaracoesFaturamento);
+    await __et('loadRelatoriosFiscais', loadRelatoriosFiscais);
+    await __et('loadFuncionarios', loadFuncionarios);
+    await __et('loadFolhas', loadFolhas);
+    await __et('loadFerias', loadFerias);
+    await __et('loadRescisoes', loadRescisoes);
+    await __et('loadProlabores', loadProlabores);
+    await __et('loadPontoRegistros', loadPontoRegistros);
+    await __et('loadDecimosTerceiros', loadDecimosTerceiros);
+    await __et('loadSindicatos', loadSindicatos);
+    await __et('loadCctControle', loadCctControle);
+    await __et('loadParcelasIndividuais', loadParcelasIndividuais);
+    await __et('loadPlanoContas', loadPlanoContas);
+    await __et('loadPlanoContasReferencial', loadPlanoContasReferencial);
+    await __et('loadHistoricos', loadHistoricos);
+    await __et('loadLancamentosContabeis', loadLancamentosContabeis);
+    await __et('loadRegrasOfx', loadRegrasOfx);
+    await __et('dedupPlanoContas', dedupPlanoContas);
+    await __et('dedupHistoricos', dedupHistoricos);
+    await __et('migrarContabilParaEmpresaUnica', migrarContabilParaEmpresaUnica);
+    await __et('loadPropostas', loadPropostas);
+    await __et('loadHonorarios', loadHonorarios);
+    await __et('loadContratos', loadContratos);
+    await __et('loadOrientacoes', loadOrientacoes);
+    await __et('loadServicosEsporadicos', loadServicosEsporadicos);
+    await __et('loadCertidoes', loadCertidoes);
+    await __et('loadCertificadosDigitais', loadCertificadosDigitais);
+    await __et('loadDocumentosSocietarios', loadDocumentosSocietarios);
+    await __et('loadBaixasEmpresas', loadBaixasEmpresas);
+    await __et('loadBaixaEmpresaDocumentos', loadBaixaEmpresaDocumentos);
+    await __et('loadRecibosHonorarios', loadRecibosHonorarios);
+    await __et('loadProdutosMonofasicos', loadProdutosMonofasicos);
+    await __et('loadIcmsAntecipado', loadIcmsAntecipado);
+    await __et('loadPrecf', loadPrecf);
+    await __et('loadEsocialEmp', loadEsocialEmp);
+    await __et('loadNcmMonofasicoCustom', loadNcmMonofasicoCustom);
+    await __et('loadTabelasFolha', loadTabelasFolha);
+    await __et('loadFaturamentosManuais', loadFaturamentosManuais);
+    await __et('loadImpostosCalculados', loadImpostosCalculados);
+    await __et('loadEmpresasConstituicao', loadEmpresasConstituicao);
+    await __et('loadInscricoes', loadInscricoes);
+    await __et('loadAlvaras', loadAlvaras);
+    await __et('loadProcessosFiscais', loadProcessosFiscais);
+    await __et('loadAlteracoesContratuais', loadAlteracoesContratuais);
+    await __et('loadTtrts', loadTtrts);
+    await __et('loadDistratos', loadDistratos);
   }
 
   async function exportAllData(){
@@ -20029,12 +20046,42 @@
     pdfSalvar(doc, 'relatorio-notas-' + tipoOperacao.toLowerCase().replace(/[^a-z0-9]+/gi,'-') + '-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + mesInicio.replace('-','') + '-a-' + mesFim.replace('-','') + '.pdf');
   }
 
+  // Filtro por mês de emissão (multi-seleção). state.nfMeses vazio = todos os meses.
+  function nfMesDaNota(n){ return n.dataEmissao ? String(n.dataEmissao).slice(0,7) : 'sem-data'; }
+  function nfNotasEscopo(){ return state.notasFiscais.filter(n=>isClientInScope(n.clientId)); }
+  function nfNotasVisiveis(){
+    const all = nfNotasEscopo(), ms = state.nfMeses||[];
+    return ms.length ? all.filter(n=>ms.includes(nfMesDaNota(n))) : all;
+  }
+  function nfMesRotulo(m){ return m==='sem-data' ? 'Sem data' : m.slice(5,7)+'/'+m.slice(0,4); }
+  function nfMesesBarHtml(all){
+    const cont = {}; all.forEach(n=>{ const m = nfMesDaNota(n); cont[m] = (cont[m]||0)+1; });
+    const meses = Object.keys(cont).sort().reverse();
+    const ms = state.nfMeses||[];
+    const anos = Array.from(new Set(meses.filter(m=>m!=='sem-data').map(m=>m.slice(0,4)))).sort().reverse();
+    const chip = (on)=>`padding:6px 12px;border-radius:20px;border:1.5px solid ${on?'var(--navy)':'var(--line)'};background:${on?'var(--navy)':'#fff'};color:${on?'#fff':'var(--ink)'};font-size:12.5px;font-weight:600;cursor:pointer;`;
+    return `<div style="margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#FAFBFD;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <b style="font-size:13px;">Conferir por mês de emissão</b>
+        <button type="button" class="nf-mes-todos" style="${chip(!ms.length)}">Todos os meses (${all.length})</button>
+        ${anos.map(a=>`<button type="button" class="nf-ano-btn" data-ano="${a}" style="padding:6px 10px;border-radius:8px;border:1px dashed var(--line);background:#fff;font-size:12px;font-weight:600;cursor:pointer;">Ano ${a}</button>`).join('')}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${meses.map(m=>`<button type="button" class="nf-mes-chip" data-mes="${m}" style="${chip(ms.includes(m))}">${nfMesRotulo(m)} <span style="opacity:.75;font-weight:500;">· ${cont[m]}</span></button>`).join('')}
+      </div>
+      <div class="form-hint" style="margin:8px 0 0;">Clique nos meses para marcá-los (pode marcar vários). O resumo, a lista e a seleção para exclusão passam a considerar só os meses marcados.</div>
+    </div>`;
+  }
   function notasFiscaisTableHtml(){
-    let notas = state.notasFiscais.filter(n=>isClientInScope(n.clientId));
-    if(!notas.length) return `<div class="empty">${state.deptAllClients ? 'Nenhuma nota fiscal registrada ainda.' : 'Nenhuma nota registrada para os clientes selecionados no topo da página.'}</div>`;
+    const escopo = nfNotasEscopo();
+    if(!escopo.length) return `<div class="empty">${state.deptAllClients ? 'Nenhuma nota fiscal registrada ainda.' : 'Nenhuma nota registrada para os clientes selecionados no topo da página.'}</div>`;
+    const barra = nfMesesBarHtml(escopo);
+    let notas = nfNotasVisiveis();
+    if(!notas.length) return barra + `<div class="empty">Nenhuma nota nos meses marcados.</div>`;
     const sel = new Set((state.nfSel||[]).filter(id=>notas.some(n=>n.id===id)));
     const todas = notas.length>0 && sel.size===notas.length;
     return `
+      ${barra}
       ${notasFiscaisResumoHtml(notas)}
       <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0 0 10px;">
         <button type="button" class="btn-sm danger" id="nfExcluirSelBtn" ${sel.size?'':'disabled'}>Excluir selecionadas${sel.size?' ('+sel.size+')':''}</button>
@@ -20093,10 +20140,23 @@
       };
     });
     const selTodas = ()=>{
-      const visiveis = state.notasFiscais.filter(n=>isClientInScope(n.clientId)).map(n=>n.id);
+      const visiveis = nfNotasVisiveis().map(n=>n.id);
       const todas = visiveis.length>0 && visiveis.every(id=>(state.nfSel||[]).includes(id));
       state.nfSel = todas ? [] : visiveis; updateNfResults();
     };
+    document.querySelectorAll('.nf-mes-chip').forEach(el=>{ el.onclick = ()=>{
+      const set = new Set(state.nfMeses||[]); const m = el.getAttribute('data-mes');
+      if(set.has(m)) set.delete(m); else set.add(m);
+      state.nfMeses = [...set]; state.nfSel = []; updateNfResults();
+    }; });
+    document.querySelectorAll('.nf-ano-btn').forEach(el=>{ el.onclick = ()=>{
+      const ano = el.getAttribute('data-ano');
+      const doAno = Array.from(new Set(nfNotasEscopo().map(nfMesDaNota))).filter(m=>m.slice(0,4)===ano);
+      const set = new Set(state.nfMeses||[]); const todos = doAno.every(m=>set.has(m));
+      doAno.forEach(m=>{ if(todos) set.delete(m); else set.add(m); });
+      state.nfMeses = [...set]; state.nfSel = []; updateNfResults();
+    }; });
+    const bt = document.querySelector('.nf-mes-todos'); if(bt) bt.onclick = ()=>{ state.nfMeses = []; state.nfSel = []; updateNfResults(); };
     const b1 = document.getElementById('nfSelTodasBtn'); if(b1) b1.onclick = selTodas;
     const c1 = document.getElementById('nfSelTodasChk'); if(c1) c1.onchange = selTodas;
     const bx = document.getElementById('nfExcluirSelBtn');
