@@ -7505,7 +7505,8 @@
           if(cst) break;
         }
       }
-      const stAuto = (cst==='500' || cst==='60' || /^[56]405$/.test(cfop));
+      // ICMS não devido na venda: ST já recolhida (CST 60 / CSOSN 500 / CFOP x.405), isenta/não tributada (CST 40, 41) ou imune/não tributada pelo Simples (CSOSN 300, 400).
+      const stAuto = (cst==='500' || cst==='60' || cst==='40' || cst==='41' || cst==='300' || cst==='400' || /^[56]405$/.test(cfop));
       itens.push({ ncm: getTagText(prod, 'NCM'), descricao: getTagText(prod, 'xProd'), valor: Math.round((vProd - vDesc)*100)/100, cfop, cst, stAuto });
     }
     return {
@@ -12612,6 +12613,7 @@
       res.calculos++;
     }
     for(const im of plano.impostos){
+      if(im.tipoImposto==='DAS (Simples Nacional)'){ const man = (state.impostosCalculados||[]).find(x=>x.id===impostoCalculadoId(cl.id,'simples',im.competencia) && x.origem==='manual'); if(man) im.valor = round2(man.valorFinal!=null ? man.valorFinal : man.imposto); }
       const id = 'auto_'+cl.id+'_'+fsSlug(im.tipoImposto)+'_'+im.competencia;
       const ex = (state.impostosPagar||[]).find(x=>x.id===id);
       const rec = Object.assign({}, ex||{}, {
@@ -17135,6 +17137,121 @@
   }
 
   // ---- Simples Nacional: cálculo automático pelo cadastro da empresa ----
+  // ===== Conferência / edição de um cálculo salvo (Simples e Lucro Presumido) =====
+  function impCalcValorSistema(h){ return Number(h.tipo==='simples' ? h.imposto : h.total) || 0; }
+  function impCalcConferenciaTagHtml(h){
+    const sis = impCalcValorSistema(h);
+    const conf = h.valorConferido!=null && h.valorConferido!=='' ? Number(h.valorConferido) : null;
+    let t = h.conferido ? '<span class="tag sit-ativa">Conferido</span>' : '<span class="tag sit-outra">Pendente</span>';
+    if(conf!=null && !isNaN(conf)){
+      const dif = round2(conf - sis);
+      t += ' <span style="font-size:11.5px;color:' + (Math.abs(dif)<0.01 ? '#2F7A52' : '#B23B3B') + ';">' + (Math.abs(dif)<0.01 ? 'bate com o oficial' : 'dif. ' + fmtBRL(dif)) + '</span>';
+    }
+    if(h.origem==='manual') t += ' <span style="font-size:11px;color:var(--ink-soft);">· editado</span>';
+    return t;
+  }
+  function impCalcRecalcular(rec, v){
+    if(rec.tipo==='simples'){
+      const r = calcSimplesSegregado(v.anexo, v.rbt12, v.receita, { mono:v.mono, st:v.st, ambos:v.ambos });
+      const campos = { anexo:v.anexo, rbt12:v.rbt12, receitaMes:v.receita, faixaNum:r.faixaNum, aliqNominal:r.aliqNominal, deduz:r.deduz, aliqEfetiva:r.aliqEfetiva, imposto:r.imposto };
+      return { campos, extra: calcSegCampos(r), resultado: r.imposto, r };
+    }
+    const r = calcPresumido(v.atividade, v.receita, v.iss);
+    return { campos: Object.assign({ atividade:v.atividade, receitaTri:v.receita, issPerc:v.iss }, r), extra:{}, resultado: r.total, r };
+  }
+  function impCalcLerCampos(rec){
+    const nv = id=>{ const el = document.getElementById(id); return el ? (parseFloat(el.value)||0) : 0; };
+    if(rec.tipo==='simples') return { anexo:(document.getElementById('icAnexo')||{}).value||rec.anexo, receita:nv('icReceita'), rbt12:nv('icRbt12'), mono:nv('icMono'), st:nv('icSt'), ambos:nv('icAmbos') };
+    return { atividade:(document.getElementById('icAtiv')||{}).value||rec.atividade, receita:nv('icReceita'), iss:nv('icIss') };
+  }
+  function impCalcPreviewHtml(rec, res){
+    const pct = v=>(v*100).toFixed(2).replace('.',',')+'%';
+    const l = (a,b,t)=>`<div class="cr-line${t?' total':''}"><span>${a}</span><span>${b}</span></div>`;
+    if(rec.tipo==='simples'){
+      const c = res.r; let h = l('Faixa / alíquota nominal / parcela a deduzir', c.faixaNum+'ª · '+pct(c.aliqNominal)+' · '+fmtBRL(c.deduz)) + l('Alíquota efetiva', pct(c.aliqEfetiva));
+      if(c.segregado){ h += l('DAS sem segregação', fmtBRL(c.impostoIntegral)); c.linhasSeg.filter(x=>x.receita>0).forEach(x=>{ h += l(escapeHtml(x.cat)+' — '+fmtBRL(x.receita), fmtBRL(x.valor)); }); h += l('Por tributo', Object.keys(c.porTributo).map(t=>t+' '+fmtBRL(c.porTributo[t])).join(' · ')); }
+      return h + l('DAS recalculado', fmtBRL(c.imposto), true);
+    }
+    const c = res.r;
+    return l('Base IRPJ / Base CSLL', fmtBRL(c.baseIrpj)+' / '+fmtBRL(c.baseCsll)) + l('IRPJ (normal + adicional)', fmtBRL(c.irpjTotal)) + l('CSLL', fmtBRL(c.csllTotal)) + l('PIS / COFINS', fmtBRL(c.pis)+' / '+fmtBRL(c.cofins)) + l('ISS', fmtBRL(c.iss)) + l('Total recalculado', fmtBRL(c.total), true);
+  }
+  function impCalcEditModalHtml(){
+    const rec = (state.impostosCalculados||[]).find(x=>x.id===state.impCalcEditId);
+    if(!rec) return '';
+    const cl = state.clients.find(c=>c.id===rec.clientId);
+    const simples = rec.tipo==='simples';
+    const comp = simples ? monthLabel(rec.competencia)+'/'+rec.competencia.slice(0,4) : trimestreLabel(rec.competencia);
+    const seg = rec.seg || {};
+    const num = v=>(v==null||v===''||Number(v)===0) ? '' : v;
+    const campos = simples ? (rec.parte2 ? `<div class="form-hint" style="color:#b45309;">Este cálculo usa dois anexos (${escapeHtml(rec.anexo)} + ${escapeHtml(rec.parte2.anexo)}). Os dados abaixo não podem ser recalculados aqui — use a aba Calculadoras. Você pode registrar a conferência normalmente.</div>
+        <div class="form-row"><div class="field"><label>Receita do mês (R$)</label><input type="number" id="icReceita" value="${rec.receitaMes||''}" disabled/></div><div class="field"><label>RBT12 (R$)</label><input type="number" id="icRbt12" value="${rec.rbt12||''}" disabled/></div></div>` : `
+        <div class="field"><label>Anexo</label><select id="icAnexo">${Object.keys(SIMPLES_TABELAS).map(k=>`<option value="${k}" ${k===rec.anexo?'selected':''}>${k}</option>`).join('')}</select></div>
+        <div class="form-row">
+          <div class="field"><label>Receita do mês (R$)</label><input type="number" step="0.01" min="0" id="icReceita" value="${rec.receitaMes||''}"/></div>
+          <div class="field"><label>RBT12 (R$)</label><input type="number" step="0.01" min="0" id="icRbt12" value="${rec.rbt12||''}"/></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Só monofásica (R$)</label><input type="number" step="0.01" min="0" id="icMono" value="${num(seg.mono)}"/></div>
+          <div class="field"><label>Só ICMS-ST / isento (R$)</label><input type="number" step="0.01" min="0" id="icSt" value="${num(seg.st)}"/></div>
+          <div class="field"><label>Monofásica e ICMS-ST (R$)</label><input type="number" step="0.01" min="0" id="icAmbos" value="${num(seg.ambos)}"/></div>
+        </div>`) : `
+        <div class="field"><label>Atividade</label><select id="icAtiv">${Object.keys(PRESUMIDO_ATIVIDADES).map(k=>`<option value="${escapeHtml(k)}" ${k===rec.atividade?'selected':''}>${escapeHtml(k)}</option>`).join('')}</select></div>
+        <div class="form-row">
+          <div class="field"><label>Receita do trimestre (R$)</label><input type="number" step="0.01" min="0" id="icReceita" value="${rec.receitaTri||''}"/></div>
+          <div class="field"><label>ISS (%)</label><input type="number" step="0.01" min="0" id="icIss" value="${rec.issPerc||0}"/></div>
+        </div>`;
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:640px;">
+          <h3>Conferir / editar cálculo — ${simples?'Simples Nacional':'Lucro Presumido'}</h3>
+          <div class="form-hint" style="margin:-6px 0 10px;font-weight:700;">${escapeHtml(cl?cl.name:'—')} · ${comp}</div>
+          <form id="icForm">
+            <div class="form-section-title" style="margin-top:0;">Dados do cálculo</div>
+            ${campos}
+            ${rec.parte2 ? '' : '<button type="button" class="btn-sm" id="icRecalcBtn" style="margin:2px 0 10px;">Recalcular com estes dados</button>'}
+            <div class="calc-result" id="icPreview">${rec.parte2 ? '<div class="cr-line"><span>Valor do cálculo salvo</span><span>'+fmtBRL(impCalcValorSistema(rec))+'</span></div>' : impCalcPreviewHtml(rec, { r: simples ? calcSimplesSegregado(rec.anexo, rec.rbt12||0, rec.receitaMes||0, rec.seg||{}) : calcPresumido(rec.atividade, rec.receitaTri||0, rec.issPerc||0) })}</div>
+            <div class="form-section-title">Conferência com o valor oficial</div>
+            <div class="form-hint" style="margin:-4px 0 8px;">Digite o valor que saiu no ${simples?'PGDAS-D / guia do DAS':'cálculo/guia oficial'} para comparar com o do sistema. O sistema mostra a diferença.</div>
+            <div class="form-row">
+              <div class="field"><label>Valor oficial conferido (R$)</label><input type="number" step="0.01" min="0" id="icConferido" value="${rec.valorConferido!=null && rec.valorConferido!=='' ? rec.valorConferido : ''}"/></div>
+              <div class="field"><label>Diferença (oficial − sistema)</label><input type="text" id="icDif" readonly/></div>
+            </div>
+            <div class="field"><label>Observações da conferência</label><input type="text" id="icObs" value="${escapeHtml(rec.obsConferencia||'')}" placeholder="Ex.: conferido no PGDAS-D em 17/11"/></div>
+            <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:6px 0 4px;text-transform:none;letter-spacing:0;"><input type="checkbox" id="icOk" ${rec.conferido?'checked':''}/> Marcar como conferido</label>
+            <div class="form-hint">Ao salvar, o cálculo passa a ser "editado": o sistema não o sobrescreve mais nas atualizações automáticas${simples?', e o valor do DAS a pagar passa a ser o valor oficial conferido (se informado) ou o recalculado':''}.</div>
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="icCancel">Cancelar</button>
+              <button type="submit" class="btn-add">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  }
+  async function impCalcSalvarEdicao(rec){
+    const simples = rec.tipo==='simples';
+    let novo = Object.assign({}, rec);
+    if(!rec.parte2){
+      const res = impCalcRecalcular(rec, impCalcLerCampos(rec));
+      if(simples){ delete novo.seg; delete novo.porTributo; delete novo.linhasSeg; delete novo.impostoIntegral; }
+      Object.assign(novo, res.campos, res.extra);
+    }
+    const confTxt = (document.getElementById('icConferido')||{}).value;
+    const conf = confTxt==='' ? null : round2(parseFloat(confTxt)||0);
+    novo.valorConferido = conf;
+    novo.obsConferencia = (document.getElementById('icObs')||{}).value || '';
+    novo.conferido = !!(document.getElementById('icOk')||{}).checked;
+    novo.conferidoEm = Date.now(); novo.conferidoPor = state.user ? (state.user.name||state.user.username) : '';
+    novo.origem = 'manual';
+    novo.valorFinal = (conf!=null && conf>0) ? conf : impCalcValorSistema(novo);
+    if(!(await salvarImpostoCalculado(novo))) return;
+    if(simples){
+      const idImp = 'auto_'+rec.clientId+'_'+fsSlug('DAS (Simples Nacional)')+'_'+rec.competencia;
+      const ex = (state.impostosPagar||[]).find(x=>x.id===idImp);
+      if(ex && !ex.dataPagamento){
+        try{ await Store.set('impostospagar:'+idImp, JSON.stringify(Object.assign({}, ex, { valorAPagar: novo.valorFinal })), true); await loadImpostosPagar(); }catch(e){ console.error(e); }
+      }
+    }
+  }
   function historicoImpostosHtml(clienteId, tipo){
     const historico = impostosCalculadosDe(clienteId, tipo);
     const attrRelatorio = tipo==='simples' ? 'data-relatorio-apoio-simples' : 'data-relatorio-apoio-presumido';
@@ -17142,15 +17259,16 @@
       <div class="form-section-title">Cálculos salvos desta empresa</div>
       ${!historico.length ? `<div class="empty">Nenhum cálculo salvo ainda para esta empresa. Ao clicar em "${tipo==='simples'?'Calcular DAS':'Calcular tributos'}", o resultado é guardado automaticamente aqui.</div>` : `
         <table>
-          <thead><tr><th>${tipo==='simples'?'Competência':'Trimestre'}</th><th>${tipo==='simples'?'Anexo':'Atividade'}</th><th style="text-align:right">Valor total</th><th>Calculado em</th><th></th></tr></thead>
+          <thead><tr><th>${tipo==='simples'?'Competência':'Trimestre'}</th><th>${tipo==='simples'?'Anexo':'Atividade'}</th><th style="text-align:right">Valor total</th><th>Conferência</th><th>Calculado em</th><th></th></tr></thead>
           <tbody>
             ${historico.map(h=>`
               <tr>
                 <td>${tipo==='simples' ? monthLabel(h.competencia)+'/'+h.competencia.slice(0,4) : trimestreLabel(h.competencia)}</td>
                 <td>${escapeHtml(tipo==='simples' ? ((h.anexo||'—') + (h.parte2 ? ' + ' + h.parte2.anexo : '')) : (h.atividade||'—'))}</td>
                 <td style="text-align:right" class="mono">${fmtBRL(tipo==='simples' ? h.imposto : h.total)}</td>
+                <td>${impCalcConferenciaTagHtml(h)}</td>
                 <td>${h.calculadoEm ? new Date(h.calculadoEm).toLocaleString('pt-BR') : '—'}</td>
-                <td style="white-space:nowrap;"><button class="btn-sm" ${attrRelatorio}="${h.id}">Relatório (PDF)</button> <button class="btn-sm danger" data-del-imposto-calculado="${h.id}">Excluir</button></td>
+                <td style="white-space:nowrap;"><button class="btn-sm" ${attrRelatorio}="${h.id}">Relatório (PDF)</button> <button class="btn-sm" data-editar-imposto-calculado="${h.id}">Editar / Conferir</button> <button class="btn-sm danger" data-del-imposto-calculado="${h.id}">Excluir</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -20046,6 +20164,238 @@
     pdfSalvar(doc, 'relatorio-notas-' + tipoOperacao.toLowerCase().replace(/[^a-z0-9]+/gi,'-') + '-' + (cliente?cliente.name:'empresa').replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '-' + mesInicio.replace('-','') + '-a-' + mesFim.replace('-','') + '.pdf');
   }
 
+
+  // ===== Apuração do Simples Nacional mês a mês (cálculo detalhado + extrato) =====
+  function simplesApuracaoMes(cl, ym){
+    const fat = faturamentoNotasMes(cl.id, ym);
+    if(!(fat.total > 0)) return null;
+    const out = { clientId:cl.id, ym, receita:round2(fat.total), notas:round2(fat.notas), manual:round2(fat.manual), avisos:[] };
+    if(!cl.anexoSimples){ out.avisos.push('Anexo do Simples Nacional não definido no cadastro da empresa — DAS não calculado.'); return out; }
+    if(cl.anexoSimples2){ out.avisos.push('Empresa com dois anexos: o DAS depende da receita de cada atividade — use a aba Calculadoras (informe a receita de cada anexo).'); return out; }
+    const usaFatorR = !!cl.fatorRAtivo && (cl.anexoSimples==='Anexo III — Serviços (locação, agências, etc.)' || cl.anexoSimples==='Anexo V — Serviços intelectuais/técnicos');
+    out.anexo = usaFatorR ? calcFatorR(cl.id, ym).anexoSugerido : cl.anexoSimples;
+    out.rbt12 = faturamentoNotas12Meses(cl.id, ym);
+    out.sep = monoSegregacaoCompetencia(cl.id, ym);
+    out.calc = calcSimplesSegregado(out.anexo, out.rbt12, out.receita, out.sep);
+    if(!(out.rbt12 > 0)) out.avisos.push('RBT12 zerado (não há faturamento nos 12 meses anteriores no sistema): a alíquota efetiva fica 0%. Para empresa nova, o PGDAS-D usa a receita proporcional — confira.');
+    const anexoI = out.anexo === 'Anexo I — Comércio';
+    if(anexoI && !out.sep.tem) out.avisos.push('Nenhum item de produto (NCM/CST) foi lido dos XMLs deste mês — sem segregação. Use "Reconhecer segregação das notas já importadas" ou importe os XMLs de saída.');
+    if(!anexoI && out.sep.tem && (out.sep.mono + out.sep.st + out.sep.ambos) > 0) out.avisos.push('Há itens monofásicos/ICMS-ST nos XMLs, mas a segregação só é calculada pelo sistema para o Anexo I — Comércio.');
+    if(out.sep.tem && out.notas > 0 && Math.abs(out.sep.total - out.notas) > Math.max(1, out.notas*0.02)) out.avisos.push('A soma dos itens lidos dos XMLs (' + fmtBRL(out.sep.total) + ') difere da receita das notas (' + fmtBRL(out.notas) + ') — pode haver notas sem XML lido, devoluções ou itens fora de venda (CFOP). Confira.');
+    return out;
+  }
+  function nfPctSimples(v){ return (v*100).toFixed(2).replace('.',',') + '%'; }
+  function nfMesesApuracao(cl){
+    const set = new Set();
+    state.notasFiscais.forEach(n=>{ if(n.clientId===cl.id && n.status!=='Cancelada' && (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços' || n.tipoOperacao===NF_DEV_VENDA) && n.dataEmissao) set.add(String(n.dataEmissao).slice(0,7)); });
+    (state.faturamentosManuais||[]).forEach(d=>{ if(d.clientId===cl.id && d.competencia) set.add(d.competencia); });
+    let ms = Array.from(set).sort();
+    const sel = state.nfMeses||[];
+    if(sel.length) ms = ms.filter(m=>sel.includes(m));
+    return ms;
+  }
+  // Faturamento mês a mês de um ano (normalmente o ano anterior) lançado sem nota — alimenta o RBT12 do Simples.
+  function nfFatAnoPadrao(cl){
+    const ms = nfMesesApuracao(cl).concat(((state.notasFiscais||[]).filter(n=>n.clientId===cl.id && n.dataEmissao).map(n=>String(n.dataEmissao).slice(0,7))));
+    const primeiro = ms.length ? ms.slice().sort()[0] : (todayStr().slice(0,7));
+    return String(Number(primeiro.slice(0,4)) - 1);
+  }
+  function nfFatAnoBlocoHtml(cl){
+    const ano = state.nfFatAno || nfFatAnoPadrao(cl);
+    const atual = Number(todayStr().slice(0,4));
+    const anos = []; for(let a=atual; a>=atual-8; a--) anos.push(String(a)); if(!anos.includes(ano)) anos.push(ano);
+    const meses = ['01','02','03','04','05','06','07','08','09','10','11','12'];
+    let sV=0, sS=0, sN=0;
+    const linhas = meses.map(mm=>{
+      const comp = ano+'-'+mm;
+      const m = faturamentoManualMes(cl.id, comp), n = faturamentoSoNotasMes(cl.id, comp);
+      sV += m.vendas; sS += m.servicos; sN += n.total;
+      const dobro = n.total>0 && (m.vendas+m.servicos)>0;
+      return `<tr>
+        <td>${monthLabel(comp)}/${ano}</td>
+        <td style="text-align:right" class="mono">${n.total? fmtBRL(n.total) : '—'}</td>
+        <td><input type="number" step="0.01" min="0" class="nf-fat-v" data-mm="${mm}" value="${m.vendas||''}" placeholder="0,00" style="width:130px;text-align:right;"/></td>
+        <td><input type="number" step="0.01" min="0" class="nf-fat-s" data-mm="${mm}" value="${m.servicos||''}" placeholder="0,00" style="width:130px;text-align:right;"/></td>
+        <td style="font-size:11.5px;color:#b45309;">${dobro?'⚠ já tem notas neste mês — lançar aqui soma em dobro':''}</td>
+      </tr>`;
+    }).join('');
+    return `<div style="margin:0 0 16px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#FAFBFD;">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+        <b style="font-size:13px;">Faturamento de anos anteriores — para o RBT12</b>
+        <label style="margin:0;font-size:12.5px;">Ano:</label>
+        <select id="nfFatAno" style="width:auto;">${anos.sort().reverse().map(a=>`<option value="${a}" ${a===ano?'selected':''}>${a}</option>`).join('')}</select>
+      </div>
+      <div class="form-hint" style="margin:0 0 8px;">Digite o faturamento mês a mês do ano em que a empresa ainda não tinha notas no sistema. Ele entra na soma dos 12 meses anteriores (RBT12) de cada competência e muda a alíquota efetiva do DAS. Não lance aqui meses que já têm notas importadas.</div>
+      <table><thead><tr><th>Mês</th><th style="text-align:right">Notas no sistema</th><th>Vendas (R$)</th><th>Serviços (R$)</th><th></th></tr></thead><tbody>${linhas}
+        <tr class="nf-total-geral"><td style="background:#DDE6F3;"><b>Total ${ano}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(sN)}</b></td><td style="background:#DDE6F3;" class="mono"><b id="nfFatFootV">${fmtBRL(sV)}</b></td><td style="background:#DDE6F3;" class="mono"><b id="nfFatFootS">${fmtBRL(sS)}</b></td><td style="background:#DDE6F3;"></td></tr>
+      </tbody></table>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button type="button" class="btn-add" id="nfFatSalvarBtn">Salvar faturamento de ${ano} e recalcular DAS</button><span id="nfFatMsg" class="form-hint" style="margin:0;"></span></div>
+    </div>`;
+  }
+  function simplesApuracaoPainelHtml(){
+    const clId = deptOneSelectedClient();
+    const cl = clId ? state.clients.find(c=>c.id===clId) : null;
+    const cab = `<div class="form-section-title">Apuração do Simples Nacional — cálculo do DAS e extrato (mês a mês)</div>`;
+    if(!cl) return cab + `<div class="form-hint">Selecione uma única empresa optante pelo Simples Nacional no painel "Selecionar cliente" (topo da página) para ver a apuração.</div>`;
+    if(cl.regimeTributario !== 'Simples Nacional') return cab + `<div class="form-hint">${escapeHtml(cl.name)} não está cadastrada como Simples Nacional (regime: ${escapeHtml(cl.regimeTributario||'não definido')}). Esta apuração vale só para optantes do Simples.</div>`;
+    const ms = nfMesesApuracao(cl);
+    const apur = ms.map(m=>simplesApuracaoMes(cl, m)).filter(Boolean).reverse();
+    const sel = (state.nfMeses||[]).length;
+    const botoes = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px;">
+        <button type="button" class="btn-sm" id="nfSegReconhecerBtn">Reconhecer segregação das notas já importadas</button>
+        <button type="button" class="btn-detail" id="nfExtratoSimplesBtn" ${apur.length?'':'disabled'}>Extrato do Simples Nacional (PDF)${sel?' — meses marcados':''}</button>
+        <button type="button" class="btn-sm" id="nfRecalcDasBtn">Recalcular DAS</button>
+      </div>
+      <div id="nfSegMsg" class="lookup-msg" style="display:none;"></div>`;
+    const blocoFat = nfFatAnoBlocoHtml(cl);
+    if(!apur.length) return cab + botoes + blocoFat + `<div class="empty">Nenhuma receita encontrada${sel?' nos meses marcados':''}. Importe as notas de saída/serviços.</div>`;
+    const cel = (a,b,cor)=>`<div class="cr-line"><span>${a}</span><span${cor?` style="color:${cor}"`:''}>${b}</span></div>`;
+    const detalhe = a=>{
+      const c = a.calc, sp = a.sep||{};
+      let h = '';
+      h += cel('Receita bruta do mês — notas fiscais (saídas + serviços − devoluções)', fmtBRL(a.notas));
+      if(a.manual) h += cel('Faturamento lançado sem nota fiscal', fmtBRL(a.manual));
+      h += cel('<strong>Receita bruta total da competência</strong>', '<strong>'+fmtBRL(a.receita)+'</strong>');
+      if(c){
+        h += cel('Anexo aplicado', escapeHtml(a.anexo));
+        h += cel('RBT12 (12 meses anteriores)', fmtBRL(a.rbt12));
+        h += cel('Faixa na tabela do Simples', c.faixaNum+'ª faixa');
+        h += cel('Alíquota nominal', nfPctSimples(c.aliqNominal));
+        h += cel('Parcela a deduzir', fmtBRL(c.deduz));
+        h += cel('Alíquota efetiva = (RBT12 × alíq. nominal − parcela a deduzir) ÷ RBT12', nfPctSimples(c.aliqEfetiva));
+        if(sp.tem){
+          const integral = round2(a.receita - (sp.mono + sp.st + sp.ambos));
+          h += `<div style="margin:8px 0 2px;font-weight:700;font-size:12.5px;">Segregação das receitas (lida dos itens dos XMLs)</div>`;
+          h += cel('Só monofásica (sem PIS/Cofins)', fmtBRL(sp.mono));
+          h += cel('Só ICMS-ST / isento / não tributado (sem ICMS)', fmtBRL(sp.st));
+          h += cel('Monofásica e ICMS-ST ao mesmo tempo', fmtBRL(sp.ambos));
+          h += cel('Tributação integral (sem segregação)', fmtBRL(integral));
+        }
+        if(c.segregado){
+          h += cel('DAS sem segregação (alíquota efetiva × receita)', fmtBRL(c.impostoIntegral));
+          c.linhasSeg.filter(l=>l.receita>0).forEach(l=>{ h += cel(escapeHtml(l.cat)+' — '+fmtBRL(l.receita)+' × '+nfPctSimples(l.aliq), fmtBRL(l.valor)); });
+          h += cel('<strong>Economia pela segregação</strong>', '<strong>'+fmtBRL(round2(c.impostoIntegral - c.imposto))+'</strong>', '#2F7A52');
+          h += cel('DAS por tributo', Object.keys(c.porTributo).map(t=>t+' '+fmtBRL(c.porTributo[t])).join(' · '));
+        }
+        h += `<div class="cr-line total"><span>Valor do DAS da competência</span><span>${fmtBRL(c.imposto)}</span></div>`;
+      }
+      (a.avisos||[]).forEach(v=>{ h += `<div class="form-hint" style="margin:6px 0 0;color:#b45309;">⚠ ${escapeHtml(v)}</div>`; });
+      return h;
+    };
+    const totRec = round2(apur.reduce((x,a)=>x+a.receita,0)), totDas = round2(apur.reduce((x,a)=>x+(a.calc?a.calc.imposto:0),0));
+    return cab + `<div class="form-hint" style="margin:-4px 0 12px;">Cálculo exato do DAS usando a segregação reconhecida nos XMLs importados (monofásico, ICMS-ST, isento) — ${sel?'meses marcados no botão Meses':'todos os meses com receita (use o botão Meses para escolher)'}. Valores estimados: confira com o PGDAS-D.</div>` + botoes + blocoFat + `
+      <table><thead><tr><th>Competência</th><th style="text-align:right">Receita bruta</th><th style="text-align:right">Monofásica</th><th style="text-align:right">ICMS-ST/isento</th><th style="text-align:right">Ambas</th><th style="text-align:right">Alíq. efetiva</th><th style="text-align:right">DAS</th></tr></thead><tbody>
+        ${apur.map(a=>`<tr><td>${monthLabel(a.ym)}/${a.ym.slice(0,4)}</td><td style="text-align:right" class="mono">${fmtBRL(a.receita)}</td><td style="text-align:right" class="mono">${a.sep&&a.sep.tem?fmtBRL(a.sep.mono):'—'}</td><td style="text-align:right" class="mono">${a.sep&&a.sep.tem?fmtBRL(a.sep.st):'—'}</td><td style="text-align:right" class="mono">${a.sep&&a.sep.tem?fmtBRL(a.sep.ambos):'—'}</td><td style="text-align:right" class="mono">${a.calc?nfPctSimples(a.calc.aliqEfetiva):'—'}</td><td style="text-align:right" class="mono"><strong>${a.calc?fmtBRL(a.calc.imposto):'—'}</strong></td></tr>`).join('')}
+        <tr class="nf-total-geral"><td style="background:#DDE6F3;"><b>Total</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(totRec)}</b></td><td colspan="4" style="background:#DDE6F3;"></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(totDas)}</b></td></tr>
+      </tbody></table>
+      <div style="margin-top:12px;">${apur.map(a=>`<details style="margin:0 0 8px;border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:#fff;"><summary style="cursor:pointer;font-weight:700;">${monthLabel(a.ym)}/${a.ym.slice(0,4)} — receita ${fmtBRL(a.receita)}${a.calc?' · DAS '+fmtBRL(a.calc.imposto):''}${(a.avisos||[]).length?' ⚠':''}</summary><div class="calc-result" style="margin-top:8px;">${detalhe(a)}</div></details>`).join('')}</div>`;
+  }
+  // Extrato do Simples Nacional (PDF): resumo de todos os meses + uma página de apuração por mês.
+  function gerarExtratoSimplesPDF(clientId){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const cl = state.clients.find(c=>c.id===clientId); if(!cl) return;
+    const apur = nfMesesApuracao(cl).map(m=>simplesApuracaoMes(cl, m)).filter(Boolean);
+    if(!apur.length){ alert('Não há receita nos meses selecionados.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth(), mx = 14, cw = pageW - mx*2, rowH = 6;
+    let y = 0;
+    const tabela = (titulo, colunas, linhas, negritoUltima)=>{
+      if(y > 245){ doc.addPage(); y = 15; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,25,30);
+      doc.text(titulo, mx, y); y += 4;
+      let acc = mx;
+      const cols = colunas.map(c=>{ const x0=acc, wmm=cw*c.w; acc+=wmm; return Object.assign({},c,{x0,wmm}); });
+      const cabecalho = ()=>{
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(20,25,30);
+        cols.forEach(c=>{
+          doc.setFillColor(234,234,234); doc.rect(c.x0,y,c.wmm,rowH,'F');
+          doc.setDrawColor(0,0,0); doc.setLineWidth(0.2); doc.rect(c.x0,y,c.wmm,rowH,'S');
+          doc.text(c.label, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+        });
+        y += rowH; doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      };
+      cabecalho();
+      linhas.forEach((l,li)=>{
+        if(y+rowH > 262){ doc.addPage(); y = 15; cabecalho(); }
+        doc.setDrawColor(210,210,210); doc.setLineWidth(0.15); doc.setTextColor(20,25,30);
+        const ult = negritoUltima && li===linhas.length-1;
+        doc.setFont('helvetica', ult?'bold':'normal');
+        cols.forEach((c,i)=>{
+          if(ult){ doc.setFillColor(221,230,243); doc.rect(c.x0,y,c.wmm,rowH,'F'); }
+          doc.rect(c.x0,y,c.wmm,rowH,'S');
+          const txt = doc.splitTextToSize(String(l[i]==null?'':l[i]), c.wmm-3)[0] || '';
+          doc.text(txt, c.align==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.align?{align:c.align}:undefined);
+        });
+        y += rowH;
+      });
+      doc.setFont('helvetica','normal');
+      y += 6;
+    };
+    const rot = m=>monthLabel(m)+'/'+m.slice(0,4);
+    const aviso = 'Documento de apoio gerado pelo sistema a partir das notas fiscais importadas (receita bruta e segregação lida dos itens dos XMLs). Estimativa conforme LC 123/2006 — confira com o PGDAS-D oficial antes do recolhimento. Não substitui o extrato emitido pela Receita Federal.';
+    y = pdfHeader(doc, 'Extrato do Simples Nacional — Apuração do DAS', cl.name, cl.logo);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+    doc.text((cl.doc ? 'CNPJ/CPF: ' + cl.doc + '   ·   ' : '') + 'Regime: Simples Nacional   ·   Anexo cadastrado: ' + (cl.anexoSimples||'—'), mx, y); y += 8;
+    const totRec = round2(apur.reduce((x,a)=>x+a.receita,0)), totDas = round2(apur.reduce((x,a)=>x+(a.calc?a.calc.imposto:0),0));
+    tabela('Resumo por competência', [{label:'COMPETÊNCIA',w:.16},{label:'RECEITA BRUTA',w:.17,align:'right'},{label:'MONOFÁSICA',w:.15,align:'right'},{label:'ICMS-ST/ISENTO',w:.16,align:'right'},{label:'ALÍQ. EFETIVA',w:.16,align:'right'},{label:'DAS',w:.2,align:'right'}],
+      apur.map(a=>[rot(a.ym), fmtBRL(a.receita), a.sep&&a.sep.tem?fmtBRL(a.sep.mono+a.sep.ambos):'—', a.sep&&a.sep.tem?fmtBRL(a.sep.st+a.sep.ambos):'—', a.calc?nfPctSimples(a.calc.aliqEfetiva):'—', a.calc?fmtBRL(a.calc.imposto):'—'])
+        .concat([['TOTAL', fmtBRL(totRec), '', '', '', fmtBRL(totDas)]]), true);
+    apur.forEach(a=>{
+      doc.addPage();
+      y = pdfHeader(doc, 'Extrato do Simples Nacional — ' + rot(a.ym), cl.name, cl.logo);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(20,25,30);
+      doc.text('Período de apuração: ' + rot(a.ym) + (cl.doc ? '   ·   CNPJ/CPF: ' + cl.doc : ''), mx, y); y += 8;
+      const c = a.calc, sp = a.sep||{};
+      const linhasAp = [['Receita bruta — notas fiscais (saídas + serviços − devoluções)', fmtBRL(a.notas)]];
+      if(a.manual) linhasAp.push(['Faturamento lançado sem nota fiscal', fmtBRL(a.manual)]);
+      linhasAp.push(['Receita bruta total do período de apuração (RPA)', fmtBRL(a.receita)]);
+      if(c){
+        linhasAp.push(['Anexo aplicado', a.anexo], ['RBT12 — receita bruta acumulada dos 12 meses anteriores', fmtBRL(a.rbt12)], ['Faixa', c.faixaNum+'ª faixa'], ['Alíquota nominal', nfPctSimples(c.aliqNominal)], ['Parcela a deduzir', fmtBRL(c.deduz)], ['Alíquota efetiva — (RBT12 × alíq. nominal − parcela a deduzir) ÷ RBT12', nfPctSimples(c.aliqEfetiva)]);
+      }
+      tabela('Apuração', [{label:'ITEM',w:.7},{label:'VALOR',w:.3,align:'right'}], linhasAp);
+      if(c && sp.tem){
+        const integral = round2(a.receita - (sp.mono + sp.st + sp.ambos));
+        tabela('Receitas segregadas (lidas dos itens dos XMLs)', [{label:'CATEGORIA',w:.6},{label:'RECEITA',w:.2,align:'right'},{label:'%',w:.2,align:'right'}],
+          [['Só monofásica (sem PIS/Cofins)', fmtBRL(sp.mono), monoPct(sp.mono, a.receita)], ['Só ICMS-ST / isento / não tributado (sem ICMS)', fmtBRL(sp.st), monoPct(sp.st, a.receita)], ['Monofásica e ICMS-ST (sem PIS/Cofins/ICMS)', fmtBRL(sp.ambos), monoPct(sp.ambos, a.receita)], ['Tributação integral', fmtBRL(integral), monoPct(integral, a.receita)]]);
+      }
+      if(c && c.segregado){
+        tabela('DAS por categoria de receita', [{label:'CATEGORIA',w:.5},{label:'RECEITA',w:.2,align:'right'},{label:'ALÍQ.',w:.12,align:'right'},{label:'DAS',w:.18,align:'right'}],
+          c.linhasSeg.filter(l=>l.receita>0).map(l=>[l.cat, fmtBRL(l.receita), nfPctSimples(l.aliq), fmtBRL(l.valor)]).concat([['TOTAL', fmtBRL(a.receita), '', fmtBRL(c.imposto)]]), true);
+        tabela('DAS por tributo (partilha do Anexo I)', [{label:'TRIBUTO',w:.5},{label:'VALOR',w:.5,align:'right'}],
+          Object.keys(c.porTributo).map(t=>[t, fmtBRL(c.porTributo[t])]).concat([['TOTAL DO DAS', fmtBRL(c.imposto)]]), true);
+        doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(47,122,82);
+        doc.text('Economia pela segregação: ' + fmtBRL(round2(c.impostoIntegral - c.imposto)) + ' (DAS sem segregação: ' + fmtBRL(c.impostoIntegral) + ')', mx, y); y += 7; doc.setTextColor(20,25,30);
+      } else if(c){
+        tabela('Valor do DAS', [{label:'ITEM',w:.7},{label:'VALOR',w:.3,align:'right'}], [['DAS = alíquota efetiva × receita do período', fmtBRL(c.imposto)]], true);
+      }
+      (a.avisos||[]).forEach(v=>{
+        doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(180,83,9);
+        const ls = doc.splitTextToSize('Atenção: ' + v, cw); doc.text(ls, mx, y); y += ls.length*4 + 2; doc.setTextColor(20,25,30);
+      });
+      // Rodapé próprio (fica abaixo das tabelas, sem sobrepor linhas)
+      const ph = doc.internal.pageSize.getHeight();
+      doc.setDrawColor(200,200,200); doc.setLineWidth(0.2); doc.line(mx, ph-24, pageW-mx, ph-24);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(110,120,130);
+      doc.text(doc.splitTextToSize(aviso, cw), mx, ph-20);
+      doc.text('Emitido por ' + (state.user ? (state.user.name||state.user.username) : '—') + ' — JP Consultoria Contábil', mx, ph-8);
+      doc.setTextColor(20,25,30);
+    });
+    pdfSalvar(doc, 'extrato-simples-nacional-' + cl.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase() + '.pdf');
+  }
+  // Relê os XMLs das notas de Saída já importadas e alimenta o Separador (monofásico / ICMS-ST / isento).
+  async function nfReconhecerSegregacao(clientId){
+    await carregarXmlsNotas();
+    (state.notasFiscais||[]).forEach(nfReligarXml);
+    const notas = state.notasFiscais.filter(n=>n.clientId===clientId && n.tipoOperacao==='Saída' && n.status!=='Cancelada');
+    const comXml = notas.filter(n=>n.xmlOriginal && /<infNFe/i.test(n.xmlOriginal));
+    const files = comXml.map(n=>({ name:n.anexoNome||('nota '+n.numero), text: async()=>n.xmlOriginal }));
+    const r = files.length ? await importarXmlsMonofasico(files, clientId, {registrarNota:false}) : { notas:0, itens:0, duplicadas:0 };
+    const pares = []; const vis = new Set();
+    notas.forEach(n=>{ const c = String(n.dataEmissao||'').slice(0,7); if(c && !vis.has(c)){ vis.add(c); pares.push({clientId, comp:c}); } });
+    if(pares.length){ try{ await fiscalSincronizar(pares); }catch(e){ console.error(e); } }
+    return { total:notas.length, comXml:comXml.length, semXml:notas.length-comXml.length, lidas:r.notas, itens:r.itens, jaLidas:r.duplicadas };
+  }
   // Filtro por mês de emissão (multi-seleção). state.nfMeses vazio = todos os meses.
   function nfMesDaNota(n){ return n.dataEmissao ? String(n.dataEmissao).slice(0,7) : 'sem-data'; }
   function nfNotasEscopo(){ return state.notasFiscais.filter(n=>isClientInScope(n.clientId)); }
@@ -20160,6 +20510,7 @@
   function updateNfResults(){
     const container = document.getElementById('nfTableContainer');
     if(container) container.innerHTML = notasFiscaisTableHtml();
+    const sc = document.getElementById('nfSimplesContainer'); if(sc) sc.innerHTML = simplesApuracaoPainelHtml();
     wireNfDeleteButtons();
   }
   // Exclusão em lote: apaga as notas marcadas e, uma vez só, refaz a contabilidade e as apurações das empresas afetadas.
@@ -20205,6 +20556,54 @@
       doAno.forEach(m=>{ if(todos) set.delete(m); else set.add(m); });
       state.nfMeses = [...set]; state.nfSel = []; updateNfResults();
     }; });
+    const selAno = document.getElementById('nfFatAno');
+    if(selAno) selAno.onchange = ()=>{ state.nfFatAno = selAno.value; updateNfResults(); };
+    const somaFat = ()=>{
+      let v=0, t=0; document.querySelectorAll('.nf-fat-v').forEach(i=>{ v += parseFloat(i.value)||0; }); document.querySelectorAll('.nf-fat-s').forEach(i=>{ t += parseFloat(i.value)||0; });
+      const fv = document.getElementById('nfFatFootV'), fs = document.getElementById('nfFatFootS'); if(fv) fv.textContent = fmtBRL(v); if(fs) fs.textContent = fmtBRL(t);
+    };
+    document.querySelectorAll('.nf-fat-v, .nf-fat-s').forEach(i=>{ i.oninput = somaFat; });
+    const bFat = document.getElementById('nfFatSalvarBtn');
+    if(bFat) bFat.onclick = async ()=>{
+      const cid = deptOneSelectedClient(); const cl = cid && state.clients.find(c=>c.id===cid); if(!cl) return;
+      const ano = (document.getElementById('nfFatAno')||{}).value; if(!ano) return;
+      const linhas = ['01','02','03','04','05','06','07','08','09','10','11','12'].map(mm=>{
+        const comp = ano+'-'+mm, ex = (state.faturamentosManuais||[]).find(x=>x.id===cid+'_'+comp);
+        return { competencia:comp,
+          vendas: parseFloat((document.querySelector('.nf-fat-v[data-mm="'+mm+'"]')||{}).value)||0,
+          servicos: parseFloat((document.querySelector('.nf-fat-s[data-mm="'+mm+'"]')||{}).value)||0,
+          observacao: ex ? (ex.observacao||'') : '' };
+      });
+      bFat.disabled = true; bFat.textContent = 'Salvando…';
+      const r = await salvarFaturamentosManuaisAno(cid, linhas);
+      if(r){
+        try{ await fiscalSincronizar(nfMesesApuracao(cl).map(c=>({clientId:cid, comp:c}))); }catch(e){ console.error(e); }
+        state.nfFatAno = ano; updateNfResults();
+        const m = document.getElementById('nfFatMsg'); if(m) m.textContent = 'Salvo: ' + (r.salvos||0) + ' mês(es) gravado(s)' + (r.removidos?', '+r.removidos+' removido(s)':'') + '. DAS recalculado com o novo RBT12.';
+      } else { bFat.disabled = false; bFat.textContent = 'Salvar faturamento de ' + ano + ' e recalcular DAS'; }
+    };
+    const bSeg = document.getElementById('nfSegReconhecerBtn');
+    if(bSeg) bSeg.onclick = async ()=>{
+      const cid = deptOneSelectedClient(); if(!cid) return;
+      const msg = document.getElementById('nfSegMsg'); bSeg.disabled = true;
+      if(msg){ msg.className = 'lookup-msg'; msg.style.display='block'; msg.textContent = 'Lendo os XMLs das notas de saída…'; }
+      try{
+        const r = await nfReconhecerSegregacao(cid);
+        updateNfResults();
+        const m2 = document.getElementById('nfSegMsg');
+        if(m2){ m2.className = 'lookup-msg success'; m2.style.display='block';
+          m2.textContent = r.comXml + ' nota(s) de saída com XML lida(s): ' + r.lidas + ' nova(s) incorporada(s) à segregação (' + r.itens + ' linha(s) de produto)' + (r.jaLidas ? ', ' + r.jaLidas + ' já estavam' : '') + (r.semXml ? '. ' + r.semXml + ' nota(s) sem XML guardado (cadastradas manualmente) não puderam ser segregadas' : '') + '. DAS recalculado.'; }
+      }catch(e){ console.error(e); const m2 = document.getElementById('nfSegMsg'); if(m2){ m2.className='lookup-msg error'; m2.style.display='block'; m2.textContent='Não foi possível reconhecer a segregação: ' + (e&&e.message||e); } bSeg.disabled = false; }
+    };
+    const bExt = document.getElementById('nfExtratoSimplesBtn');
+    if(bExt) bExt.onclick = ()=>{ const cid = deptOneSelectedClient(); if(cid) gerarExtratoSimplesPDF(cid); };
+    const bRec = document.getElementById('nfRecalcDasBtn');
+    if(bRec) bRec.onclick = async ()=>{
+      const cid = deptOneSelectedClient(); const cl = cid && state.clients.find(c=>c.id===cid); if(!cl) return;
+      bRec.disabled = true; bRec.textContent = 'Recalculando…';
+      try{ await fiscalSincronizar(nfMesesApuracao(cl).map(c=>({clientId:cid, comp:c}))); }catch(e){ console.error(e); }
+      updateNfResults();
+    };
     const bm = document.getElementById('nfMesesBtn'); if(bm) bm.onclick = ()=>{ state.nfMesesAberto = !state.nfMesesAberto; updateNfResults(); };
     document.querySelectorAll('.nf-op-chip').forEach(el=>{ el.onclick = ()=>{
       const set = new Set(state.nfOps||[]); const o = el.getAttribute('data-op');
@@ -20588,6 +20987,7 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Este é um controle interno das notas já emitidas pelos sistemas oficiais (emissor de NF-e/NFS-e da prefeitura ou da Sefaz) — o sistema não emite notas fiscais, apenas organiza o que já foi emitido para consulta rápida. Use o painel "Selecionar cliente" no topo da página para filtrar por empresa.</div>
       <div id="nfTableContainer">${notasFiscaisTableHtml()}</div>
+      <div id="nfSimplesContainer">${simplesApuracaoPainelHtml()}</div>
 
       <div class="form-section-title">Relatório de Notas Fiscais — por competência e classificação</div>
       <div class="form-hint" style="margin:-4px 0 14px;">Mostra na tela as notas da empresa por competência (mês), com o total, e a classificação por NCM ou CFOP das notas de Entrada, Saída e o código de serviço das notas de Serviços. Use o painel "Selecionar cliente" no topo da página, marcando apenas uma empresa.</div>
@@ -24920,6 +25320,7 @@
       ${state.modal==='msgTemplate' ? msgTemplateModalHtml() : ''}
       ${state.modal==='msgSend' ? msgSendModalHtml() : ''}
       ${state.modal==='sitFiscal' ? sitFiscalModalHtml() : ''}
+      ${state.modal==='impCalcEdit' ? impCalcEditModalHtml() : ''}
       ${state.modal==='relatorioView' ? relatorioViewModalHtml() : ''}
     `;
 
@@ -25562,6 +25963,27 @@
     root.querySelectorAll('[data-ir-cadastro-cliente]').forEach(el=>{
       el.onclick = (e)=>{ e.preventDefault(); openClientEditModal(el.getAttribute('data-ir-cadastro-cliente')); };
     });
+    root.querySelectorAll('[data-editar-imposto-calculado]').forEach(el=>{
+      el.onclick = ()=>{ state.impCalcEditId = el.getAttribute('data-editar-imposto-calculado'); state.modal = 'impCalcEdit'; render(); };
+    });
+    const icForm = document.getElementById('icForm');
+    if(icForm){
+      const rec = (state.impostosCalculados||[]).find(x=>x.id===state.impCalcEditId);
+      const atualizaDif = ()=>{
+        const c = document.getElementById('icConferido'), d = document.getElementById('icDif'); if(!c || !d || !rec) return;
+        if(c.value===''){ d.value = '—'; return; }
+        let sis = impCalcValorSistema(rec);
+        if(!rec.parte2){ try{ sis = impCalcRecalcular(rec, impCalcLerCampos(rec)).resultado; }catch(e){} }
+        const dif = round2((parseFloat(c.value)||0) - sis);
+        d.value = Math.abs(dif)<0.01 ? 'R$ 0,00 — bate' : fmtBRL(dif);
+      };
+      const rb = document.getElementById('icRecalcBtn');
+      if(rb) rb.onclick = ()=>{ try{ document.getElementById('icPreview').innerHTML = impCalcPreviewHtml(rec, impCalcRecalcular(rec, impCalcLerCampos(rec))); atualizaDif(); }catch(e){ alert('Confira os campos: ' + (e&&e.message||e)); } };
+      const ic = document.getElementById('icConferido'); if(ic) ic.oninput = atualizaDif;
+      atualizaDif();
+      document.getElementById('icCancel').onclick = ()=>{ state.modal=null; state.impCalcEditId=null; render(); };
+      icForm.onsubmit = async (e)=>{ e.preventDefault(); if(!rec) return; await impCalcSalvarEdicao(rec); state.modal=null; state.impCalcEditId=null; render(); };
+    }
     root.querySelectorAll('[data-del-imposto-calculado]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este cálculo do histórico?')) excluirImpostoCalculado(el.getAttribute('data-del-imposto-calculado')); };
     });
@@ -25996,7 +26418,11 @@
         const idAntigo = editandoId ? state.nfModalData.clientId : '';
         state.modal=null; state.nfModalData=null;
         render();
-        saveNotaFiscal(nf).then(()=>{
+        saveNotaFiscal(nf).then(async ()=>{
+          if(nf.tipoOperacao==='Saída' && nf.status!=='Cancelada' && nf.xmlOriginal && /<infNFe/i.test(nf.xmlOriginal)){
+            try{ await importarXmlsMonofasico([{ name:nf.anexoNome||'nota.xml', text:async()=>nf.xmlOriginal }], nf.clientId, {registrarNota:false}); }catch(e){ console.error(e); }
+          }
+        }).then(()=>{
           const pares = [{clientId:nf.clientId, comp:String(nf.dataEmissao||'').slice(0,7)}];
           if(compAntiga) pares.push({clientId: idAntigo || nf.clientId, comp:compAntiga});
           return fiscalSincronizar(pares);
