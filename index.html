@@ -406,6 +406,21 @@
     .main{padding:22px 16px;}
     .form-row{grid-template-columns:1fr;}
   }
+
+  /* ===== Tipografia unificada (modelo "Departamento Fiscal") ===== */
+  html,body{font-family:'Inter',system-ui,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;font-feature-settings:'cv11','ss01';}
+  h1,h2,h3,h4,.topbar h1,.panel-head h3,.form-section-title,.modal h3,.cc-header h2,.cc-card-title,.sb-brand .t,.sb-title,.dept-tab-btn,.page-title{font-family:'Sora','Inter',sans-serif;letter-spacing:-.015em;}
+  .topbar h1{font-weight:800;letter-spacing:-.02em;}
+  .panel-head h3,.modal h3,.cc-header h2{font-weight:700;}
+  .sb-title,.dept-tab-btn{font-weight:700;font-size:13px;letter-spacing:-.01em;}
+  .btn,.btn-add,.btn-sm,.btn-detail,button{font-family:'Sora','Inter',sans-serif;letter-spacing:-.005em;}
+  .btn-add,.btn-sm,.btn-detail{font-weight:600;}
+  th{font-family:'Sora','Inter',sans-serif;font-size:11px;font-weight:600;letter-spacing:.06em;}
+  .field label,label{font-family:'Inter',sans-serif;font-weight:600;letter-spacing:.03em;}
+  input,select,textarea{font-family:'Inter',sans-serif;font-size:14px;}
+  .tag{font-family:'Sora','Inter',sans-serif;font-weight:600;letter-spacing:.01em;}
+  td{font-size:13.5px;}
+  .mono,.kpi .val,.val-cell,.nf-resumo-valor,.num{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;}
 </style>
 </head>
 <body>
@@ -861,6 +876,7 @@
     competenciaAtiva: new Date().toISOString().slice(0,7),
     tabelaHonCompetencia: new Date().toISOString().slice(0,7),
     tabelaHonNovoCliente: '',
+    nfSel: [],
     tabHonDe: new Date().toISOString().slice(0,7),
     tabHonEmpSel: [],
     tabHonEmpBusca: '',
@@ -7326,7 +7342,22 @@
     return '';
   }
   const NF_STATUS = ['Emitida', 'Cancelada'];
-  const NF_TIPO_OPERACAO = ['Entrada', 'Saída', 'Serviços'];
+  const NF_DEV_VENDA = 'Devolução de venda', NF_DEV_COMPRA = 'Devolução de compra';
+  const NF_TIPO_OPERACAO = ['Entrada', 'Saída', 'Serviços', NF_DEV_VENDA, NF_DEV_COMPRA];
+  // CFOPs de devolução: 1.2xx/2.2xx/3.2xx (entrada) e 5.2xx/6.2xx/7.2xx (saída), 1.410-411/5.410-411 (com ST), 1.660-662/5.660-662 (combustíveis).
+  const NF_CFOP_DEV = /^[1-7](20\d|21\d|410|411|66[0-2])$/;
+  // Natureza da devolução, conforme o papel da empresa na nota:
+  //  • a empresa emitiu uma nota de ENTRADA (1.2xx) ou o cliente emitiu uma SAÍDA (5.2xx) para ela  -> devolução de VENDA (dedução da receita);
+  //  • a empresa emitiu uma SAÍDA (5.2xx) ou recebeu uma entrada de terceiro (1.2xx)               -> devolução de COMPRA (estorno de estoque/fornecedor).
+  function nfOperacaoDaDevolucao(result, papel){
+    const lead = String(result.cfop||'').charAt(0);
+    let venda;
+    if(/^[1-3]$/.test(lead)) venda = (papel==='emitente');
+    else if(/^[5-7]$/.test(lead)) venda = (papel!=='emitente');
+    else venda = (papel==='emitente') ? result.tpNF==='0' : result.tpNF==='1';
+    return venda ? NF_DEV_VENDA : NF_DEV_COMPRA;
+  }
+  function nfEhDevolucaoVenda(n){ return n && n.tipoOperacao===NF_DEV_VENDA; }
   function nfStatusClass(s){ return s==='Cancelada' ? 'sit-baixada' : 'sit-ativa'; }
 
   function findClientByDoc(docNumber){
@@ -7343,9 +7374,15 @@
       if(found) return { client: found, tipoOperacao: 'Serviços', matchedDoc: result.emitDoc, matchedNome: result.emitNome };
     }
     const foundEmit = findClientByDoc(result.emitDoc);
-    if(foundEmit) return { client: foundEmit, tipoOperacao: 'Saída', matchedDoc: result.emitDoc, matchedNome: result.emitNome };
+    if(foundEmit){
+      const op = result.devolucao ? nfOperacaoDaDevolucao(result,'emitente') : (result.tpNF==='0' ? 'Entrada' : 'Saída');
+      return { client: foundEmit, tipoOperacao: op, matchedDoc: result.emitDoc, matchedNome: result.emitNome };
+    }
     const foundDest = findClientByDoc(result.destDoc);
-    if(foundDest) return { client: foundDest, tipoOperacao: 'Entrada', matchedDoc: result.destDoc, matchedNome: result.destNome };
+    if(foundDest){
+      const op = result.devolucao ? nfOperacaoDaDevolucao(result,'destinatario') : 'Entrada';
+      return { client: foundDest, tipoOperacao: op, matchedDoc: result.destDoc, matchedNome: result.destNome };
+    }
     return { client: null, tipoOperacao: result.tipoOperacaoSugerida || '', matchedDoc: result.emitDoc || result.destDoc, matchedNome: result.emitNome || result.destNome };
   }
 
@@ -7583,8 +7620,28 @@
       try{ texto = await f.text(); }catch(e){ r.invalidas++; continue; }
       const p = parseItensNfeXml(texto);
       if(!p.ok){ r.invalidas++; continue; }
-      if(p.cancelada){ r.canceladas++; continue; }
-      if(p.tpNF === '0'){ r.naoSaida++; continue; }
+      // Notas canceladas e devoluções também entram em "Notas Fiscais" (para a contabilidade e o fiscal), mesmo sem entrar no separador.
+      const registrarSomente = async ()=>{
+        if(opts.registrarNota === false) return;
+        try{
+          const nf = parseNotaFiscalXml(texto);
+          if(!nf || !nf.ok || nf.evento) return;
+          if(docEmpresa.length >= 11 && ncmDigits(nf.emitDoc) !== docEmpresa) return;
+          const op = nf.devolucao ? nfOperacaoDaDevolucao(nf, 'emitente') : (nf.tpNF==='0' ? 'Entrada' : 'Saída');
+          if(!nf.devolucao && !p.cancelada) return;
+          const jaN = notaFiscalExistente(clientId, nf.numero, nf.serie);
+          if(jaN){ if(nf.status==='Cancelada' && jaN.status!=='Cancelada'){ await nfGravar(Object.assign({}, jaN, {status:'Cancelada'})); notasNovas.push({clientId, comp:String(nf.dataEmissao||'').slice(0,7)}); } return; }
+          const xmlHash = await hashArquivoTexto(texto);
+          if(notaFiscalArquivoJaExiste(xmlHash)) return;
+          await saveNotaFiscalSilent({ clientId, tipo: nf.tipo, tipoOperacao: op, numero:nf.numero, serie:nf.serie||'', dataEmissao:nf.dataEmissao, valor:nf.valor, status:nf.status,
+            chaveAcesso:nf.chaveAcesso||'', emitNome:nf.emitNome||'', emitDoc:nf.emitDoc||'', destNome:nf.destNome||'', destDoc:nf.destDoc||'',
+            xmlOriginal:texto, anexoNome:f.name||'', xmlHash, observacoes:'Importado pelo Separador de Produtos Monofásicos (' + (f.name||'XML') + ')' });
+          r.notasRegistradas++; notasNovas.push({clientId, comp:String(nf.dataEmissao||'').slice(0,7)});
+          await loadNotasFiscais();
+        }catch(e){ console.error(e); }
+      };
+      if(p.cancelada){ r.canceladas++; await registrarSomente(); continue; }
+      if(p.tpNF === '0'){ r.naoSaida++; await registrarSomente(); continue; }
       if(docEmpresa.length >= 11 && ncmDigits(p.emitDoc) !== docEmpresa){ r.outroEmitente++; continue; }
       if(!p.competencia){ r.invalidas++; continue; }
       if(!docs[p.competencia]) docs[p.competencia] = monoDocDe(clientId, p.competencia) ? JSON.parse(JSON.stringify(monoDocDe(clientId, p.competencia))) : monoNovoDoc(clientId, p.competencia);
@@ -7593,10 +7650,10 @@
       if(opts.registrarNota !== false){
         try{
           const nf = parseNotaFiscalXml(texto);
-          if(nf && nf.ok){
+          if(nf && nf.ok && !nf.evento){
             const xmlHash = await hashArquivoTexto(texto);
             if(!notaFiscalArquivoJaExiste(xmlHash) && !notaFiscalJaExiste(clientId, nf.numero, nf.serie)){
-              await saveNotaFiscalSilent({ clientId, tipo: nf.tipo, tipoOperacao:'Saída', numero:nf.numero, serie:nf.serie||'', dataEmissao:nf.dataEmissao, valor:nf.valor, status:nf.status,
+              await saveNotaFiscalSilent({ clientId, tipo: nf.tipo, tipoOperacao: nf.devolucao ? nfOperacaoDaDevolucao(nf,'emitente') : 'Saída', numero:nf.numero, serie:nf.serie||'', dataEmissao:nf.dataEmissao, valor:nf.valor, status:nf.status,
                 chaveAcesso:nf.chaveAcesso||'', emitNome:nf.emitNome||'', emitDoc:nf.emitDoc||'', destNome:nf.destNome||'', destDoc:nf.destDoc||'',
                 xmlOriginal:texto, anexoNome:f.name||'', xmlHash, observacoes:'Importado pelo Separador de Produtos Monofásicos (' + (f.name||'XML') + ')' });
               r.notasRegistradas++; notasNovas.push({clientId, comp:p.competencia});
@@ -8158,6 +8215,7 @@
     state.notasFiscais.forEach(n=>{
       if(n.clientId!==clientId || n.status==='Cancelada' || !meses.includes(String(n.dataEmissao||'').slice(0,7))) return;
       if(n.tipoOperacao==='Saída'){ vendas += Number(n.valor)||0; qtd++; }
+      else if(n.tipoOperacao===NF_DEV_VENDA){ vendas -= Number(n.valor)||0; qtd++; }
       else if(n.tipoOperacao==='Serviços'){ servicos += Number(n.valor)||0; qtd++; }
     });
     let manV = 0, manS = 0;
@@ -8566,6 +8624,17 @@
       return { ok:false, error:'Arquivo XML inválido ou corrompido.' };
     }
 
+    // --- Evento de CANCELAMENTO da NF-e (procEventoNFe, tpEvento 110111/110112): marca a nota já importada como Cancelada ---
+    const infEvento = doc.getElementsByTagName('infEvento')[0];
+    if(infEvento && !doc.getElementsByTagName('infNFe')[0]){
+      const tpEv = getTagText(infEvento, 'tpEvento');
+      if(tpEv === '110111' || tpEv === '110112'){
+        const dhEv = getTagText(infEvento, 'dhEvento');
+        return { ok:true, evento:'cancelamento', chaveAcesso: getTagText(infEvento, 'chNFe'), dataEvento: dhEv ? dhEv.slice(0,10) : '', tipo:'Evento de cancelamento' };
+      }
+      return { ok:false, error:'Evento da NF-e (tipo ' + (tpEv||'?') + ') — o sistema só aplica o evento de cancelamento (110111).' };
+    }
+
     // --- NF-e / NFC-e (padrão nacional, modelo 55 ou 65) ---
     const infNFe = doc.getElementsByTagName('infNFe')[0];
     if(infNFe){
@@ -8587,8 +8656,11 @@
       const cStat = getTagText(infProt, 'cStat');
       const status = (cStat === '101' || cStat === '151' || cStat === '135') ? 'Cancelada' : 'Emitida';
       const chaveAcesso = (infNFe.getAttribute('Id')||'').replace(/^NFe/i,'');
+      const prod1 = (infNFe.getElementsByTagName('det')[0] || infNFe).getElementsByTagName('prod')[0];
+      const cfop = getTagText(prod1, 'CFOP');
+      const finNFe = getTagText(ideEl, 'finNFe');
       return {
-        ok:true,
+        ok:true, cfop, finNFe, tpNF: getTagText(ideEl, 'tpNF'), devolucao: (finNFe === '4' || NF_CFOP_DEV.test(cfop)),
         tipo: mod === '65' ? 'NFC-e (Consumidor)' : 'NF-e (Produto)',
         numero: nNF, serie, dataEmissao: dhEmi ? dhEmi.slice(0,10) : '',
         valor: vNF, status, chaveAcesso,
@@ -12399,6 +12471,8 @@
       const v = Number(n.valor)||0;
       if(n.tipoOperacao==='Serviços'){ r.servicos++; r.vServicos += v; }
       else if(n.tipoOperacao==='Entrada'){ r.entradas++; r.vEntradas += v; }
+      else if(n.tipoOperacao===NF_DEV_VENDA){ r.devVendas = (r.devVendas||0)+1; r.vDevVendas = (r.vDevVendas||0) + v; r.vSaidas -= v; }
+      else if(n.tipoOperacao===NF_DEV_COMPRA){ r.devCompras = (r.devCompras||0)+1; r.vDevCompras = (r.vDevCompras||0) + v; }
       else { r.saidas++; r.vSaidas += v; }
       if(n.xmlOriginal && n.tipo!=='NFS-e (Serviço)') r.comXml++;
     });
@@ -12407,7 +12481,7 @@
     return r;
   }
   function fsNomesDeclaracao(regime, nota, ctx){
-    const serv = nota.tipoOperacao==='Serviços', ent = nota.tipoOperacao==='Entrada';
+    const serv = nota.tipoOperacao==='Serviços', ent = (nota.tipoOperacao==='Entrada' || nota.tipoOperacao===NF_DEV_COMPRA);
     const out = [];
     if(regime==='Simples Nacional'){
       if(!ent) out.push(FS_DECL.PGDAS);
@@ -13011,7 +13085,7 @@
         <thead><tr><th>Competência</th><th style="text-align:right">Faturamento declarado</th><th style="text-align:right">Faturamento apurado (notas + sem NF)</th><th>Status</th><th>Data confirmação/protocolo</th><th></th></tr></thead>
         <tbody>
           ${list.map(d=>{
-            const apurado = state.notasFiscais.filter(n=>n.clientId===empresa && n.status!=='Cancelada' && (n.tipoOperacao==='Saída'||n.tipoOperacao==='Serviços') && (n.dataEmissao||'').slice(0,7)===d.competencia).reduce((s,n)=>s+(Number(n.valor)||0),0) + faturamentoManualMes(empresa, d.competencia).total;
+            const apurado = state.notasFiscais.filter(n=>n.clientId===empresa && n.status!=='Cancelada' && (n.tipoOperacao==='Saída'||n.tipoOperacao==='Serviços'||n.tipoOperacao===NF_DEV_VENDA) && (n.dataEmissao||'').slice(0,7)===d.competencia).reduce((s,n)=>s+(n.tipoOperacao===NF_DEV_VENDA?-1:1)*(Number(n.valor)||0),0) + faturamentoManualMes(empresa, d.competencia).total;
             const divergente = Math.abs(apurado - (Number(d.valorDeclarado)||0)) > 0.01;
             return `
             <tr>
@@ -14376,6 +14450,28 @@
       const buffer = await crypto.subtle.digest('SHA-256', dados);
       return Array.from(new Uint8Array(buffer)).map(b=>b.toString(16).padStart(2,'0')).join('');
     }catch(e){ return null; }
+  }
+  function notaFiscalExistente(clientId, numero, serie){
+    return state.notasFiscais.find(n=>
+      n.clientId === clientId && String(n.numero||'').trim() === String(numero||'').trim() && String(n.serie||'').trim() === String(serie||'').trim()) || null;
+  }
+  // Aplica um evento de cancelamento (XML) à nota já importada (pela chave de acesso). Se a nota ainda não está no
+  // sistema, guarda a chave: quando o XML da nota for importado depois, ela já entra como Cancelada.
+  async function nfAplicarEventoCancelamento(ev){
+    const ch = String(ev.chaveAcesso||'').trim();
+    if(!ch) return { aplicada:false, invalido:true };
+    const n = state.notasFiscais.find(x=>x.chaveAcesso && String(x.chaveAcesso).trim()===ch);
+    if(!n){
+      try{ await Store.set('nfcancel:'+ch, JSON.stringify({ chave:ch, data:ev.dataEvento||'' }), true); }catch(e){}
+      return { aplicada:false, pendente:true };
+    }
+    if(n.status==='Cancelada') return { aplicada:false, ja:true, clientId:n.clientId };
+    await nfGravar(Object.assign({}, n, { status:'Cancelada', observacoes: ((n.observacoes||'') + ' | Cancelada por evento XML' + (ev.dataEvento ? ' em ' + fmtDate(ev.dataEvento) : '')).replace(/^ \| /,'') }));
+    return { aplicada:true, clientId:n.clientId, comp:String(n.dataEmissao||'').slice(0,7) };
+  }
+  async function nfCancelamentoPendente(chave){
+    if(!chave) return false;
+    try{ const r = await Store.get('nfcancel:'+chave, true); return !!(r && r.value); }catch(e){ return false; }
   }
   function notaFiscalArquivoJaExiste(xmlHash){
     if(!xmlHash) return false;
@@ -16363,9 +16459,9 @@
     const inicioStr = inicio.toISOString().slice(0,7);
     const dasNotas = state.notasFiscais.filter(n=>
       n.clientId===clientId && n.status!=='Cancelada' &&
-      (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços') &&
+      (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços' || n.tipoOperacao===NF_DEV_VENDA) &&
       (n.dataEmissao||'').slice(0,7) >= inicioStr
-    ).reduce((s,n)=>s+(Number(n.valor)||0),0);
+    ).reduce((s,n)=>s+(n.tipoOperacao===NF_DEV_VENDA?-1:1)*(Number(n.valor)||0),0);
     // + faturamento lançado à mão (sem NF) nos mesmos 12 meses
     const lancado = (state.faturamentosManuais||[]).filter(d=>
       d.clientId===clientId && (d.competencia||'') >= inicioStr
@@ -16709,11 +16805,12 @@
     if(!clientId || !competencia) return { total: 0, quantidade: 0 };
     const notas = state.notasFiscais.filter(n=>
       n.clientId === clientId &&
-      (n.tipoOperacao === 'Saída' || n.tipoOperacao === 'Serviços') &&
+      (n.tipoOperacao === 'Saída' || n.tipoOperacao === 'Serviços' || n.tipoOperacao === NF_DEV_VENDA) &&
       n.status !== 'Cancelada' &&
       (n.dataEmissao||'').slice(0,7) === competencia
     );
-    return { total: notas.reduce((s,n)=>s+(Number(n.valor)||0), 0), quantidade: notas.length };
+    // Devolução de venda abate o faturamento do mês (dedução da receita bruta).
+    return { total: notas.reduce((s,n)=>s+(n.tipoOperacao===NF_DEV_VENDA?-1:1)*(Number(n.valor)||0), 0), quantidade: notas.length };
   }
   // Faturamento total do mês = notas fiscais + o que foi lançado à mão (sem NF). É este que alimenta o
   // cálculo do Simples (mês e RBT12).
@@ -16859,11 +16956,11 @@
   // (Saída) e Serviços, com o total de cada linha. Vendas/Serviços já incluem o que foi lançado
   // à mão (sem NF); manualVendas/manualServicos trazem só essa parte, pra mostrar em coluna própria.
   function relatorioFaturamentoPorCompetencia(clientId, mesInicio, mesFim){
-    const notasCliente = state.notasFiscais.filter(n => n.clientId === clientId && n.status !== 'Cancelada' && (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços'));
+    const notasCliente = state.notasFiscais.filter(n => n.clientId === clientId && n.status !== 'Cancelada' && (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços' || n.tipoOperacao===NF_DEV_VENDA));
     return listaCompetencias(mesInicio, mesFim).map(comp=>{
       const doMes = notasCliente.filter(n => (n.dataEmissao||'').slice(0,7) === comp);
       const man = faturamentoManualMes(clientId, comp);
-      const vendas = doMes.filter(n=>n.tipoOperacao==='Saída').reduce((s,n)=>s+(Number(n.valor)||0),0) + man.vendas;
+      const vendas = doMes.filter(n=>n.tipoOperacao==='Saída' || n.tipoOperacao===NF_DEV_VENDA).reduce((s,n)=>s+(n.tipoOperacao===NF_DEV_VENDA?-1:1)*(Number(n.valor)||0),0) + man.vendas;
       const servicos = doMes.filter(n=>n.tipoOperacao==='Serviços').reduce((s,n)=>s+(Number(n.valor)||0),0) + man.servicos;
       return { competencia: comp, vendas, servicos, total: vendas+servicos, quantidade: doMes.length, manualVendas: man.vendas, manualServicos: man.servicos, manualObs: man.observacao };
     });
@@ -16877,11 +16974,12 @@
     const linha = (id)=> porCliente[id] || (porCliente[id] = { clientId: id, vendas: 0, servicos: 0, quantidade: 0, manualVendas: 0, manualServicos: 0 });
     state.notasFiscais.forEach(n=>{
       if(n.status === 'Cancelada') return;
-      if(n.tipoOperacao !== 'Saída' && n.tipoOperacao !== 'Serviços') return;
+      if(n.tipoOperacao !== 'Saída' && n.tipoOperacao !== 'Serviços' && n.tipoOperacao !== NF_DEV_VENDA) return;
       if(!isClientInScope(n.clientId)) return;
       if(!competencias.has((n.dataEmissao||'').slice(0,7))) return;
       const l = linha(n.clientId);
       if(n.tipoOperacao === 'Saída') l.vendas += Number(n.valor)||0;
+      else if(n.tipoOperacao === NF_DEV_VENDA) l.vendas -= Number(n.valor)||0;
       else l.servicos += Number(n.valor)||0;
       l.quantidade++;
     });
@@ -17935,6 +18033,7 @@
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Lançamentos em partidas dobradas (débito e crédito), usando o Plano de Contas e o Histórico Contábil da empresa selecionada no lançamento. Use o seletor "Selecionar cliente" no topo da página para filtrar a lista abaixo por empresa.</div>
       ${notasContabilCardHtml()}
+      ${notasCanceladasContabilHtml()}
       ${folhaContabilCardHtml()}
       ${lancMesesSeletorHtml()}${lancContasFiltroHtml()}${lancBuscaBarHtml()}${((state.lancBusca||'').trim() || state.lancDiaDe || state.lancDiaAte || lancContasMarcadas().length) ? '' : lancApagarBarHtml()}<div id="lancamentosContainer">${lancamentosContabeisTableHtml()}</div>
     `;
@@ -18225,9 +18324,17 @@
     });
   }
   function nfPessoaDaNota(n){
-    const entrada = n.tipoOperacao==='Entrada';
-    const nome = String((entrada ? n.emitNome : n.destNome) || '').replace(/\s+/g,' ').trim();
-    const doc = String((entrada ? n.emitDoc : n.destDoc) || '').replace(/\D/g,'');
+    const dev = (n.tipoOperacao===NF_DEV_VENDA || n.tipoOperacao===NF_DEV_COMPRA);
+    let entrada = n.tipoOperacao==='Entrada', usaEmit = entrada;
+    if(dev){
+      // Devolução: a outra parte é quem NÃO é a empresa (emitente da nota ou destinatário).
+      const cli = state.clients.find(c=>c.id===n.clientId);
+      const dEmp = cli ? String(cli.doc||'').replace(/\D/g,'') : '';
+      usaEmit = !!dEmp && String(n.emitDoc||'').replace(/\D/g,'') !== dEmp;
+      entrada = (n.tipoOperacao===NF_DEV_COMPRA);
+    }
+    const nome = String((usaEmit ? n.emitNome : n.destNome) || '').replace(/\s+/g,' ').trim();
+    const doc = String((usaEmit ? n.emitDoc : n.destDoc) || '').replace(/\D/g,'');
     if(!nome && !doc) return null;
     const chave = doc.length>=11 ? doc : semAcento(nome).replace(/[^a-z0-9]+/g,' ').trim();
     if(!chave) return null;
@@ -18264,6 +18371,17 @@
       const rec = nfContaPorPadroes(clientId, [/^receita de presta[cç][aã]o de servi/i, /^receita de servi[cç]os/i, /^presta[cç][aã]o de servi/i, /^receita(?! financeira)(?!s? de loca)/i], null, 'Credora');
       return { deb: clientes, cred: rec, faltam: [!clientes && 'Clientes (Contas a Receber)', !rec && 'Receita de Prestação de Serviços'].filter(Boolean) };
     }
+    if(op===NF_DEV_VENDA){
+      // D Devoluções e Abatimentos de Vendas (dedução da receita) / C Clientes
+      const dev = nfContaPorPadroes(clientId, [/^devolu[cç][oõ]es? e abatimentos de vendas/i, /^devolu[cç][oõ]es? de vendas/i, /^devolu[cç][oõ]es?\b/i, /^cancelamentos? e abatimentos/i], null, 'Devedora');
+      return { deb: dev, cred: clientes, faltam: [!dev && 'Devoluções e Abatimentos de Vendas (Deduções da Receita)', !clientes && 'Clientes (Contas a Receber)'].filter(Boolean) };
+    }
+    if(op===NF_DEV_COMPRA){
+      // D Fornecedores / C Mercadorias para Revenda (estorno da compra)
+      const fornD = nfContaPorPadroes(clientId, [/^fornecedores nacionais/i, /^fornecedores/i], ['2'], 'Credora');
+      const estC = nfContaPorPadroes(clientId, [/^mercadorias para revenda/i, /^mat[ée]rias-primas/i, /^materiais de consumo/i, /^estoques?/i], ['1','4','5','6'], 'Devedora');
+      return { deb: fornD, cred: estC, faltam: [!fornD && 'Fornecedores', !estC && 'Mercadorias para Revenda / Matérias-Primas'].filter(Boolean) };
+    }
     // Entrada (compra)
     const forn = nfContaPorPadroes(clientId, [/^fornecedores nacionais/i, /^fornecedores/i], ['2'], 'Credora');
     const servico = /NFS/i.test(n.tipo||'');
@@ -18275,9 +18393,30 @@
   function nfHistoricoContabil(n){
     const num = (n.numero||'S/N') + (n.serie ? '/' + n.serie : '');
     const tipo = (n.tipo||'Nota fiscal').replace(/\s*\(.*\)/,'');
+    if(n.tipoOperacao===NF_DEV_VENDA || n.tipoOperacao===NF_DEV_COMPRA){
+      const pessoa = nfPessoaDaNota(n);
+      return (n.tipoOperacao===NF_DEV_VENDA ? 'Devolução de venda conf. ' : 'Devolução de compra conf. ') + tipo + ' nº ' + num + (pessoa ? ' — ' + pessoa.nome : '');
+    }
     if(n.tipoOperacao==='Entrada') return 'Compra conf. ' + tipo + ' nº ' + num + (n.emitNome ? ' — ' + nomeProprio(n.emitNome) : '');
     if(n.tipoOperacao==='Serviços') return 'Prestação de serviços conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + nomeProprio(n.destNome) : '');
     return 'Venda conf. ' + tipo + ' nº ' + num + (n.destNome ? ' — ' + nomeProprio(n.destNome) : '');
+  }
+  // Cria, no grupo Deduções da Receita (4.2 / 3.02), a conta "Devoluções e Abatimentos de Vendas" quando o plano ainda não a tem.
+  async function nfCriarContaDevolucao(clientId){
+    const pref = planoPrefixo(clientId, '4.2');
+    const irmas = state.planoContas.filter(c=>c.clientId===clientId && c.tipo==='Analítica' && !c.pessoaTipo && String(c.codigo).startsWith(pref + '.'));
+    if(!irmas.length) return null;
+    const base = irmas[0], partes = String(base.codigo).split('.'), largura = partes[partes.length-1].length;
+    partes.pop();
+    const pai = partes.join('.');
+    let max = 0;
+    state.planoContas.filter(c=>c.clientId===clientId && String(c.codigo).startsWith(pai + '.')).forEach(c=>{ const resto = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(resto)) max = Math.max(max, parseInt(resto,10)); });
+    const conta = { id: uid(), clientId, codigo: pai + '.' + String(max+1).padStart(largura,'0'), nome:'Devoluções e Abatimentos de Vendas',
+      tipo:'Analítica', natureza: base.natureza || 'Devedora', contaSuperior: pai, origemAutomatica:true };
+    if(base.modelo) conta.modelo = base.modelo;
+    await Store.set('planocontas:'+conta.id, JSON.stringify(conta), true);
+    state.planoContas.push(conta);
+    return conta;
   }
   async function contabilizarNotas(clientIds, opts){
     opts = opts || {};
@@ -18298,11 +18437,12 @@
       for(const nid of Object.keys(vivas)){
         const n = vivas[nid];
         res.notas++;
-        const c = nfContasDaOperacao(clientId, n);
+        let c = nfContasDaOperacao(clientId, n);
+        if(n.tipoOperacao===NF_DEV_VENDA && !c.deb){ try{ if(await nfCriarContaDevolucao(clientId)){ planoMudou = true; res.contasCriadas++; c = nfContasDaOperacao(clientId, n); } }catch(e){ console.error(e); } }
         if(!c.deb || !c.cred){ (res.semConta[clientId] = res.semConta[clientId] || new Set()); c.faltam.forEach(f=>res.semConta[clientId].add(f)); continue; }
         let contaDeb = c.deb, contaCred = c.cred;
         const antes = state.planoContas.length;
-        if(n.tipoOperacao==='Entrada'){ const pc = await nfContaDaPessoa(clientId, n, c.cred); if(pc) contaCred = pc; }
+        if(n.tipoOperacao==='Entrada' || n.tipoOperacao===NF_DEV_VENDA){ const pc = await nfContaDaPessoa(clientId, n, c.cred); if(pc) contaCred = pc; }
         else { const pc = await nfContaDaPessoa(clientId, n, c.deb); if(pc) contaDeb = pc; }
         if(state.planoContas.length > antes){ res.contasCriadas++; planoMudou = true; }
         const novo = { id:'nf-'+nid, clientId, data:String(n.dataEmissao).slice(0,10), valor: Math.round((Number(n.valor)||0)*100)/100,
@@ -18448,6 +18588,34 @@
       </div>`;
   }
 
+  // Notas fiscais canceladas (do Fiscal) apresentadas na Contabilidade: não geram lançamento nem entram na receita.
+  function notasCanceladasContabilHtml(){
+    const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? state.clients.map(c=>c.id) : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
+    const canc = state.notasFiscais.filter(n=>ids.includes(n.clientId) && n.status==='Cancelada').sort((a,b)=>String(b.dataEmissao||'').localeCompare(String(a.dataEmissao||'')));
+    if(!canc.length) return '';
+    const comLanc = new Set(state.lancamentosContabeis.filter(l=>l.origemNota).map(l=>l.origemNota));
+    const total = canc.reduce((s,n)=>s+(Number(n.valor)||0),0);
+    const multi = ids.length > 1;
+    return `
+      <div class="attach-box" style="margin:0 0 14px; border-left:4px solid #B23B3B;">
+        <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Notas fiscais canceladas</label>
+        <div class="form-hint" style="margin:0 0 10px;">Notas importadas no Fiscal que estão <b>canceladas</b> (XML cancelado ou evento de cancelamento). Elas <b>não geram lançamento</b>, saem da receita e dos impostos e ficam aqui só para conferência da numeração. <b>${canc.length}</b> nota(s) · ${fmtBRL(total)} cancelados.</div>
+        <div style="max-height:240px; overflow:auto;">
+          <table style="width:100%; font-size:12.5px;">
+            <thead><tr>${multi?'<th>Empresa</th>':''}<th>Data</th><th>Nº / Série</th><th>Operação</th><th>Cliente / Fornecedor</th><th style="text-align:right">Valor</th><th>Contabilidade</th></tr></thead>
+            <tbody>
+              ${canc.map(n=>{
+                const dev = (n.tipoOperacao===NF_DEV_VENDA || n.tipoOperacao===NF_DEV_COMPRA);
+                const pessoa = (n.tipoOperacao==='Entrada' ? n.emitNome : (dev ? ((nfPessoaDaNota(n)||{}).nome||'') : n.destNome)) || '';
+                const manteve = comLanc.has(n.id);
+                return `<tr>${multi?`<td>${escapeHtml(clientName(n.clientId))}</td>`:''}<td>${n.dataEmissao?fmtDate(n.dataEmissao):'—'}</td><td>${escapeHtml(n.numero||'—')}${n.serie?' / '+escapeHtml(n.serie):''}</td><td>${escapeHtml(n.tipoOperacao||'—')}</td><td>${escapeHtml(nomeProprio(pessoa)||'—')}</td><td style="text-align:right" class="mono">${fmtBRL(Number(n.valor)||0)}</td><td>${manteve?'<span class="tag sit-outra">Lançamento mantido (editado à mão)</span>':'<span class="tag sit-baixada">Cancelada — sem lançamento</span>'}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
   function notasContabilCardHtml(){
     const ids = state.contabilEmpresaAtiva ? [state.contabilEmpresaAtiva] : (state.deptAllClients ? state.clients.map(c=>c.id) : state.clients.filter(c=>isClientInScope(c.id)).map(c=>c.id));
     const notas = state.notasFiscais.filter(n=>ids.includes(n.clientId) && n.status!=='Cancelada' && n.dataEmissao && Number(n.valor)>0);
@@ -18469,7 +18637,7 @@
     return `
       <div class="attach-box" style="margin:0 0 14px;">
         <label style="display:block; font-size:12px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px;">Lançamento automático das notas fiscais</label>
-        <div class="form-hint" style="margin:0 0 10px;">Cada nota fiscal vira um lançamento contábil: <b>venda</b> (D Cliente / C Receita de Vendas), <b>serviço prestado</b> (D Cliente / C Receita de Serviços) e <b>compra</b> (D Estoque ou Despesa / C Fornecedor). O sistema só lança o que <b>ainda não foi lançado</b>; notas já lançadas são mantidas e não duplicam.</div>
+        <div class="form-hint" style="margin:0 0 10px;">Cada nota fiscal vira um lançamento contábil: <b>venda</b> (D Cliente / C Receita de Vendas), <b>serviço prestado</b> (D Cliente / C Receita de Serviços), <b>devolução de venda</b> (D Devoluções e Abatimentos de Vendas — dedução da receita / C Cliente) e <b>compra</b> (D Estoque ou Despesa / C Fornecedor). O sistema só lança o que <b>ainda não foi lançado</b>; notas já lançadas são mantidas e não duplicam.</div>
         ${acao}
         ${linhasMes ? `<div style="margin-top:10px; max-height:150px; overflow:auto;">${linhasMes}</div>` : ''}
         ${sinc}
@@ -19780,6 +19948,14 @@
           <div class="nf-resumo-label">Serviços — ${qtdServicos} nota(s)</div>
           <div class="nf-resumo-valor" style="color:#B8860B;">${fmtBRL(totalServicos)}</div>
         </div>
+        ${ativos.some(n=>n.tipoOperacao===NF_DEV_VENDA) ? `<div class="nf-resumo-card">
+          <div class="nf-resumo-label">Devoluções de venda (−) — ${ativos.filter(n=>n.tipoOperacao===NF_DEV_VENDA).length} nota(s)</div>
+          <div class="nf-resumo-valor" style="color:#B23B3B;">${fmtBRL(ativos.filter(n=>n.tipoOperacao===NF_DEV_VENDA).reduce((s,n)=>s+(Number(n.valor)||0),0))}</div>
+        </div>` : ''}
+        ${notas.some(n=>n.status==='Cancelada') ? `<div class="nf-resumo-card">
+          <div class="nf-resumo-label">Canceladas (fora dos totais) — ${notas.filter(n=>n.status==='Cancelada').length} nota(s)</div>
+          <div class="nf-resumo-valor" style="color:#777;">${fmtBRL(notas.filter(n=>n.status==='Cancelada').reduce((s,n)=>s+(Number(n.valor)||0),0))}</div>
+        </div>` : ''}
       </div>
     `;
   }
@@ -19787,6 +19963,8 @@
   const NF_TIPO_LEGENDA = {
     'Entrada': 'Notas de compra/entrada — mercadorias, insumos ou serviços adquiridos pela empresa (não compõem o faturamento dela).',
     'Saída': 'Notas de venda de mercadorias/produtos (NF-e/NFC-e) — compõem o faturamento sujeito ao ICMS (e, no Simples Nacional, ao Anexo I ou II).',
+    'Devolução de venda': 'Devolução de mercadoria vendida pela empresa — lançada em Deduções da Receita (D Devoluções e Abatimentos de Vendas / C Clientes) e abatida do faturamento.',
+    'Devolução de compra': 'Devolução de mercadoria comprada pela empresa — estorno da compra (D Fornecedores / C Mercadorias para Revenda); não é receita.',
     'Serviços': 'Notas de prestação de serviços (NFS-e) — compõem o faturamento sujeito ao ISS (e, no Simples Nacional, aos Anexos III, IV ou V).',
   };
   function gerarRelatorioNotasFiscaisPDF(clientId, tipoOperacao, mesInicio, mesFim){
@@ -19854,13 +20032,21 @@
   function notasFiscaisTableHtml(){
     let notas = state.notasFiscais.filter(n=>isClientInScope(n.clientId));
     if(!notas.length) return `<div class="empty">${state.deptAllClients ? 'Nenhuma nota fiscal registrada ainda.' : 'Nenhuma nota registrada para os clientes selecionados no topo da página.'}</div>`;
+    const sel = new Set((state.nfSel||[]).filter(id=>notas.some(n=>n.id===id)));
+    const todas = notas.length>0 && sel.size===notas.length;
     return `
       ${notasFiscaisResumoHtml(notas)}
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0 0 10px;">
+        <button type="button" class="btn-sm danger" id="nfExcluirSelBtn" ${sel.size?'':'disabled'}>Excluir selecionadas${sel.size?' ('+sel.size+')':''}</button>
+        <button type="button" class="btn-sm" id="nfSelTodasBtn">${todas?'Desmarcar todas':'Selecionar todas ('+notas.length+')'}</button>
+        <span class="form-hint" style="margin:0;">Marque as notas na primeira coluna para excluir várias de uma vez (qualquer tipo: venda, compra, serviço, devolução ou cancelada). Ou use o botão Excluir de cada linha.</span>
+      </div>
       <table>
-        <thead><tr><th>Cliente</th><th>Operação</th><th>Tipo</th><th>Nº / Série</th><th>Emissão</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th style="width:28px;"><input type="checkbox" id="nfSelTodasChk" ${todas?'checked':''}/></th><th>Cliente</th><th>Operação</th><th>Tipo</th><th>Nº / Série</th><th>Emissão</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${notas.map(n=>`
             <tr>
+              <td><input type="checkbox" class="nf-sel-chk" value="${n.id}" ${sel.has(n.id)?'checked':''}/></td>
               <td>${escapeHtml(clientName(n.clientId))}</td>
               <td>${n.tipoOperacao ? `<span class="tag ${n.tipoOperacao==='Entrada'?'dept-fiscal':(n.tipoOperacao==='Saída'?'dept-contabil':'dept-legal')}">${escapeHtml(n.tipoOperacao)}</span>` : '—'}</td>
               <td>${escapeHtml(n.tipo||'—')}</td>
@@ -19880,7 +20066,47 @@
     if(container) container.innerHTML = notasFiscaisTableHtml();
     wireNfDeleteButtons();
   }
+  // Exclusão em lote: apaga as notas marcadas e, uma vez só, refaz a contabilidade e as apurações das empresas afetadas.
+  async function excluirNotasFiscaisLote(ids){
+    const notas = state.notasFiscais.filter(n=>ids.includes(n.id));
+    if(!notas.length) return;
+    for(let i=0;i<notas.length;i+=15){
+      await Promise.all(notas.slice(i,i+15).map(async n=>{
+        await Store.delete('notasfiscais:'+n.id, true).catch(()=>{});
+        try{ await Store.delete('notasxml:'+n.id, true); NF_XML.delete(n.id); }catch(e){}
+      }));
+    }
+    state.nfSel = [];
+    await loadNotasFiscais();
+    const clientes = Array.from(new Set(notas.map(n=>n.clientId)));
+    try{ await contabilizarNotas(clientes, {silent:true}); }catch(e){ console.error(e); }
+    const pares = []; const vistos = new Set();
+    notas.forEach(n=>{ if(!n.dataEmissao) return; const comp = String(n.dataEmissao).slice(0,7), k = n.clientId+'|'+comp; if(!vistos.has(k)){ vistos.add(k); pares.push({clientId:n.clientId, comp}); } });
+    if(pares.length){ try{ await fiscalSincronizar(pares); }catch(e){ console.error(e); } }
+    render();
+  }
   function wireNfDeleteButtons(){
+    document.querySelectorAll('.nf-sel-chk').forEach(el=>{
+      el.onchange = ()=>{
+        const set = new Set(state.nfSel||[]); if(el.checked) set.add(el.value); else set.delete(el.value);
+        state.nfSel = [...set]; updateNfResults();
+      };
+    });
+    const selTodas = ()=>{
+      const visiveis = state.notasFiscais.filter(n=>isClientInScope(n.clientId)).map(n=>n.id);
+      const todas = visiveis.length>0 && visiveis.every(id=>(state.nfSel||[]).includes(id));
+      state.nfSel = todas ? [] : visiveis; updateNfResults();
+    };
+    const b1 = document.getElementById('nfSelTodasBtn'); if(b1) b1.onclick = selTodas;
+    const c1 = document.getElementById('nfSelTodasChk'); if(c1) c1.onchange = selTodas;
+    const bx = document.getElementById('nfExcluirSelBtn');
+    if(bx) bx.onclick = ()=>{
+      const ids = (state.nfSel||[]).filter(id=>state.notasFiscais.some(n=>n.id===id));
+      if(!ids.length) return;
+      if(!confirm('Excluir ' + ids.length + ' nota(s) fiscal(is)?\n\nOs lançamentos contábeis automáticos dessas notas serão removidos e as apurações dos meses afetados serão recalculadas. Esta ação não pode ser desfeita.')) return;
+      bx.disabled = true; bx.textContent = 'Excluindo…';
+      excluirNotasFiscaisLote(ids);
+    };
     document.querySelectorAll('[data-del-nf]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir o registro desta nota fiscal?')) deleteNotaFiscal(el.getAttribute('data-del-nf')); };
     });
@@ -25487,6 +25713,19 @@
           }
           const result = parseNotaFiscalXml(text);
           if(!result.ok){ showMsg(result.error, 'error'); return; }
+          if(result.evento){
+            const ap = await nfAplicarEventoCancelamento(result);
+            if(ap.aplicada){
+              await loadNotasFiscais();
+              try{ await contabilizarNotas([ap.clientId], {silent:true}); await fiscalSincronizar([{clientId:ap.clientId, comp:ap.comp}]); }catch(e){ console.error(e); }
+              showMsg('Nota cancelada: o evento de cancelamento foi aplicado, a nota ficou como Cancelada e saiu da contabilidade e das apurações.', 'success');
+              updateNfResults();
+            } else if(ap.ja) showMsg('Essa nota já estava como Cancelada.', 'info');
+            else if(ap.pendente) showMsg('A nota desse cancelamento ainda não está no sistema. O cancelamento ficou guardado: ao importar o XML da nota, ela entrará como Cancelada.', 'info');
+            else showMsg('Evento sem chave de acesso — não foi possível localizar a nota.', 'error');
+            return;
+          }
+          if(result.status==='Emitida' && await nfCancelamentoPendente(result.chaveAcesso)) result.status = 'Cancelada';
           state.nfModalData = Object.assign({}, state.nfModalData, {xmlHash, xmlOriginal: text, chaveAcesso: result.chaveAcesso || '', emitNome: result.emitNome||'', emitDoc: result.emitDoc||'', destNome: result.destNome||'', destDoc: result.destDoc||''});
 
           document.getElementById('nfTipo').value = result.tipo;
@@ -25520,7 +25759,7 @@
         // Múltiplos arquivos: importação em lote — apenas XML pode ser processado automaticamente;
         // outros formatos são ignorados aqui e precisam ser cadastrados individualmente.
         showMsg('Importando ' + files.length + ' arquivo(s)...', 'info');
-        let ok = 0, skipped = 0, failed = 0, naoXml = 0, duplicadas = 0;
+        let ok = 0, skipped = 0, failed = 0, naoXml = 0, duplicadas = 0, eventosOk = 0, eventosPend = 0, canceladasImp = 0, reativadas = 0, devolImp = 0;
         const skippedNames = [];
         const chavesNesteLote = new Set();
         const paresSync = [];
@@ -25535,11 +25774,31 @@
           if(notaFiscalArquivoJaExiste(xmlHash) || (xmlHash && hashesNesteLote.has(xmlHash))){ duplicadas++; continue; }
           const result = parseNotaFiscalXml(text);
           if(!result.ok){ failed++; continue; }
+          if(result.evento){
+            const ap = await nfAplicarEventoCancelamento(result);
+            if(ap.aplicada){ eventosOk++; paresSync.push({clientId:ap.clientId, comp:ap.comp}); }
+            else if(ap.pendente) eventosPend++;
+            else if(ap.ja) duplicadas++;
+            else failed++;
+            continue;
+          }
           const m = matchClientAndOperacao(result);
           if(!m.client){ skipped++; skippedNames.push(file.name); continue; }
           const chave = m.client.id + '|' + String(result.numero||'').trim() + '|' + String(result.serie||'').trim();
-          if(notaFiscalJaExiste(m.client.id, result.numero, result.serie) || chavesNesteLote.has(chave)){ duplicadas++; continue; }
+          if(chavesNesteLote.has(chave)){ duplicadas++; continue; }
+          const jaNota = notaFiscalExistente(m.client.id, result.numero, result.serie);
+          if(jaNota){
+            // O XML trouxe a nota CANCELADA e ela estava como emitida: atualiza o status (e a contabilidade/fiscal acompanham).
+            if(result.status==='Cancelada' && jaNota.status!=='Cancelada'){
+              await nfGravar(Object.assign({}, jaNota, { status:'Cancelada' }));
+              reativadas++; paresSync.push({clientId:m.client.id, comp:String(result.dataEmissao||'').slice(0,7)});
+            } else duplicadas++;
+            continue;
+          }
           chavesNesteLote.add(chave);
+          if(result.status==='Emitida' && await nfCancelamentoPendente(result.chaveAcesso)) result.status = 'Cancelada';
+          if(result.status==='Cancelada') canceladasImp++;
+          if(m.tipoOperacao===NF_DEV_VENDA || m.tipoOperacao===NF_DEV_COMPRA) devolImp++;
           if(xmlHash) hashesNesteLote.add(xmlHash);
           await saveNotaFiscalSilent({
             clientId: m.client.id,
@@ -25564,7 +25823,7 @@
         }
         await loadNotasFiscais();
         let contabTxt = '';
-        if(ok){ try{ const rc = await contabilizarNotas(Array.from(new Set(paresSync.map(p=>p.clientId))), {silent:true}); contabTxt = nfResumoContabil(rc); }catch(err){ console.error(err); } }
+        if(ok || eventosOk || reativadas){ try{ const rc = await contabilizarNotas(Array.from(new Set(paresSync.map(p=>p.clientId))), {silent:true}); contabTxt = nfResumoContabil(rc); }catch(err){ console.error(err); } }
         let monoTxt = '';
         for(const cid of Object.keys(paraSeparador)){
           try{ const rm = await importarXmlsMonofasico(paraSeparador[cid], cid, {registrarNota:false}); if(rm.notas) monoTxt += (monoTxt?'; ':'') + clientName(cid) + ': ' + rm.notas + ' nota(s) / ' + rm.itens + ' linha(s) de produto'; }catch(err){ console.error(err); }
@@ -25575,6 +25834,10 @@
           try{ const rs = await fiscalSincronizar(paresSync); sincTxt = fsResumoTexto(rs) + (rs.avisos.length ? ' — Atenção: ' + rs.avisos.slice(0,4).join(' | ') : ''); }catch(err){ console.error(err); sincTxt = 'não foi possível calcular os impostos automaticamente (use "Sincronizar" no Relatório de Impostos)'; }
         }
         const parts = [ok + ' nota(s) importada(s) e salva(s)'];
+        if(devolImp) parts.push(devolImp + ' devolução(ões) — lançada(s) em Deduções da Receita (venda) ou estorno de compra');
+        if(canceladasImp) parts.push(canceladasImp + ' nota(s) cancelada(s) registrada(s) (sem efeito contábil/fiscal, listadas no Contábil)');
+        if(eventosOk || reativadas) parts.push((eventosOk + reativadas) + ' nota(s) marcada(s) como Cancelada (evento/XML de cancelamento) e retirada(s) da contabilidade');
+        if(eventosPend) parts.push(eventosPend + ' evento(s) de cancelamento de nota que ainda não está no sistema (guardado(s): ao importar o XML da nota, ela entra como Cancelada)');
         if(duplicadas) parts.push(duplicadas + ' já existiam no sistema (número/série repetidos para o mesmo cliente) e foram ignoradas');
         if(skipped) parts.push(skipped + ' sem cliente identificado no Cadastro (' + skippedNames.join(', ') + ')');
         if(naoXml) parts.push(naoXml + ' arquivo(s) em outro formato (cadastre-os individualmente, um de cada vez)');
@@ -25582,7 +25845,7 @@
         if(sincTxt) parts.push('Declarações e impostos: ' + sincTxt);
         if(contabTxt) parts.push('Contabilidade: ' + contabTxt);
         if(monoTxt) parts.push('Separador de Produtos Monofásicos/ICMS-ST: ' + monoTxt);
-        showMsg('Importação em lote concluída: ' + parts.join(' · ') + '.', ok > 0 ? 'success' : 'error');
+        showMsg('Importação em lote concluída: ' + parts.join(' · ') + '.', (ok > 0 || eventosOk > 0 || reativadas > 0) ? 'success' : 'error');
         updateNfResults();
       };
     }
