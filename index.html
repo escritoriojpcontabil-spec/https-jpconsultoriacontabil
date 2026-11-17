@@ -20049,35 +20049,84 @@
   // Filtro por mês de emissão (multi-seleção). state.nfMeses vazio = todos os meses.
   function nfMesDaNota(n){ return n.dataEmissao ? String(n.dataEmissao).slice(0,7) : 'sem-data'; }
   function nfNotasEscopo(){ return state.notasFiscais.filter(n=>isClientInScope(n.clientId)); }
-  function nfNotasVisiveis(){
-    const all = nfNotasEscopo(), ms = state.nfMeses||[];
-    return ms.length ? all.filter(n=>ms.includes(nfMesDaNota(n))) : all;
+  const NF_OPS = [
+    {k:'Saída', label:'Saídas (vendas)'}, {k:'Entrada', label:'Entradas (compras)'}, {k:'Serviços', label:'Serviços'},
+    {k:'Devoluções', label:'Devoluções'}, {k:'Canceladas', label:'Canceladas'}
+  ];
+  function nfOpDaNota(n){
+    if(n.status==='Cancelada') return 'Canceladas';
+    const t = n.tipoOperacao||'';
+    if(t.indexOf('Devolução')===0) return 'Devoluções';
+    return t || 'Sem tipo';
+  }
+  function nfNotasVisiveis(ignorar){
+    let all = nfNotasEscopo();
+    const ms = state.nfMeses||[], ops = state.nfOps||[];
+    if(ms.length && ignorar!=='mes') all = all.filter(n=>ms.includes(nfMesDaNota(n)));
+    if(ops.length && ignorar!=='op') all = all.filter(n=>ops.includes(nfOpDaNota(n)));
+    return all;
   }
   function nfMesRotulo(m){ return m==='sem-data' ? 'Sem data' : m.slice(5,7)+'/'+m.slice(0,4); }
-  function nfMesesBarHtml(all){
+  function nfOpsBarHtml(){
+    const base = nfNotasVisiveis('op'); const cont = {}; base.forEach(n=>{ const o = nfOpDaNota(n); cont[o] = (cont[o]||0)+1; });
+    const ops = state.nfOps||[];
+    const chip = (on)=>`padding:7px 14px;border-radius:20px;border:1.5px solid ${on?'var(--navy)':'var(--line)'};background:${on?'var(--navy)':'#fff'};color:${on?'#fff':'var(--ink)'};font-size:12.5px;font-weight:600;cursor:pointer;`;
+    return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px;">
+      <b style="font-size:13px;">Mostrar:</b>
+      <button type="button" class="nf-op-todas" style="${chip(!ops.length)}">Todas (${base.length})</button>
+      ${NF_OPS.map(o=>`<button type="button" class="nf-op-chip" data-op="${o.k}" style="${chip(ops.includes(o.k))}">${o.label} <span style="opacity:.75;font-weight:500;">· ${cont[o.k]||0}</span></button>`).join('')}
+    </div>`;
+  }
+  function nfMesesPainelHtml(){
+    if(!state.nfMesesAberto) return '';
+    const all = nfNotasVisiveis('mes');
     const cont = {}; all.forEach(n=>{ const m = nfMesDaNota(n); cont[m] = (cont[m]||0)+1; });
     const meses = Object.keys(cont).sort().reverse();
     const ms = state.nfMeses||[];
     const anos = Array.from(new Set(meses.filter(m=>m!=='sem-data').map(m=>m.slice(0,4)))).sort().reverse();
     const chip = (on)=>`padding:6px 12px;border-radius:20px;border:1.5px solid ${on?'var(--navy)':'var(--line)'};background:${on?'var(--navy)':'#fff'};color:${on?'#fff':'var(--ink)'};font-size:12.5px;font-weight:600;cursor:pointer;`;
-    return `<div style="margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#FAFBFD;">
+    return `<div style="margin:0 0 12px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#FAFBFD;">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-        <b style="font-size:13px;">Conferir por mês de emissão</b>
         <button type="button" class="nf-mes-todos" style="${chip(!ms.length)}">Todos os meses (${all.length})</button>
         ${anos.map(a=>`<button type="button" class="nf-ano-btn" data-ano="${a}" style="padding:6px 10px;border-radius:8px;border:1px dashed var(--line);background:#fff;font-size:12px;font-weight:600;cursor:pointer;">Ano ${a}</button>`).join('')}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         ${meses.map(m=>`<button type="button" class="nf-mes-chip" data-mes="${m}" style="${chip(ms.includes(m))}">${nfMesRotulo(m)} <span style="opacity:.75;font-weight:500;">· ${cont[m]}</span></button>`).join('')}
       </div>
-      <div class="form-hint" style="margin:8px 0 0;">Clique nos meses para marcá-los (pode marcar vários). O resumo, a lista e a seleção para exclusão passam a considerar só os meses marcados.</div>
     </div>`;
+  }
+  // Soma por mês (Entradas, Saídas, Serviços) — mostrada no fim de cada mês na lista. Canceladas ficam fora dos totais.
+  function nfTotaisBlocoHtml(grupo, titulo){
+    const at = grupo.filter(n=>n.status!=='Cancelada');
+    const som = t=>{ const l = at.filter(n=>n.tipoOperacao===t); return { q:l.length, v:l.reduce((x,n)=>x+(Number(n.valor)||0),0) }; };
+    const sa = som('Saída'), en = som('Entrada'), se = som('Serviços');
+    const dv = at.filter(n=>String(n.tipoOperacao||'').indexOf('Devolução')===0);
+    const ca = grupo.filter(n=>n.status==='Cancelada');
+    const cel = (rot, o, cor)=>`<span style="display:inline-block;margin:2px 18px 2px 0;"><span style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.04em;">${rot} (${o.q})</span> <b class="mono" style="color:${cor};font-size:14px;">${fmtBRL(o.v)}</b></span>`;
+    return `<tr class="nf-total-mes"><td colspan="9" style="background:#EEF2F8;border-top:2px solid var(--navy);padding:10px 12px;">
+      <b style="margin-right:16px;">Total de ${titulo}</b>
+      ${cel('Saídas',sa,'#2F7A52')}${cel('Entradas',en,'#B23B3B')}${cel('Serviços',se,'#B8860B')}
+      ${dv.length?cel('Devoluções',{q:dv.length,v:dv.reduce((x,n)=>x+(Number(n.valor)||0),0)},'#B23B3B'):''}
+      ${ca.length?cel('Canceladas (fora)',{q:ca.length,v:ca.reduce((x,n)=>x+(Number(n.valor)||0),0)},'#777'):''}
+    </td></tr>`;
+  }
+  function nfLinhasComTotaisHtml(notas, sel, linha){
+    const ord = notas.slice().sort((a,b)=> nfMesDaNota(a).localeCompare(nfMesDaNota(b)) || (a.dataEmissao||'').localeCompare(b.dataEmissao||'') || String(a.numero||'').localeCompare(String(b.numero||''),undefined,{numeric:true}));
+    let out = '', grupo = [], atual = null, meses = 0;
+    const fecha = ()=>{ if(grupo.length){ out += nfTotaisBlocoHtml(grupo, nfMesRotulo(atual)); meses++; } grupo = []; };
+    ord.forEach(n=>{ const m = nfMesDaNota(n); if(m!==atual){ fecha(); atual = m; } grupo.push(n); out += linha(n); });
+    fecha();
+    if(meses>1) out += nfTotaisBlocoHtml(ord, 'todos os meses exibidos').replace('class="nf-total-mes"','class="nf-total-geral"').replace('background:#EEF2F8','background:#DDE6F3');
+    return out;
   }
   function notasFiscaisTableHtml(){
     const escopo = nfNotasEscopo();
     if(!escopo.length) return `<div class="empty">${state.deptAllClients ? 'Nenhuma nota fiscal registrada ainda.' : 'Nenhuma nota registrada para os clientes selecionados no topo da página.'}</div>`;
-    const barra = nfMesesBarHtml(escopo);
+    const barra = nfOpsBarHtml();
     let notas = nfNotasVisiveis();
-    if(!notas.length) return barra + `<div class="empty">Nenhuma nota nos meses marcados.</div>`;
+    const nMes = (state.nfMeses||[]).length;
+    const btnMes = `<button type="button" class="btn-sm" id="nfMesesBtn" style="${nMes?'border-color:var(--navy);color:var(--navy);':''}">Meses${nMes?' ('+nMes+')':''} ${state.nfMesesAberto?'▲':'▼'}</button>`;
+    if(!notas.length) return barra + `<div style="margin:0 0 10px;">${btnMes}</div>` + nfMesesPainelHtml() + `<div class="empty">Nenhuma nota com esse filtro.</div>`;
     const sel = new Set((state.nfSel||[]).filter(id=>notas.some(n=>n.id===id)));
     const todas = notas.length>0 && sel.size===notas.length;
     return `
@@ -20086,13 +20135,14 @@
       <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0 0 10px;">
         <button type="button" class="btn-sm danger" id="nfExcluirSelBtn" ${sel.size?'':'disabled'}>Excluir selecionadas${sel.size?' ('+sel.size+')':''}</button>
         <button type="button" class="btn-sm" id="nfSelTodasBtn">${todas?'Desmarcar todas':'Selecionar todas ('+notas.length+')'}</button>
+        ${btnMes}
         <span class="form-hint" style="margin:0;">Marque as notas na primeira coluna para excluir várias de uma vez (qualquer tipo: venda, compra, serviço, devolução ou cancelada). Ou use o botão Excluir de cada linha.</span>
       </div>
+      ${nfMesesPainelHtml()}
       <table>
         <thead><tr><th style="width:28px;"><input type="checkbox" id="nfSelTodasChk" ${todas?'checked':''}/></th><th>Cliente</th><th>Operação</th><th>Tipo</th><th>Nº / Série</th><th>Emissão</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead>
         <tbody>
-          ${notas.map(n=>`
-            <tr>
+          ${nfLinhasComTotaisHtml(notas, sel, n=>`<tr>
               <td><input type="checkbox" class="nf-sel-chk" value="${n.id}" ${sel.has(n.id)?'checked':''}/></td>
               <td>${escapeHtml(clientName(n.clientId))}</td>
               <td>${n.tipoOperacao ? `<span class="tag ${n.tipoOperacao==='Entrada'?'dept-fiscal':(n.tipoOperacao==='Saída'?'dept-contabil':'dept-legal')}">${escapeHtml(n.tipoOperacao)}</span>` : '—'}</td>
@@ -20102,8 +20152,7 @@
               <td style="text-align:right" class="mono">${fmtBRLorDash(n.valor)}</td>
               <td><span class="tag ${nfStatusClass(n.status)}">${escapeHtml(n.status||'Emitida')}</span></td>
               <td style="display:flex; gap:6px;"><button class="btn-detail" data-pdf-nf="${n.id}">PDF</button><button class="btn-sm danger" data-del-nf="${n.id}">Excluir</button></td>
-            </tr>
-          `).join('')}
+            </tr>`)}
         </tbody>
       </table>
     `;
@@ -20156,6 +20205,13 @@
       doAno.forEach(m=>{ if(todos) set.delete(m); else set.add(m); });
       state.nfMeses = [...set]; state.nfSel = []; updateNfResults();
     }; });
+    const bm = document.getElementById('nfMesesBtn'); if(bm) bm.onclick = ()=>{ state.nfMesesAberto = !state.nfMesesAberto; updateNfResults(); };
+    document.querySelectorAll('.nf-op-chip').forEach(el=>{ el.onclick = ()=>{
+      const set = new Set(state.nfOps||[]); const o = el.getAttribute('data-op');
+      if(set.has(o)) set.delete(o); else set.add(o);
+      state.nfOps = [...set]; state.nfSel = []; updateNfResults();
+    }; });
+    const bo = document.querySelector('.nf-op-todas'); if(bo) bo.onclick = ()=>{ state.nfOps = []; state.nfSel = []; updateNfResults(); };
     const bt = document.querySelector('.nf-mes-todos'); if(bt) bt.onclick = ()=>{ state.nfMeses = []; state.nfSel = []; updateNfResults(); };
     const b1 = document.getElementById('nfSelTodasBtn'); if(b1) b1.onclick = selTodas;
     const c1 = document.getElementById('nfSelTodasChk'); if(c1) c1.onchange = selTodas;
