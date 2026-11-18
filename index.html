@@ -12172,9 +12172,12 @@
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
   }
   const _spedParseCache = new Map();
+  // XML da nota: do próprio registro ou do cache de XMLs ("notasxml:"), que carrega em segundo plano.
+  function nfXmlDe(n){ return (n && (n.xmlOriginal || NF_XML.get(n.id))) || ''; }
   function spedParseCache(nf){
-    const key = nf.id + ':' + (nf.xmlOriginal||'').length;
-    if(!_spedParseCache.has(key)) _spedParseCache.set(key, spedParseNfe(nf.xmlOriginal));
+    const xml = nfXmlDe(nf);
+    const key = nf.id + ':' + xml.length;
+    if(!_spedParseCache.has(key)) _spedParseCache.set(key, spedParseNfe(xml));
     return _spedParseCache.get(key);
   }
   // Lê entradas (saldo credor anterior / deduções) digitadas na tela, com fallback para o que já está salvo.
@@ -12235,9 +12238,9 @@
     }
     const ent = spedEntradas(clientId, comp);
     const notas = state.notasFiscais
-      .filter(n=>n.clientId===clientId && n.xmlOriginal && n.tipoOperacao!=='Serviços' && n.tipo!=='NFS-e (Serviço)')
+      .filter(n=>n.clientId===clientId && nfXmlDe(n) && n.tipoOperacao!=='Serviços' && n.tipo!=='NFS-e (Serviço)')
       .map(nf=>({nf, p: spedParseCache(nf)}));
-    const semXml = state.notasFiscais.filter(n=>n.clientId===clientId && !n.xmlOriginal && n.tipoOperacao!=='Serviços' && (n.dataEmissao||'').slice(0,7)===comp && n.status!=='Cancelada').length;
+    const semXml = state.notasFiscais.filter(n=>n.clientId===clientId && !nfXmlDe(n) && n.tipoOperacao!=='Serviços' && (n.dataEmissao||'').slice(0,7)===comp && n.status!=='Cancelada').length;
     const r = spedConstruir({client:cl, cfg, competencia:comp, notas, saldoCredorAnterior:ent.saldo, deducoes:ent.ded, retificadora:ent.retif});
     if(semXml) r.avisos.push(semXml+' nota(s) do período estão cadastradas sem o XML — não entram no arquivo. Reimporte-as pelo XML.');
     return {r, cfg, cl, ent};
@@ -20921,7 +20924,7 @@
     meses.forEach(m=>{ resumo[m] = {}; tipos.forEach(t=>resumo[m][t]={qtd:0, valor:0, canc:0}); });
     const classes = {}; // tipo -> Map(codigo -> {codigo, desc, itens, porMes:{}, total, notas:Set})
     tipos.forEach(t=>classes[t] = new Map());
-    let semXml = 0, totalNotas = 0;
+    let semXml = 0, totalNotas = 0; const semXmlLista = [];
     const add = (t, cod, desc, comp, val, notaId)=>{
       const mp = classes[t];
       if(!mp.has(cod)) mp.set(cod, {codigo:cod, desc, itens:0, porMes:{}, total:0, notas:new Set()});
@@ -20936,13 +20939,15 @@
       const valor = Number(n.valor)||0;
       rs.qtd++; rs.valor += valor; totalNotas++;
       if(t==='Serviços' || n.tipo==='NFS-e (Serviço)'){
-        const cod = nrCodigoServico(n.xmlOriginal);
+        const cod = nrCodigoServico(nfXmlDe(n));
         add(t, cod || 'SEM-COD', cod ? 'Código de serviço' : 'NFS-e sem código de serviço no XML / lançamento manual', comp, valor, n.id);
         return;
       }
-      const p = n.xmlOriginal ? spedParseCache(n) : null;
+      const p = nfXmlDe(n) ? spedParseCache(n) : null;
       if(!p || !p.ok || !p.itens || !p.itens.length){
         semXml++;
+        semXmlLista.push({ id:n.id, numero:n.numero, serie:n.serie, comp, tipo:t, valor, status:n.status,
+          motivo: !NF_XML_PRONTO ? 'os XMLs ainda estão carregando — aguarde e atualize' : (nfXmlDe(n) ? 'XML guardado, mas sem itens legíveis' : (n.xmlRef ? 'a nota aponta para um XML que não foi encontrado no banco' : 'nota cadastrada à mão, sem XML anexado')) });
         add(t, 'SEM-XML', 'Nota sem XML (lançamento manual) — sem NCM/CFOP', comp, valor, n.id);
         return;
       }
@@ -20954,7 +20959,7 @@
     });
     const out = {};
     tipos.forEach(t=>{ out[t] = Array.from(classes[t].values()).sort((a,b)=>b.total-a.total); });
-    return { meses, tipos, resumo, classes: out, semXml, totalNotas, qtdNotasPeriodo: notasAll.length };
+    return { meses, tipos, resumo, classes: out, semXml, semXmlLista, totalNotas, qtdNotasPeriodo: notasAll.length };
   }
   function nrRotuloCodigo(cod, classif, tipoOp){
     if(cod==='SEM-XML'||cod==='SEM-COD'||cod==='SEM-NCM'||cod==='SEM-CFOP') return 'Sem classificação';
@@ -21009,9 +21014,22 @@
       `;
     }).join('');
   }
+  // Lista as notas que caíram em "Sem classificação" e o motivo de cada uma.
+  function nrSemXmlHtml(res){
+    const l = res.semXmlLista||[]; if(!l.length) return '';
+    const porMotivo = {}; l.forEach(x=>{ porMotivo[x.motivo] = (porMotivo[x.motivo]||0)+1; });
+    const resumo = Object.keys(porMotivo).map(m=>porMotivo[m]+' — '+m).join('; ');
+    const ord = l.slice().sort((a,b)=>a.comp.localeCompare(b.comp) || a.tipo.localeCompare(b.tipo) || String(a.numero||'').localeCompare(String(b.numero||''),undefined,{numeric:true}));
+    return `<details style="margin:14px 0 0;border:1px solid #E0B050;border-radius:8px;padding:8px 12px;background:#FFFBF0;"><summary style="cursor:pointer;font-weight:700;">De onde vem "Sem classificação": ${l.length} nota(s) sem XML legível</summary>
+      <div class="form-hint" style="margin:6px 0;">${escapeHtml(resumo)}.</div>
+      <table><thead><tr><th>Competência</th><th>Operação</th><th>Nº / Série</th><th style="text-align:right">Valor</th><th>Motivo</th></tr></thead><tbody>
+      ${ord.map(x=>`<tr><td>${nrCompLabel(x.comp)}</td><td>${escapeHtml(x.tipo)}</td><td>${escapeHtml(x.numero||'—')}${x.serie?' / '+escapeHtml(x.serie):''}</td><td style="text-align:right" class="mono">${fmtBRL(x.valor)}</td><td style="font-size:12px;">${escapeHtml(x.motivo)}</td></tr>`).join('')}
+      </tbody></table></details>`;
+  }
   function nrResultadoHtml(clientId){
     const tipo = state.nfRelTipoOperacao, mi = state.nfRelMesInicio, mf = state.nfRelMesFim, classif = state.nfRelClassif;
     if(!mi || !mf || mi>mf) return `<div class="empty">Informe um período válido (competência inicial não pode ser depois da final).</div>`;
+    if(!NF_XML_PRONTO && !NF_XML_P){ try{ carregarXmlsNotas(); }catch(e){} }
     const res = nrCalcular(clientId, tipo, mi, mf, classif);
     if(!res.qtdNotasPeriodo){
       const per = nrPeriodoDasNotas(clientId);
@@ -21021,6 +21039,7 @@
       <div class="form-hint" style="margin:14px 0 6px; font-weight:700;">Resumo por competência</div>
       ${nrResumoHtml(res)}
       ${nrClassHtml(res, classif)}
+      ${nrSemXmlHtml(res)}
       <div class="form-hint" style="margin-top:12px;">Valores das notas excluem as canceladas. Na classificação, o valor é o dos itens (produto − desconto) — pode diferir do total da nota por frete, seguro, IPI e ST. ${res.semXml?`<b>${res.semXml} nota(s) sem XML</b> aparecem como "Sem classificação" (entram pelo valor total da nota). `:''}NFS-e não possuem NCM/CFOP — são classificadas pelo código de serviço quando o XML traz.</div>
     `;
   }
@@ -23373,8 +23392,106 @@
     `;
   }
 
+  // ---- Pesquisar NF: busca por valor, número, chave, nome, CNPJ, data, operação, status ----
+  function pnfNum(txt){
+    let t = String(txt||'').replace(/[R$\s]/g,'');
+    if(!t) return null;
+    if(t.indexOf(',')>=0) t = t.replace(/\./g,'').replace(',','.');
+    else if((t.match(/\./g)||[]).length>1) t = t.replace(/\./g,'');
+    const v = parseFloat(t); return isNaN(v) ? null : v;
+  }
+  function pnfSemAcento(x){ return String(x||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase(); }
+  function pnfFiltrar(){
+    const q = pnfSemAcento(state.pnfQ||'').trim();
+    const tokens = q ? q.split(/\s+/) : [];
+    const vEx = pnfNum(state.pnfValor), vDe = pnfNum(state.pnfVde), vAte = pnfNum(state.pnfVate);
+    const dDe = state.pnfDe||'', dAte = state.pnfAte||'', op = state.pnfOp||'', st = state.pnfStatus||'';
+    let base = state.pnfSoSel ? nfNotasEscopo() : state.notasFiscais;
+    return base.filter(n=>{
+      const v = Number(n.valor)||0;
+      if(vEx!==null && Math.abs(v - vEx) > 0.005) return false;
+      if(vDe!==null && v < vDe - 0.005) return false;
+      if(vAte!==null && v > vAte + 0.005) return false;
+      const d = n.dataEmissao||'';
+      if(dDe && (!d || d < dDe)) return false;
+      if(dAte && (!d || d > dAte)) return false;
+      if(op && nfOpDaNota(n)!==op) return false;
+      if(st==='Cancelada' && n.status!=='Cancelada') return false;
+      if(st==='Ativa' && n.status==='Cancelada') return false;
+      if(tokens.length){
+        const vf = v.toFixed(2);
+        const hay = pnfSemAcento([n.numero, n.serie, n.chaveAcesso, n.emitNome, n.emitDoc, n.destNome, n.destDoc, clientName(n.clientId), n.tipo, n.tipoOperacao, n.observacoes, n.descricao,
+          vf, vf.replace('.',','), fmtBRL(v), String(n.emitDoc||'').replace(/\D/g,''), String(n.destDoc||'').replace(/\D/g,'')].join(' | '));
+        if(!tokens.every(t=>{ const dg = t.replace(/\D/g,''); return hay.indexOf(t)>=0 || (dg.length>=3 && dg.length>=t.length-4 && hay.indexOf(dg)>=0) || (pnfNum(t)!==null && Math.abs(v - pnfNum(t))<0.005); })) return false;
+      }
+      return true;
+    }).sort((a,b)=>(b.dataEmissao||'').localeCompare(a.dataEmissao||'') || String(b.numero||'').localeCompare(String(a.numero||''),undefined,{numeric:true}));
+  }
+  function pnfAtivo(){ return !!(state.pnfQ||state.pnfValor||state.pnfVde||state.pnfVate||state.pnfDe||state.pnfAte||state.pnfOp||state.pnfStatus); }
+  function pnfResultadosHtml(){
+    if(!pnfAtivo()) return `<div class="empty">Digite algo acima (número, valor, nome, CNPJ, chave…) ou escolha um filtro para pesquisar entre as ${state.pnfSoSel ? nfNotasEscopo().length : state.notasFiscais.length} notas.</div>`;
+    const lista = pnfFiltrar();
+    if(!lista.length) return `<div class="empty">Nenhuma nota encontrada com esses critérios.</div>`;
+    const MAX = 300, vis = lista.slice(0, MAX);
+    const soma = lista.filter(n=>n.status!=='Cancelada').reduce((x,n)=>x+(Number(n.valor)||0),0);
+    return `<div class="form-hint" style="margin:0 0 8px;"><b>${lista.length}</b> nota(s) encontrada(s) · soma das não canceladas: <b class="mono">${fmtBRL(round2(soma))}</b>${lista.length>MAX?' · mostrando as '+MAX+' mais recentes — refine a busca':''}</div>
+      <table><thead><tr><th>Cliente</th><th>Operação</th><th>Emitente / Destinatário</th><th>Nº / Série</th><th>Emissão</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead><tbody>
+      ${vis.map(n=>`<tr>
+        <td>${escapeHtml(clientName(n.clientId))}</td>
+        <td>${n.tipoOperacao?`<span class="tag ${n.tipoOperacao==='Entrada'?'dept-fiscal':(n.tipoOperacao==='Saída'?'dept-contabil':'dept-legal')}">${escapeHtml(n.tipoOperacao)}</span>`:'—'}</td>
+        <td style="font-size:12px;">${escapeHtml(n.emitNome||'—')}${n.destNome?'<br><span style="color:var(--ink-soft);">→ '+escapeHtml(n.destNome)+'</span>':''}</td>
+        <td>${escapeHtml(n.numero||'—')}${n.serie?' / '+escapeHtml(n.serie):''}</td>
+        <td>${n.dataEmissao?fmtDate(n.dataEmissao):'—'}</td>
+        <td style="text-align:right" class="mono">${fmtBRLorDash(n.valor)}</td>
+        <td><span class="tag ${nfStatusClass(n.status)}">${escapeHtml(n.status||'Emitida')}</span></td>
+        <td style="display:flex;gap:6px;"><button class="btn-detail" data-pnf-pdf="${n.id}">PDF</button><button class="btn-sm" data-pnf-ir="${n.id}">Ver na lista</button></td></tr>`).join('')}
+      </tbody></table>`;
+  }
+  function pnfLigar(){
+    document.querySelectorAll('[data-pnf-pdf]').forEach(el=>{ el.onclick = ()=> gerarPdfNotaFiscalIndividual(el.getAttribute('data-pnf-pdf')); });
+    document.querySelectorAll('[data-pnf-ir]').forEach(el=>{ el.onclick = ()=>{
+      const n = state.notasFiscais.find(x=>x.id===el.getAttribute('data-pnf-ir')); if(!n) return;
+      state.fiscalTab = 'notas-controle'; state.nfOps = []; state.nfAno = n.dataEmissao ? String(n.dataEmissao).slice(0,4) : 'sem-data'; state.nfMeses = n.dataEmissao ? [String(n.dataEmissao).slice(0,7)] : [];
+      state.nfSel = [n.id]; render();
+    }; });
+  }
+  function pesquisarNfPanelHtml(){
+    const v = k=>escapeHtml(state[k]||'');
+    return `
+      <div class="panel-head"><h3>Pesquisar NF — por valor, número, chave, nome, CNPJ…</h3></div>
+      <div class="form-hint" style="margin:-4px 0 12px;">A busca geral aceita várias palavras ao mesmo tempo (todas precisam aparecer), por exemplo: <i>4073 multilabor</i> ou <i>1634,41</i>. Procura no número, série, chave de acesso, nome/CNPJ do emitente e do destinatário, empresa, tipo e valor. Pesquisa em todas as empresas, a menos que marque a caixa abaixo.</div>
+      <div class="form-row"><div class="field" style="flex:2;"><label>Busca geral</label><input type="text" id="pnfQ" value="${v('pnfQ')}" placeholder="número, valor, nome, CNPJ, chave de acesso…" autocomplete="off"/></div></div>
+      <div class="form-row">
+        <div class="field"><label>Valor exato (R$)</label><input type="text" id="pnfValor" value="${v('pnfValor')}" placeholder="ex.: 1.634,41" inputmode="decimal"/></div>
+        <div class="field"><label>Valor de (R$)</label><input type="text" id="pnfVde" value="${v('pnfVde')}" placeholder="mínimo" inputmode="decimal"/></div>
+        <div class="field"><label>Valor até (R$)</label><input type="text" id="pnfVate" value="${v('pnfVate')}" placeholder="máximo" inputmode="decimal"/></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Emissão de</label><input type="date" id="pnfDe" value="${v('pnfDe')}"/></div>
+        <div class="field"><label>Emissão até</label><input type="date" id="pnfAte" value="${v('pnfAte')}"/></div>
+        <div class="field"><label>Operação</label><select id="pnfOp"><option value="">Todas</option>${NF_OPS.map(o=>`<option value="${o.k}" ${state.pnfOp===o.k?'selected':''}>${o.label}</option>`).join('')}</select></div>
+        <div class="field"><label>Situação</label><select id="pnfStatus"><option value="">Todas</option><option value="Ativa" ${state.pnfStatus==='Ativa'?'selected':''}>Não canceladas</option><option value="Cancelada" ${state.pnfStatus==='Cancelada'?'selected':''}>Canceladas</option></select></div>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:0 0 12px;">
+        <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:0;text-transform:none;letter-spacing:0;"><input type="checkbox" id="pnfSoSel" ${state.pnfSoSel?'checked':''}/> Pesquisar só nas empresas selecionadas no topo da página</label>
+        <button type="button" class="btn-sm" id="pnfLimpar">Limpar pesquisa</button>
+      </div>
+      <div id="pnfResultados">${pnfResultadosHtml()}</div>`;
+  }
+  function pnfBind(){
+    const upd = ()=>{ const c = document.getElementById('pnfResultados'); if(c){ c.innerHTML = pnfResultadosHtml(); pnfLigar(); } };
+    [['pnfQ','pnfQ'],['pnfValor','pnfValor'],['pnfVde','pnfVde'],['pnfVate','pnfVate'],['pnfDe','pnfDe'],['pnfAte','pnfAte'],['pnfOp','pnfOp'],['pnfStatus','pnfStatus']].forEach(([id,k])=>{
+      const el = document.getElementById(id); if(!el) return;
+      const f = ()=>{ if(state[k]===el.value && el.tagName!=='SELECT') return; state[k] = el.value; upd(); };
+      el.oninput = f; if(el.tagName==='SELECT' || el.type==='date') el.onchange = f;
+    });
+    const so = document.getElementById('pnfSoSel'); if(so) so.onchange = ()=>{ state.pnfSoSel = so.checked; upd(); };
+    const lim = document.getElementById('pnfLimpar'); if(lim) lim.onclick = ()=>{ ['pnfQ','pnfValor','pnfVde','pnfVate','pnfDe','pnfAte','pnfOp','pnfStatus'].forEach(k=>state[k]=''); render(); };
+    pnfLigar();
+  }
   const FISCAL_TABS = [
     {k:'notas-controle', label:'Controle de Notas Fiscais - Entrada / Saída / Serviços'},
+    {k:'pesquisar-nf', label:'PESQUISAR NF'},
     {k:'notas-exportacao', label:'Exportação em Lote (PDF organizado em pastas)'},
     {k:'faturamento-mensal', label:'Relatório de Faturamento Mensal'},
     {k:'relatorio-cfop', label:'Relatório de CFOPs (Entradas / Saídas)'},
@@ -23404,6 +23521,7 @@
     if(state.fiscalTab==='notas-controle') tabContent = notasControlePanelHtml();
     else if(state.fiscalTab==='notas-exportacao') tabContent = notasExportacaoPanelHtml();
     else if(state.fiscalTab==='faturamento-mensal') tabContent = faturamentoRelatorioHtml();
+    else if(state.fiscalTab==='pesquisar-nf') tabContent = pesquisarNfPanelHtml();
     else if(state.fiscalTab==='relatorio-cfop') tabContent = cfopRelatorioPanelHtml();
     else if(state.fiscalTab==='alertas-sn') tabContent = alertasSimplesNacionalPanelHtml();
     else if(state.fiscalTab==='situacao-fiscal') tabContent = situacaoFiscalPanelHtml();
@@ -28495,6 +28613,7 @@
     const cfopAte = document.getElementById('cfopAte'); if(cfopAte) cfopAte.onchange = ()=>{ state.cfopAte = cfopAte.value; render(); };
     const cfopTipo = document.getElementById('cfopTipo'); if(cfopTipo) cfopTipo.onchange = ()=>{ state.cfopTipo = cfopTipo.value; render(); };
     const cfopPorEmp = document.getElementById('cfopPorEmp'); if(cfopPorEmp) cfopPorEmp.onchange = ()=>{ state.cfopPorEmp = cfopPorEmp.checked; render(); };
+    pnfBind();
     const cfopPdfBtn = document.getElementById('cfopPdfBtn'); if(cfopPdfBtn) cfopPdfBtn.onclick = cfopPdf;
     const cfopCsvBtn = document.getElementById('cfopCsvBtn'); if(cfopCsvBtn) cfopCsvBtn.onclick = cfopCsv;
     const tabHonPdfBtn = document.getElementById('tabHonPdfBtn');
