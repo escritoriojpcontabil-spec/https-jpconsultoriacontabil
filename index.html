@@ -20581,29 +20581,28 @@
     const cab = `<div class="form-section-title" style="margin-top:22px;">Devoluções das saídas e valor base para o Simples Nacional</div>`;
     if(!linhas.length) return cab + `<div class="form-hint">Nenhuma saída, serviço ou devolução no período mostrado.</div>`;
     const multi = new Set(linhas.map(l=>l.clientId)).size > 1;
-    let tSa=0,tSe=0,tDv=0,tMa=0,tBase=0;
+    let tSa=0,tSe=0,tDv=0,tBase=0; const avisosMan=[];
     const rows = linhas.map(l=>{
       const man = faturamentoManualMes(l.clientId, l.ym).total || 0;
-      const base = round2(l.sa + l.se - l.dv + man);
-      tSa+=l.sa; tSe+=l.se; tDv+=l.dv; tMa+=man; tBase+=base;
+      if(man>0) avisosMan.push((multi?clientName(l.clientId)+' — ':'')+monthLabel(l.ym)+'/'+l.ym.slice(0,4)+': '+fmtBRL(man));
+      const base = round2(l.sa + l.se - l.dv);
+      tSa+=l.sa; tSe+=l.se; tDv+=l.dv; tBase+=base;
       return `<tr>${multi?`<td>${escapeHtml(clientName(l.clientId))}</td>`:''}<td>${monthLabel(l.ym)}/${l.ym.slice(0,4)}</td>
         <td style="text-align:right" class="mono">${fmtBRL(l.sa)}</td>
         <td style="text-align:right" class="mono">${l.se?fmtBRL(l.se):'—'}</td>
         <td style="text-align:right;color:#B23B3B;" class="mono">${l.dv?'− '+fmtBRL(l.dv)+' ('+l.qd+')':'—'}</td>
-        <td style="text-align:right" class="mono">${man?fmtBRL(man):'—'}</td>
         <td style="text-align:right" class="mono"><strong>${fmtBRL(base)}</strong></td></tr>`;
     }).join('');
     const tot = linhas.length>1 ? `<tr class="nf-total-geral"><td ${multi?'colspan="2"':''} style="background:#DDE6F3;"><b>Total</b></td>
         <td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(tSa)}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(tSe)}</b></td>
-        <td style="text-align:right;background:#DDE6F3;color:#B23B3B;" class="mono"><b>${tDv?'− '+fmtBRL(tDv):'—'}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(tMa)}</b></td>
-        <td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(round2(tBase))}</b></td></tr>` : '';
+        <td style="text-align:right;background:#DDE6F3;color:#B23B3B;" class="mono"><b>${tDv?'− '+fmtBRL(tDv):'—'}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(round2(tBase))}</b></td></tr>` : '';
     const devs = notas.filter(n=>n.tipoOperacao===NF_DEV_VENDA).sort((a,b)=>(a.dataEmissao||'').localeCompare(b.dataEmissao||'') || String(a.numero||'').localeCompare(String(b.numero||''),undefined,{numeric:true}));
     const lista = devs.length ? `<table style="margin-top:12px;"><thead><tr><th>Devolução de venda</th><th>Cliente</th><th>Nº / Série</th><th>Emissão</th><th style="text-align:right">Valor abatido</th></tr></thead><tbody>
         ${devs.map(n=>`<tr><td><span class="tag dept-legal">Devolução de venda</span></td><td>${escapeHtml(clientName(n.clientId))}</td><td>${escapeHtml(n.numero||'—')}${n.serie?' / '+escapeHtml(n.serie):''}</td><td>${fmtDate(n.dataEmissao)}</td><td style="text-align:right;color:#B23B3B;" class="mono">− ${fmtBRL(Number(n.valor)||0)}</td></tr>`).join('')}
         <tr class="nf-total-geral"><td colspan="4" style="background:#DDE6F3;"><b>Total de devoluções (${devs.length})</b></td><td style="text-align:right;background:#DDE6F3;color:#B23B3B;" class="mono"><b>− ${fmtBRL(round2(tDv))}</b></td></tr></tbody></table>`
       : `<div class="form-hint" style="margin-top:8px;">Nenhuma nota de devolução de venda no período.</div>`;
-    return cab + `<div class="form-hint" style="margin:-4px 0 10px;">Valor que entra no cálculo do Simples Nacional = saídas + serviços − devoluções de venda + faturamento lançado sem nota. Notas canceladas e entradas não contam; devolução de compra também não reduz a receita.</div>
-      <table><thead><tr>${multi?'<th>Cliente</th>':''}<th>Competência</th><th style="text-align:right">Saídas</th><th style="text-align:right">Serviços</th><th style="text-align:right">(−) Devoluções</th><th style="text-align:right">Sem nota</th><th style="text-align:right">Base do Simples</th></tr></thead><tbody>${rows}${tot}</tbody></table>` + lista;
+    return cab + `<div class="form-hint" style="margin:-4px 0 10px;">Base do Simples Nacional = saídas + serviços − devoluções de venda (já é o valor líquido: a última coluna não se soma com as saídas). Notas canceladas e entradas não contam; devolução de compra também não reduz a receita.</div>
+      <table><thead><tr>${multi?'<th>Cliente</th>':''}<th>Competência</th><th style="text-align:right">Saídas</th><th style="text-align:right">Serviços</th><th style="text-align:right">(−) Devoluções</th><th style="text-align:right">Líquido após devolução = Base do Simples</th></tr></thead><tbody>${rows}${tot}</tbody></table>` + (avisosMan.length ? `<div class="form-hint" style="margin:8px 0 0;color:#b45309;">⚠ Há faturamento lançado à mão (sem nota) neste período — ${avisosMan.map(escapeHtml).join('; ')}. O DAS soma esse valor à base das notas; se for o mesmo faturamento das notas, apague o lançamento manual do mês para não contar em dobro.</div>` : '') + lista;
   }
   function notasFiscaisTableHtml(){
     const escopo = nfNotasEscopo();
