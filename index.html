@@ -7630,7 +7630,7 @@
           if(docEmpresa.length >= 11 && ncmDigits(nf.emitDoc) !== docEmpresa) return;
           const op = nf.devolucao ? nfOperacaoDaDevolucao(nf, 'emitente') : (nf.tpNF==='0' ? 'Entrada' : 'Saída');
           if(!nf.devolucao && !p.cancelada) return;
-          const jaN = notaFiscalExistente(clientId, nf.numero, nf.serie);
+          const jaN = notaFiscalExistente(clientId, nf.numero, nf.serie, nf.emitDoc, nf.chaveAcesso);
           if(jaN){ if(nf.status==='Cancelada' && jaN.status!=='Cancelada'){ await nfGravar(Object.assign({}, jaN, {status:'Cancelada'})); notasNovas.push({clientId, comp:String(nf.dataEmissao||'').slice(0,7)}); } return; }
           const xmlHash = await hashArquivoTexto(texto);
           if(notaFiscalArquivoJaExiste(xmlHash)) return;
@@ -7653,7 +7653,7 @@
           const nf = parseNotaFiscalXml(texto);
           if(nf && nf.ok && !nf.evento){
             const xmlHash = await hashArquivoTexto(texto);
-            if(!notaFiscalArquivoJaExiste(xmlHash) && !notaFiscalJaExiste(clientId, nf.numero, nf.serie)){
+            if(!notaFiscalArquivoJaExiste(xmlHash) && !notaFiscalJaExiste(clientId, nf.numero, nf.serie, nf.emitDoc, nf.chaveAcesso)){
               await saveNotaFiscalSilent({ clientId, tipo: nf.tipo, tipoOperacao: nf.devolucao ? nfOperacaoDaDevolucao(nf,'emitente') : 'Saída', numero:nf.numero, serie:nf.serie||'', dataEmissao:nf.dataEmissao, valor:nf.valor, status:nf.status,
                 chaveAcesso:nf.chaveAcesso||'', emitNome:nf.emitNome||'', emitDoc:nf.emitDoc||'', destNome:nf.destNome||'', destDoc:nf.destDoc||'',
                 xmlOriginal:texto, anexoNome:f.name||'', xmlHash, observacoes:'Importado pelo Separador de Produtos Monofásicos (' + (f.name||'XML') + ')' });
@@ -14436,12 +14436,24 @@
 
   // Identifica se uma nota fiscal (mesmo cliente + mesmo número + mesma série) já existe,
   // pra não deixar a mesma nota ser importada/cadastrada duas vezes.
-  function notaFiscalJaExiste(clientId, numero, serie){
-    return state.notasFiscais.some(n=>
-      n.clientId === clientId &&
-      String(n.numero||'').trim() === String(numero||'').trim() &&
-      String(n.serie||'').trim() === String(serie||'').trim()
-    );
+  // Identidade de uma nota: a CHAVE DE ACESSO (44 dígitos) é única no Brasil. Número+série repete entre emitentes
+  // diferentes (ex.: devolução emitida pelo cliente com o mesmo nº/série de uma venda da empresa), então só vale
+  // como critério quando a nota não tem chave, e junto com o CNPJ do emitente.
+  function nfChaveLimpa(c){ const d = String(c||'').replace(/\D/g,''); return d.length===44 ? d : ''; }
+  function nfMesmaNota(n, clientId, numero, serie, emitDoc, chave){
+    if(n.clientId !== clientId) return false;
+    const c1 = nfChaveLimpa(chave), c2 = nfChaveLimpa(n.chaveAcesso);
+    if(c1 && c2) return c1 === c2;
+    if(String(n.numero||'').trim() !== String(numero||'').trim() || String(n.serie||'').trim() !== String(serie||'').trim()) return false;
+    const e1 = onlyDigits(emitDoc||''), e2 = onlyDigits(n.emitDoc||'');
+    return !e1 || !e2 || e1 === e2;
+  }
+  function nfIdentidadeChave(n){
+    const c = nfChaveLimpa(n.chaveAcesso);
+    return c ? 'ch:'+c : 'ns:'+(n.clientId||'')+'|'+onlyDigits(n.emitDoc||'')+'|'+String(n.numero||'').trim()+'|'+String(n.serie||'').trim();
+  }
+  function notaFiscalJaExiste(clientId, numero, serie, emitDoc, chave){
+    return state.notasFiscais.some(n=> nfMesmaNota(n, clientId, numero, serie, emitDoc, chave));
   }
 
   // "Impressão digital" (hash SHA-256) do conteúdo exato do arquivo XML — identifica o mesmo
@@ -14453,9 +14465,8 @@
       return Array.from(new Uint8Array(buffer)).map(b=>b.toString(16).padStart(2,'0')).join('');
     }catch(e){ return null; }
   }
-  function notaFiscalExistente(clientId, numero, serie){
-    return state.notasFiscais.find(n=>
-      n.clientId === clientId && String(n.numero||'').trim() === String(numero||'').trim() && String(n.serie||'').trim() === String(serie||'').trim()) || null;
+  function notaFiscalExistente(clientId, numero, serie, emitDoc, chave){
+    return state.notasFiscais.find(n=> nfMesmaNota(n, clientId, numero, serie, emitDoc, chave)) || null;
   }
   // Aplica um evento de cancelamento (XML) à nota já importada (pela chave de acesso). Se a nota ainda não está no
   // sistema, guarda a chave: quando o XML da nota for importado depois, ela já entra como Cancelada.
@@ -14488,7 +14499,7 @@
     const duplicadas = [];
     const ordenadasPorCriacao = state.notasFiscais.slice().sort((a,b)=> (a.id||'').localeCompare(b.id||''));
     for(const n of ordenadasPorCriacao){
-      const chave = (n.clientId||'') + '|' + String(n.numero||'').trim() + '|' + String(n.serie||'').trim();
+      const chave = nfIdentidadeChave(n);
       if(vistos.has(chave)){ duplicadas.push(n); dupIds.add(n.id); }
       else vistos.set(chave, n.id);
     }
@@ -26346,7 +26357,7 @@
             document.getElementById('nfCliente').value = m.client.id;
             document.getElementById('nfTipoOperacao').value = m.tipoOperacao;
             clientMsg = ' Cliente identificado: ' + m.client.name + ' (' + m.tipoOperacao + ').';
-            if(notaFiscalJaExiste(m.client.id, result.numero, result.serie)){
+            if(notaFiscalJaExiste(m.client.id, result.numero, result.serie, result.emitDoc, result.chaveAcesso)){
               clientMsg += ' ⚠ Esta nota (mesmo número/série para este cliente) já está cadastrada — confira antes de salvar de novo, para não duplicar.';
             }
           } else if(m.matchedDoc){
@@ -26388,9 +26399,9 @@
           }
           const m = matchClientAndOperacao(result);
           if(!m.client){ skipped++; skippedNames.push(file.name); continue; }
-          const chave = m.client.id + '|' + String(result.numero||'').trim() + '|' + String(result.serie||'').trim();
+          const chave = nfIdentidadeChave({ clientId:m.client.id, numero:result.numero, serie:result.serie, emitDoc:result.emitDoc, chaveAcesso:result.chaveAcesso });
           if(chavesNesteLote.has(chave)){ duplicadas++; continue; }
-          const jaNota = notaFiscalExistente(m.client.id, result.numero, result.serie);
+          const jaNota = notaFiscalExistente(m.client.id, result.numero, result.serie, result.emitDoc, result.chaveAcesso);
           if(jaNota){
             // O XML trouxe a nota CANCELADA e ela estava como emitida: atualiza o status (e a contabilidade/fiscal acompanham).
             if(result.status==='Cancelada' && jaNota.status!=='Cancelada'){
@@ -26442,7 +26453,7 @@
         if(canceladasImp) parts.push(canceladasImp + ' nota(s) cancelada(s) registrada(s) (sem efeito contábil/fiscal, listadas no Contábil)');
         if(eventosOk || reativadas) parts.push((eventosOk + reativadas) + ' nota(s) marcada(s) como Cancelada (evento/XML de cancelamento) e retirada(s) da contabilidade');
         if(eventosPend) parts.push(eventosPend + ' evento(s) de cancelamento de nota que ainda não está no sistema (guardado(s): ao importar o XML da nota, ela entra como Cancelada)');
-        if(duplicadas) parts.push(duplicadas + ' já existiam no sistema (número/série repetidos para o mesmo cliente) e foram ignoradas');
+        if(duplicadas) parts.push(duplicadas + ' já existiam no sistema (mesma chave de acesso, ou mesmo número/série/emitente) e foram ignoradas');
         if(skipped) parts.push(skipped + ' sem cliente identificado no Cadastro (' + skippedNames.join(', ') + ')');
         if(naoXml) parts.push(naoXml + ' arquivo(s) em outro formato (cadastre-os individualmente, um de cada vez)');
         if(failed) parts.push(failed + ' com erro de leitura/formato');
@@ -26477,7 +26488,7 @@
           observacoes: document.getElementById('nfObs').value,
         };
         const editandoId = state.nfModalData && state.nfModalData.id;
-        if(!editandoId && notaFiscalJaExiste(nf.clientId, nf.numero, nf.serie)){
+        if(!editandoId && notaFiscalJaExiste(nf.clientId, nf.numero, nf.serie, (state.nfModalData&&state.nfModalData.emitDoc)||'', (state.nfModalData&&state.nfModalData.chaveAcesso)||'')){
           if(!confirm('Já existe uma nota com esse número/série para este cliente. Salvar mesmo assim (vai duplicar)?')) return;
         }
         const compAntiga = (state.nfModalData && state.nfModalData.dataEmissao) ? String(state.nfModalData.dataEmissao).slice(0,7) : '';
