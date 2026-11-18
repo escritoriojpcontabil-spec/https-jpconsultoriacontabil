@@ -20565,6 +20565,46 @@
   }
   // Para a lista de anos/meses: respeita apenas o filtro de tipo (não o próprio filtro de período).
   function nfNotasEscopoParaMeses(){ return nfNotasVisiveis('mes'); }
+  // Devoluções de venda (devoluções das saídas) logo abaixo da lista, com a base que entra no cálculo do Simples Nacional.
+  function nfDevolucoesBaseHtml(){
+    const notas = nfNotasVisiveis('op').filter(n=>n.dataEmissao && n.status!=='Cancelada');
+    const chaves = {};
+    notas.forEach(n=>{
+      const t = n.tipoOperacao;
+      if(t!=='Saída' && t!=='Serviços' && t!==NF_DEV_VENDA) return;
+      const k = n.clientId+'|'+nfMesDaNota(n);
+      const o = chaves[k] || (chaves[k] = { clientId:n.clientId, ym:nfMesDaNota(n), sa:0, se:0, dv:0, qd:0 });
+      const v = Number(n.valor)||0;
+      if(t==='Saída') o.sa += v; else if(t==='Serviços') o.se += v; else { o.dv += v; o.qd++; }
+    });
+    const linhas = Object.keys(chaves).map(k=>chaves[k]).sort((a,b)=>a.ym.localeCompare(b.ym) || clientName(a.clientId).localeCompare(clientName(b.clientId)));
+    const cab = `<div class="form-section-title" style="margin-top:22px;">Devoluções das saídas e valor base para o Simples Nacional</div>`;
+    if(!linhas.length) return cab + `<div class="form-hint">Nenhuma saída, serviço ou devolução no período mostrado.</div>`;
+    const multi = new Set(linhas.map(l=>l.clientId)).size > 1;
+    let tSa=0,tSe=0,tDv=0,tMa=0,tBase=0;
+    const rows = linhas.map(l=>{
+      const man = faturamentoManualMes(l.clientId, l.ym).total || 0;
+      const base = round2(l.sa + l.se - l.dv + man);
+      tSa+=l.sa; tSe+=l.se; tDv+=l.dv; tMa+=man; tBase+=base;
+      return `<tr>${multi?`<td>${escapeHtml(clientName(l.clientId))}</td>`:''}<td>${monthLabel(l.ym)}/${l.ym.slice(0,4)}</td>
+        <td style="text-align:right" class="mono">${fmtBRL(l.sa)}</td>
+        <td style="text-align:right" class="mono">${l.se?fmtBRL(l.se):'—'}</td>
+        <td style="text-align:right;color:#B23B3B;" class="mono">${l.dv?'− '+fmtBRL(l.dv)+' ('+l.qd+')':'—'}</td>
+        <td style="text-align:right" class="mono">${man?fmtBRL(man):'—'}</td>
+        <td style="text-align:right" class="mono"><strong>${fmtBRL(base)}</strong></td></tr>`;
+    }).join('');
+    const tot = linhas.length>1 ? `<tr class="nf-total-geral"><td ${multi?'colspan="2"':''} style="background:#DDE6F3;"><b>Total</b></td>
+        <td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(tSa)}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(tSe)}</b></td>
+        <td style="text-align:right;background:#DDE6F3;color:#B23B3B;" class="mono"><b>${tDv?'− '+fmtBRL(tDv):'—'}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(tMa)}</b></td>
+        <td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(round2(tBase))}</b></td></tr>` : '';
+    const devs = notas.filter(n=>n.tipoOperacao===NF_DEV_VENDA).sort((a,b)=>(a.dataEmissao||'').localeCompare(b.dataEmissao||'') || String(a.numero||'').localeCompare(String(b.numero||''),undefined,{numeric:true}));
+    const lista = devs.length ? `<table style="margin-top:12px;"><thead><tr><th>Devolução de venda</th><th>Cliente</th><th>Nº / Série</th><th>Emissão</th><th style="text-align:right">Valor abatido</th></tr></thead><tbody>
+        ${devs.map(n=>`<tr><td><span class="tag dept-legal">Devolução de venda</span></td><td>${escapeHtml(clientName(n.clientId))}</td><td>${escapeHtml(n.numero||'—')}${n.serie?' / '+escapeHtml(n.serie):''}</td><td>${fmtDate(n.dataEmissao)}</td><td style="text-align:right;color:#B23B3B;" class="mono">− ${fmtBRL(Number(n.valor)||0)}</td></tr>`).join('')}
+        <tr class="nf-total-geral"><td colspan="4" style="background:#DDE6F3;"><b>Total de devoluções (${devs.length})</b></td><td style="text-align:right;background:#DDE6F3;color:#B23B3B;" class="mono"><b>− ${fmtBRL(round2(tDv))}</b></td></tr></tbody></table>`
+      : `<div class="form-hint" style="margin-top:8px;">Nenhuma nota de devolução de venda no período.</div>`;
+    return cab + `<div class="form-hint" style="margin:-4px 0 10px;">Valor que entra no cálculo do Simples Nacional = saídas + serviços − devoluções de venda + faturamento lançado sem nota. Notas canceladas e entradas não contam; devolução de compra também não reduz a receita.</div>
+      <table><thead><tr>${multi?'<th>Cliente</th>':''}<th>Competência</th><th style="text-align:right">Saídas</th><th style="text-align:right">Serviços</th><th style="text-align:right">(−) Devoluções</th><th style="text-align:right">Sem nota</th><th style="text-align:right">Base do Simples</th></tr></thead><tbody>${rows}${tot}</tbody></table>` + lista;
+  }
   function notasFiscaisTableHtml(){
     const escopo = nfNotasEscopo();
     if(!escopo.length) return `<div class="empty">${state.deptAllClients ? 'Nenhuma nota fiscal registrada ainda.' : 'Nenhuma nota registrada para os clientes selecionados no topo da página.'}</div>`;
@@ -20573,7 +20613,7 @@
     const nMes = (state.nfMeses||[]).length || (state.nfAno ? 1 : 0);
     const rotMes = state.nfAno ? ' · ' + (state.nfAno==='sem-data'?'sem data':state.nfAno) + ((state.nfMeses||[]).length ? ' (' + state.nfMeses.length + ' mês)' : '') : '';
     const btnMes = `<button type="button" class="btn-sm" id="nfMesesBtn" style="${nMes?'border-color:var(--navy);color:var(--navy);':''}">Período${rotMes} ${state.nfMesesAberto?'▲':'▼'}</button>`;
-    if(!notas.length) return barra + `<div style="margin:0 0 10px;">${btnMes}</div>` + nfMesesPainelHtml() + `<div class="empty">Nenhuma nota com esse filtro.</div>`;
+    if(!notas.length) return barra + `<div style="margin:0 0 10px;">${btnMes}</div>` + nfMesesPainelHtml() + `<div class="empty">Nenhuma nota com esse filtro.</div>` + nfDevolucoesBaseHtml();
     const sel = new Set((state.nfSel||[]).filter(id=>notas.some(n=>n.id===id)));
     const todas = notas.length>0 && sel.size===notas.length;
     return `
@@ -20602,6 +20642,7 @@
             </tr>`)}
         </tbody>
       </table>
+      ${nfDevolucoesBaseHtml()}
     `;
   }
   function updateNfResults(){
@@ -21064,6 +21105,153 @@
     `;
   }
 
+  // ===== Relatório de soma por CFOP (Entradas e Saídas) — lê os itens dos XMLs das notas =====
+  const CFOP_DESC = {
+    '1101':'Compra p/ industrialização','1102':'Compra p/ comercialização','1111':'Compra p/ industrialização (conta e ordem)','1113':'Compra p/ comercialização (conta e ordem)','1121':'Compra p/ industrialização (venda à ordem)','1201':'Devolução de venda de produção do estabelecimento','1202':'Devolução de venda de mercadoria adquirida de terceiros','1403':'Compra p/ comercialização em operação com ST','1401':'Compra p/ industrialização em operação com ST','1407':'Compra p/ uso ou consumo em operação com ST','1411':'Devolução de venda (ST)','1551':'Compra de bem p/ ativo imobilizado','1556':'Compra de material p/ uso ou consumo','1652':'Compra de combustível/lubrificante p/ comercialização','1910':'Entrada de bonificação, doação ou brinde','1949':'Outra entrada de mercadoria ou prestação não especificada',
+    '2101':'Compra p/ industrialização (interestadual)','2102':'Compra p/ comercialização (interestadual)','2201':'Devolução de venda de produção do estabelecimento (interestadual)','2202':'Devolução de venda de mercadoria adquirida de terceiros (interestadual)','2403':'Compra p/ comercialização em operação com ST (interestadual)','2551':'Compra de bem p/ ativo imobilizado (interestadual)','2556':'Compra de material p/ uso ou consumo (interestadual)','2910':'Entrada de bonificação, doação ou brinde (interestadual)','2949':'Outra entrada de mercadoria ou prestação não especificada (interestadual)',
+    '3101':'Compra p/ industrialização (exterior)','3102':'Compra p/ comercialização (exterior)',
+    '5101':'Venda de produção do estabelecimento','5102':'Venda de mercadoria adquirida ou recebida de terceiros','5103':'Venda de produção do estabelecimento, efetuada fora do estabelecimento','5104':'Venda de mercadoria de terceiros, efetuada fora do estabelecimento','5106':'Venda de mercadoria de terceiros, destinada a não contribuinte','5109':'Venda de produção destinada à Zona Franca de Manaus','5110':'Venda de mercadoria de terceiros destinada à Zona Franca de Manaus','5111':'Venda de produção remetida anteriormente em consignação','5112':'Venda de mercadoria de terceiros remetida anteriormente em consignação','5116':'Venda de produção originada de encomenda p/ entrega futura','5117':'Venda de mercadoria de terceiros originada de encomenda p/ entrega futura','5118':'Venda de produção entregue ao destinatário por conta e ordem do adquirente originário','5119':'Venda de mercadoria de terceiros entregue ao destinatário por conta e ordem do adquirente originário','5123':'Venda de mercadoria de terceiros remetida p/ industrialização por conta e ordem','5124':'Industrialização efetuada para outra empresa','5125':'Industrialização efetuada para outra empresa (insumos adquiridos de terceiros)',
+    '5201':'Devolução de compra p/ industrialização','5202':'Devolução de compra p/ comercialização','5209':'Devolução de mercadoria recebida em transferência p/ comercialização','5210':'Devolução de compra p/ utilização na prestação de serviço','5401':'Venda de produção do estabelecimento em operação com ST (contribuinte substituto)','5403':'Venda de mercadoria de terceiros em operação com ST (contribuinte substituto)','5405':'Venda de mercadoria de terceiros em operação com ST (contribuinte substituído)','5551':'Venda de bem do ativo imobilizado','5656':'Venda de combustível/lubrificante de terceiros','5667':'Venda de combustível a consumidor (operação com ST)','5901':'Remessa p/ industrialização por encomenda','5902':'Retorno de mercadoria utilizada na industrialização por encomenda','5908':'Remessa de bem por conta de contrato de comodato','5910':'Remessa em bonificação, doação ou brinde','5911':'Remessa de amostra grátis','5912':'Remessa de mercadoria ou bem p/ demonstração','5915':'Remessa de mercadoria ou bem p/ conserto ou reparo','5916':'Retorno de mercadoria ou bem recebido p/ conserto ou reparo','5917':'Remessa de mercadoria em consignação mercantil','5918':'Devolução de mercadoria recebida em consignação mercantil','5929':'Lançamento efetuado em decorrência de emissão de documento fiscal (ECF)','5949':'Outra saída de mercadoria ou prestação não especificada',
+    '6101':'Venda de produção do estabelecimento (interestadual)','6102':'Venda de mercadoria adquirida ou recebida de terceiros (interestadual)','6106':'Venda de mercadoria de terceiros, destinada a não contribuinte (interestadual)','6108':'Venda de mercadoria de terceiros, destinada a não contribuinte (interestadual)','6110':'Venda de mercadoria de terceiros destinada à Zona Franca de Manaus','6201':'Devolução de compra p/ industrialização (interestadual)','6202':'Devolução de compra p/ comercialização (interestadual)','6401':'Venda de produção em operação com ST (contribuinte substituto, interestadual)','6403':'Venda de mercadoria de terceiros em operação com ST (contribuinte substituto, interestadual)','6404':'Venda de mercadoria sujeita a ST, cujo imposto já foi retido (interestadual)','6551':'Venda de bem do ativo imobilizado (interestadual)','6910':'Remessa em bonificação, doação ou brinde (interestadual)','6911':'Remessa de amostra grátis (interestadual)','6949':'Outra saída de mercadoria ou prestação não especificada (interestadual)',
+    '7101':'Venda de produção do estabelecimento (exportação)','7102':'Venda de mercadoria adquirida ou recebida de terceiros (exportação)'
+  };
+  function cfopDescricao(c){ return CFOP_DESC[c] || (/^[15]/.test(c) ? 'Operação dentro do estado' : /^[26]/.test(c) ? 'Operação interestadual' : /^[37]/.test(c) ? 'Operação com o exterior' : '—'); }
+  // Equivalente na ENTRADA de um CFOP emitido pelo fornecedor (5→1, 6→2, 7→3), com as exceções mais comuns da ST.
+  const CFOP_ENTRADA_EXC = { '5405':'1403', '5403':'1403', '6404':'2403', '6403':'2403', '5401':'1401', '6401':'2401' };
+  function cfopEquivEntrada(c){ if(CFOP_ENTRADA_EXC[c]) return CFOP_ENTRADA_EXC[c]; const m = { '5':'1', '6':'2', '7':'3' }; return m[c.charAt(0)] ? m[c.charAt(0)] + c.slice(1) : c; }
+  function cfopDescDir(c, dir){ if(dir==='Entrada' && /^[567]/.test(c)){ const e = cfopEquivEntrada(c); if(CFOP_DESC[e]) return CFOP_DESC[e]; } return cfopDescricao(c); }
+  const CFOP_OPS_ENTRADA = ['Entrada', NF_DEV_VENDA], CFOP_OPS_SAIDA = ['Saída', NF_DEV_COMPRA];
+  function cfopPeriodo(){
+    const todas = nfNotasEscopo().map(n=>String(n.dataEmissao||'').slice(0,7)).filter(Boolean).sort();
+    return { de: state.cfopDe || (todas[0]||''), ate: state.cfopAte || (todas[todas.length-1]||'') };
+  }
+  function cfopCalcular(){
+    const per = cfopPeriodo(), tipo = state.cfopTipo || 'Ambos';
+    const porEmp = {}; let semXml = { qtd:0, valor:0 }, canceladas = 0, total = 0;
+    nfNotasEscopo().forEach(n=>{
+      const op = n.tipoOperacao; const ent = CFOP_OPS_ENTRADA.includes(op), sai = CFOP_OPS_SAIDA.includes(op);
+      if(!ent && !sai) return;
+      if(tipo==='Entrada' && !ent) return; if(tipo==='Saída' && !sai) return;
+      const comp = String(n.dataEmissao||'').slice(0,7);
+      if(per.de && comp < per.de) return; if(per.ate && comp > per.ate) return;
+      if(n.status==='Cancelada'){ canceladas++; return; }
+      total++;
+      const xml = n.xmlOriginal || NF_XML.get(n.id) || '';
+      let itens = [];
+      if(xml && /<infNFe/i.test(xml)){
+        try{
+          const doc = new DOMParser().parseFromString(xml, 'application/xml');
+          const dets = doc.getElementsByTagName('det');
+          for(let i=0;i<dets.length;i++){
+            const prod = dets[i].getElementsByTagName('prod')[0]; if(!prod) continue;
+            const g = t=>parseFloat(getTagText(prod,t))||0;
+            itens.push({ cfop: getTagText(prod,'CFOP'), valor: g('vProd') + g('vFrete') + g('vSeg') + g('vOutro') - g('vDesc') });
+          }
+        }catch(e){ itens = []; }
+      }
+      if(!itens.length){ semXml.qtd++; semXml.valor += Number(n.valor)||0; return; }
+      const e = porEmp[n.clientId] = porEmp[n.clientId] || { Entrada:{}, 'Saída':{} };
+      const dir = ent ? 'Entrada' : 'Saída'; const vistos = new Set();
+      itens.forEach(it=>{
+        const r = e[dir][it.cfop] = e[dir][it.cfop] || { cfop:it.cfop, notas:0, itens:0, valor:0 };
+        r.itens++; r.valor += it.valor; if(!vistos.has(it.cfop)){ vistos.add(it.cfop); r.notas++; }
+      });
+    });
+    return { per, porEmp, semXml, canceladas, total };
+  }
+  function cfopSomar(porEmp, ids){
+    const out = { Entrada:{}, 'Saída':{} };
+    (ids || Object.keys(porEmp)).forEach(id=>{ const e = porEmp[id]; if(!e) return; ['Entrada','Saída'].forEach(d=>{ Object.values(e[d]).forEach(r=>{
+      const o = out[d][r.cfop] = out[d][r.cfop] || { cfop:r.cfop, notas:0, itens:0, valor:0 }; o.notas += r.notas; o.itens += r.itens; o.valor += r.valor; }); }); });
+    return { Entrada: Object.values(out.Entrada).sort((a,b)=>a.cfop.localeCompare(b.cfop)), 'Saída': Object.values(out['Saída']).sort((a,b)=>a.cfop.localeCompare(b.cfop)) };
+  }
+  function cfopTabelaHtml(titulo, linhas, dir){
+    if(!linhas.length) return '';
+    const tot = linhas.reduce((a,r)=>({ notas:a.notas+r.notas, itens:a.itens+r.itens, valor:a.valor+r.valor }), { notas:0, itens:0, valor:0 });
+    const eq = dir==='Entrada';
+    return `<div class="form-section-title">${titulo}</div>
+      <table><thead><tr><th>CFOP</th>${eq?'<th>Equiv. na entrada</th>':''}<th>Descrição</th><th style="text-align:right">Notas</th><th style="text-align:right">Itens</th><th style="text-align:right">Valor</th><th style="text-align:right">%</th></tr></thead><tbody>
+        ${linhas.map(r=>`<tr><td><b class="mono">${escapeHtml(r.cfop)}</b></td>${eq?`<td class="mono">${/^[567]/.test(r.cfop) ? cfopEquivEntrada(r.cfop) : '—'}</td>`:''}<td>${escapeHtml(cfopDescDir(r.cfop, dir))}</td><td style="text-align:right" class="mono">${r.notas}</td><td style="text-align:right" class="mono">${r.itens}</td><td style="text-align:right" class="mono">${fmtBRL(round2(r.valor))}</td><td style="text-align:right" class="mono">${tot.valor? (r.valor/tot.valor*100).toFixed(1).replace('.',',')+'%' : '—'}</td></tr>`).join('')}
+        <tr class="nf-total-geral"><td style="background:#DDE6F3;" colspan="${eq?3:2}"><b>Total ${dir==='Entrada'?'das entradas':'das saídas'}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${tot.notas}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${tot.itens}</b></td><td style="text-align:right;background:#DDE6F3;" class="mono"><b>${fmtBRL(round2(tot.valor))}</b></td><td style="background:#DDE6F3;"></td></tr>
+      </tbody></table>`;
+  }
+  function cfopRelatorioPanelHtml(){
+    if(!NF_XML_PRONTO && !NF_XML_P && !state.cfopXmlTentado){ state.cfopXmlTentado = true; try{ carregarXmlsNotas(); }catch(e){} }
+    const r = cfopCalcular(); const ids = Object.keys(r.porEmp);
+    const tipo = state.cfopTipo || 'Ambos';
+    const blocos = (ids2, rotulo)=>{
+      const s = cfopSomar(r.porEmp, ids2);
+      return (rotulo ? `<div style="margin:18px 0 4px;padding:8px 12px;background:var(--navy);color:#fff;border-radius:8px;font-weight:700;">${escapeHtml(rotulo)}</div>` : '')
+        + (tipo!=='Entrada' ? cfopTabelaHtml('Saídas — soma por CFOP', s['Saída'], 'Saída') : '')
+        + (tipo!=='Saída' ? cfopTabelaHtml('Entradas — soma por CFOP', s.Entrada, 'Entrada') : '');
+    };
+    const corpo = !ids.length ? `<div class="empty">${NF_XML_PRONTO ? 'Nenhuma nota com XML encontrada neste período/seleção.' : 'Carregando os XMLs das notas…'}</div>`
+      : (state.cfopPorEmp ? ids.sort((a,b)=>clientName(a).localeCompare(clientName(b))).map(id=>blocos([id], clientName(id))).join('') : blocos(null, ''));
+    return `
+      <div class="panel-head"><h3>Relatório de CFOPs — soma por CFOP (Entradas e Saídas)</h3></div>
+      <div class="form-hint" style="margin:-4px 0 12px;">Soma o valor dos itens das notas fiscais (lidos dos XMLs importados) agrupados por CFOP. Considera as empresas escolhidas em "Selecionar cliente" no topo da página. Notas canceladas ficam de fora; serviços (NFS-e) não têm CFOP.</div>
+      <div class="form-row">
+        <div class="field"><label>De (mês)</label><input type="month" id="cfopDe" value="${r.per.de}"/></div>
+        <div class="field"><label>Até (mês)</label><input type="month" id="cfopAte" value="${r.per.ate}"/></div>
+        <div class="field"><label>Mostrar</label><select id="cfopTipo"><option value="Ambos" ${tipo==='Ambos'?'selected':''}>Entradas e Saídas</option><option value="Entrada" ${tipo==='Entrada'?'selected':''}>Só Entradas</option><option value="Saída" ${tipo==='Saída'?'selected':''}>Só Saídas</option></select></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:0 0 12px;text-transform:none;letter-spacing:0;"><input type="checkbox" id="cfopPorEmp" ${state.cfopPorEmp?'checked':''}/> Detalhar por empresa (um quadro para cada empresa selecionada)</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 6px;"><button type="button" class="btn-detail" id="cfopPdfBtn" ${ids.length?'':'disabled'}>Baixar PDF</button><button type="button" class="btn-sm" id="cfopCsvBtn" ${ids.length?'':'disabled'}>Baixar Excel (CSV)</button></div>
+      ${corpo}
+      ${(r.semXml.qtd || r.canceladas) ? `<div class="form-hint" style="margin-top:12px;color:#b45309;">${r.semXml.qtd ? '⚠ ' + r.semXml.qtd + ' nota(s) (' + fmtBRL(round2(r.semXml.valor)) + ') sem XML guardado — cadastradas à mão ou ainda carregando — ficaram fora da soma por CFOP. ' : ''}${r.canceladas ? r.canceladas + ' nota(s) cancelada(s) ignorada(s).' : ''}</div>` : ''}
+      <div class="form-hint" style="margin-top:8px;">Valor do item = produto + frete + seguro + outras despesas − desconto (IPI e ICMS-ST destacados não entram). Nas entradas, os CFOPs 5xxx/6xxx/7xxx da nota do fornecedor aparecem com o equivalente de entrada (1xxx/2xxx/3xxx) estimado.</div>`;
+  }
+  function cfopLinhasExport(){
+    const r = cfopCalcular(); const ids = Object.keys(r.porEmp); const tipo = state.cfopTipo || 'Ambos';
+    const linhas = [];
+    const add = (nome, s)=>{ ['Saída','Entrada'].forEach(d=>{ if(tipo!=='Ambos' && tipo!==d) return; s[d].forEach(x=>linhas.push({ empresa:nome, dir:d, cfop:x.cfop, eq:(d==='Entrada' && /^[567]/.test(x.cfop)) ? cfopEquivEntrada(x.cfop) : '', desc:cfopDescDir(x.cfop, d), notas:x.notas, itens:x.itens, valor:round2(x.valor) })); }); };
+    if(state.cfopPorEmp) ids.sort((a,b)=>clientName(a).localeCompare(clientName(b))).forEach(id=>add(clientName(id), cfopSomar(r.porEmp,[id]))); else add('Todas as empresas selecionadas', cfopSomar(r.porEmp, null));
+    return { linhas, r, ids };
+  }
+  function cfopCsv(){
+    const { linhas, r } = cfopLinhasExport();
+    const q = v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"', n = v=>(Number(v)||0).toFixed(2).replace('.',',');
+    const rows = [['EMPRESA','SENTIDO','CFOP','EQUIV. ENTRADA','DESCRIÇÃO','NOTAS','ITENS','VALOR'].map(q).join(';')];
+    linhas.forEach(l=>rows.push([q(l.empresa),q(l.dir),q(l.cfop),q(l.eq),q(l.desc),l.notas,l.itens,n(l.valor)].join(';')));
+    const blob = new Blob(['﻿'+rows.join('\r\n')], {type:'text/csv;charset=utf-8'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'relatorio-cfop-'+r.per.de+'_a_'+r.per.ate+'.csv';
+    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+  function cfopPdf(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ alert('O gerador de PDF ainda está carregando. Tente novamente.'); return; }
+    const { linhas, r, ids } = cfopLinhasExport();
+    if(!linhas.length){ alert('Não há dados para o relatório.'); return; }
+    const { jsPDF } = window.jspdf; const doc = new jsPDF({unit:'mm', format:'a4'});
+    const pageW = doc.internal.pageSize.getWidth(), ph = doc.internal.pageSize.getHeight(), mx = 14, cw = pageW - mx*2, rowH = 6;
+    const lab = m=>m ? m.slice(5,7)+'/'+m.slice(0,4) : '—';
+    const nomes = ids.map(clientName).sort(); const sub = 'Período: ' + lab(r.per.de) + ' a ' + lab(r.per.ate) + ' — ' + (nomes.length===1 ? nomes[0] : nomes.length + ' empresas');
+    let y = pdfHeader(doc, 'Relatório de CFOPs — Entradas e Saídas', sub);
+    doc.setTextColor(20,25,30);
+    const rodape = ()=>{ doc.setDrawColor(200,200,200); doc.setLineWidth(.2); doc.line(mx, ph-14, pageW-mx, ph-14); doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(110,120,130); doc.text('Soma dos itens das NF-e importadas (produto + frete + seguro + outras − desconto). Notas canceladas e sem XML ficam fora.', mx, ph-9); doc.setTextColor(20,25,30); };
+    const nova = ()=>{ rodape(); doc.addPage(); y = 16; };
+    const cols = [{t:'CFOP (EQUIV. ENTRADA)',w:.17},{t:'DESCRIÇÃO',w:.43},{t:'NOTAS',w:.09,a:'right'},{t:'ITENS',w:.09,a:'right'},{t:'VALOR',w:.22,a:'right'}];
+    const grupos = []; const seen = new Map();
+    linhas.forEach(l=>{ const k = l.empresa + '|' + l.dir; if(!seen.has(k)){ seen.set(k, { empresa:l.empresa, dir:l.dir, itens:[] }); grupos.push(seen.get(k)); } seen.get(k).itens.push(l); });
+    let ultimaEmp = null;
+    grupos.forEach(g=>{
+      if(y + 30 > ph-18) nova();
+      if(state.cfopPorEmp && g.empresa!==ultimaEmp){ doc.setFillColor(30,100,175); doc.rect(mx,y,cw,7,'F'); doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text(g.empresa, mx+2, y+5); doc.setTextColor(20,25,30); y += 10; ultimaEmp = g.empresa; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.text(g.dir==='Entrada' ? 'Entradas — soma por CFOP' : 'Saídas — soma por CFOP', mx, y); y += 4;
+      let acc = mx; const cc = cols.map(c=>{ const x0 = acc, wmm = cw*c.w; acc += wmm; return Object.assign({}, c, { x0, wmm }); });
+      const cab = ()=>{ doc.setFont('helvetica','bold'); doc.setFontSize(7.5); cc.forEach(c=>{ doc.setFillColor(234,234,234); doc.rect(c.x0,y,c.wmm,rowH,'F'); doc.setDrawColor(0,0,0); doc.setLineWidth(.2); doc.rect(c.x0,y,c.wmm,rowH,'S'); doc.text(c.t, c.a==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.a?{align:c.a}:undefined); }); y += rowH; };
+      cab();
+      const linhaPdf = (v, negrito)=>{ if(y + rowH > ph-18){ nova(); cab(); }
+        doc.setFont('helvetica', negrito?'bold':'normal'); doc.setFontSize(8); doc.setDrawColor(210,210,210); doc.setLineWidth(.15);
+        cc.forEach((c,i)=>{ if(negrito){ doc.setFillColor(221,230,243); doc.rect(c.x0,y,c.wmm,rowH,'F'); } doc.rect(c.x0,y,c.wmm,rowH,'S'); const t = doc.splitTextToSize(String(v[i]), c.wmm-3)[0] || ''; doc.text(t, c.a==='right'?c.x0+c.wmm-1.5:c.x0+1.5, y+rowH-2, c.a?{align:c.a}:undefined); });
+        y += rowH; };
+      let tn=0, ti=0, tv=0;
+      g.itens.forEach(l=>{ tn+=l.notas; ti+=l.itens; tv+=l.valor; linhaPdf([l.cfop + (l.eq ? ' ('+l.eq+')' : ''), l.desc, l.notas, l.itens, fmtBRL(l.valor)], false); });
+      linhaPdf(['TOTAL','',tn,ti,fmtBRL(round2(tv))], true);
+      y += 7;
+    });
+    rodape();
+    pdfSalvar(doc, 'relatorio-cfop-' + r.per.de + '-a-' + r.per.ate + '.pdf');
+  }
   function notasExportacaoPanelHtml(){
     const empresaAlvo = deptOneSelectedClient();
     return `
@@ -23172,6 +23360,7 @@
     {k:'notas-controle', label:'Controle de Notas Fiscais - Entrada / Saída / Serviços'},
     {k:'notas-exportacao', label:'Exportação em Lote (PDF organizado em pastas)'},
     {k:'faturamento-mensal', label:'Relatório de Faturamento Mensal'},
+    {k:'relatorio-cfop', label:'Relatório de CFOPs (Entradas / Saídas)'},
     {k:'alertas-sn', label:'Painel de Alertas Simples Nacional'},
     {k:'situacao-fiscal', label:'Situação Fiscal'},
     {k:'impostos-guias', label:'Impostos & Guias'},
@@ -23198,6 +23387,7 @@
     if(state.fiscalTab==='notas-controle') tabContent = notasControlePanelHtml();
     else if(state.fiscalTab==='notas-exportacao') tabContent = notasExportacaoPanelHtml();
     else if(state.fiscalTab==='faturamento-mensal') tabContent = faturamentoRelatorioHtml();
+    else if(state.fiscalTab==='relatorio-cfop') tabContent = cfopRelatorioPanelHtml();
     else if(state.fiscalTab==='alertas-sn') tabContent = alertasSimplesNacionalPanelHtml();
     else if(state.fiscalTab==='situacao-fiscal') tabContent = situacaoFiscalPanelHtml();
     else if(state.fiscalTab==='impostos-guias') tabContent = impostosPagarPanelHtml();
@@ -28284,6 +28474,12 @@
       const bc=document.getElementById('tabHonImportCancel'); if(bc) bc.onclick = ()=>{ state.modal=null; render(); };
       const bo=document.getElementById('tabHonImportOk'); if(bo) bo.onclick = ()=>{ bo.disabled=true; tabHonImportar(); };
     }
+    const cfopDe = document.getElementById('cfopDe'); if(cfopDe) cfopDe.onchange = ()=>{ state.cfopDe = cfopDe.value; render(); };
+    const cfopAte = document.getElementById('cfopAte'); if(cfopAte) cfopAte.onchange = ()=>{ state.cfopAte = cfopAte.value; render(); };
+    const cfopTipo = document.getElementById('cfopTipo'); if(cfopTipo) cfopTipo.onchange = ()=>{ state.cfopTipo = cfopTipo.value; render(); };
+    const cfopPorEmp = document.getElementById('cfopPorEmp'); if(cfopPorEmp) cfopPorEmp.onchange = ()=>{ state.cfopPorEmp = cfopPorEmp.checked; render(); };
+    const cfopPdfBtn = document.getElementById('cfopPdfBtn'); if(cfopPdfBtn) cfopPdfBtn.onclick = cfopPdf;
+    const cfopCsvBtn = document.getElementById('cfopCsvBtn'); if(cfopCsvBtn) cfopCsvBtn.onclick = cfopCsv;
     const tabHonPdfBtn = document.getElementById('tabHonPdfBtn');
     if(tabHonPdfBtn) tabHonPdfBtn.onclick = ()=> tabelaHonPdf();
     const tabHonCsvBtn = document.getElementById('tabHonCsvBtn');
