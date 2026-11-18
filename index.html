@@ -15928,6 +15928,50 @@
     `;
   }
 
+  function contratoContabilModalHtml(){
+    const d = state.contratoModal; const c = d && state.clients.find(x=>x.id===d.id); if(!c) return '';
+    const ini = d.modo==='inicio';
+    return `
+      <div class="modal-bg" id="modalBg">
+        <div class="modal" style="max-width:520px;">
+          <h3>${ini?'Início do contrato contábil':'Fim do contrato contábil'}</h3>
+          <div class="form-hint" style="margin:-6px 0 12px;font-weight:700;">${escapeHtml(c.name)}</div>
+          <form id="ctForm">
+            ${ini ? `
+              <div class="field"><label>Data de início do contrato</label><input type="date" id="ctData" value="${c.contractStart||todayStr()}" required/></div>
+              <div class="form-row">
+                <div class="field"><label>Valor dos honorários (R$)</label><input type="number" step="0.01" min="0" id="ctValor" value="${c.contractValue!==undefined?c.contractValue:''}"/></div>
+                <div class="field"><label>Periodicidade</label><select id="ctPer">${optHtml(['Mensal','Trimestral','Semestral','Anual'], c.contractPeriodicity||'Mensal')}</select></div>
+              </div>
+              <div class="form-hint">O contrato fica com status "Ativo". Se havia uma data de fim anterior, ela é removida.</div>
+            ` : `
+              <div class="field"><label>Data de encerramento do contrato</label><input type="date" id="ctData" value="${c.contractEnd||todayStr()}" required/></div>
+              <div class="field"><label>Motivo do encerramento</label><input type="text" id="ctMotivo" placeholder="Ex.: rescisão a pedido do cliente, inadimplência, mudança de contador"/></div>
+              ${c.contractStart ? `<div class="form-hint">Contrato iniciado em ${fmtDate(c.contractStart)}.</div>` : '<div class="form-hint" style="color:#b45309;">Esta empresa não tem data de início de contrato cadastrada.</div>'}
+              <div class="form-hint">O contrato passa a "Encerrado". Os honorários e cobranças não são apagados.</div>
+            `}
+            <div class="modal-actions">
+              <button type="button" class="btn-sm" id="ctCancel">Cancelar</button>
+              ${!ini && (c.contractEnd || c.contractStatus==='Encerrado') ? '<button type="button" class="btn-sm danger" id="ctReabrir">Reabrir contrato</button>' : ''}
+              <button type="submit" class="btn-add">${ini?'Registrar início':'Registrar fim'}</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  }
+  async function contratoContabilSalvar(modo, valores){
+    const d = state.contratoModal; const c = d && state.clients.find(x=>x.id===d.id); if(!c) return;
+    const novo = Object.assign({}, c);
+    if(modo==='inicio'){
+      novo.contractStart = valores.data; novo.contractEnd = ''; novo.contractStatus = 'Ativo';
+      if(valores.valor!=='') novo.contractValue = parseFloat(valores.valor)||0;
+      novo.contractPeriodicity = valores.per || novo.contractPeriodicity || 'Mensal';
+    } else if(modo==='fim'){
+      novo.contractEnd = valores.data; novo.contractStatus = 'Encerrado';
+      if(valores.motivo){ const reg = 'Contrato encerrado em ' + fmtDate(valores.data) + ': ' + valores.motivo; novo.contractNotes = (c.contractNotes ? c.contractNotes + ' | ' : '') + reg; }
+    } else { novo.contractEnd = ''; novo.contractStatus = 'Ativo'; }
+    return saveClient(novo);
+  }
   function clientsTableHtml(list, emptyMsg){
     if(!list.length) return `<div class="empty">${emptyMsg||'Nenhum cliente encontrado.'}</div>`;
     return `
@@ -15936,13 +15980,13 @@
         <tbody>
           ${list.map(c=>`
             <tr>
-              <td>${escapeHtml(c.name)}</td>
+              <td>${escapeHtml(c.name)}${(c.contractStart||c.contractEnd) ? `<div style="font-size:11px;color:var(--ink-soft);margin-top:2px;">Contrato contábil: ${c.contractStart?'início '+fmtDate(c.contractStart):''}${c.contractStart&&c.contractEnd?' · ':''}${c.contractEnd?'fim '+fmtDate(c.contractEnd):''}${c.contractStatus==='Encerrado'?' · <b style="color:#B23B3B;">encerrado</b>':''}</div>` : ''}</td>
               <td>${c.personType ? `<span class="tag ${c.personType==='PJ'?'tipo-pj':'tipo-pf'}">${c.personType}</span>` : '—'}</td>
               <td>${escapeHtml(c.doc||'—')}</td>
               <td>${c.city ? escapeHtml(c.city) + (c.uf ? '/' + escapeHtml(c.uf) : '') : '—'}</td>
               <td>${c.situacao ? `<span class="tag ${situacaoClass(c.situacao)}">${escapeHtml(c.situacao)}</span>` : '—'}</td>
               <td>${escapeHtml(c.phone||'—')}</td>
-              <td style="display:flex;gap:6px;"><button class="btn-detail" data-view-client="${c.id}">Detalhes</button><button class="btn-detail" data-edit-client="${c.id}">Editar</button><button class="btn-sm danger" data-del-client="${c.id}">Excluir</button></td>
+              <td style="display:flex;gap:6px;flex-wrap:wrap;min-width:330px;"><button class="btn-detail" data-contrato-inicio="${c.id}" style="border-color:#2F7A52;color:#2F7A52;">Início contrato contábil</button><button class="btn-detail" data-contrato-fim="${c.id}" style="border-color:#B23B3B;color:#B23B3B;">Fim do contrato contábil</button><button class="btn-detail" data-view-client="${c.id}">Detalhes</button><button class="btn-detail" data-edit-client="${c.id}">Editar</button><button class="btn-sm danger" data-del-client="${c.id}">Excluir</button></td>
             </tr>
           `).join('')}
         </tbody>
@@ -15976,6 +16020,8 @@
     container.querySelectorAll('[data-del-client]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este cliente?')) deleteClient(el.getAttribute('data-del-client')); };
     });
+    container.querySelectorAll('[data-contrato-inicio]').forEach(el=>{ el.onclick = ()=>{ state.contratoModal = { id: el.getAttribute('data-contrato-inicio'), modo:'inicio' }; state.modal='contratoContabil'; render(); }; });
+    container.querySelectorAll('[data-contrato-fim]').forEach(el=>{ el.onclick = ()=>{ state.contratoModal = { id: el.getAttribute('data-contrato-fim'), modo:'fim' }; state.modal='contratoContabil'; render(); }; });
     container.querySelectorAll('[data-view-client]').forEach(el=>{
       el.onclick = ()=>{ state.viewClientId = el.getAttribute('data-view-client'); state.modal='clientDetail'; render(); };
     });
@@ -25271,6 +25317,7 @@
       </div>
       ${state.modal==='tx' ? txModalHtml() : ''}
       ${state.modal==='client' ? clientModalHtml() : ''}
+      ${state.modal==='contratoContabil' ? contratoContabilModalHtml() : ''}
       ${state.modal==='clientDetail' ? clientDetailModalHtml() : ''}
       ${state.modal==='userAccess' ? userAccessModalHtml() : ''}
       ${state.modal==='nf' ? nfModalHtml() : ''}
@@ -25369,6 +25416,25 @@
     root.querySelectorAll('[data-del-tx]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este lançamento?')) deleteTransaction(el.getAttribute('data-del-tx')); };
     });
+    root.querySelectorAll('[data-contrato-inicio]').forEach(el=>{ el.onclick = ()=>{ state.contratoModal = { id: el.getAttribute('data-contrato-inicio'), modo:'inicio' }; state.modal='contratoContabil'; render(); }; });
+    root.querySelectorAll('[data-contrato-fim]').forEach(el=>{ el.onclick = ()=>{ state.contratoModal = { id: el.getAttribute('data-contrato-fim'), modo:'fim' }; state.modal='contratoContabil'; render(); }; });
+    const ctForm = document.getElementById('ctForm');
+    if(ctForm){
+      const fecha = ()=>{ state.modal=null; state.contratoModal=null; };
+      document.getElementById('ctCancel').onclick = ()=>{ fecha(); render(); };
+      const rb = document.getElementById('ctReabrir');
+      if(rb) rb.onclick = async ()=>{ if(!confirm('Reabrir o contrato (remove a data de fim e volta para Ativo)?')) return; await contratoContabilSalvar('reabrir', {}); fecha(); render(); };
+      ctForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const modo = state.contratoModal.modo, g = id=>{ const el = document.getElementById(id); return el ? el.value : ''; };
+        const data = g('ctData'); if(!data){ alert('Informe a data.'); return; }
+        const cl = state.clients.find(x=>x.id===state.contratoModal.id);
+        if(modo==='fim' && cl && cl.contractStart && data < cl.contractStart){ alert('A data de fim não pode ser anterior ao início do contrato (' + fmtDate(cl.contractStart) + ').'); return; }
+        if(modo==='inicio' && cl && cl.contractEnd && !confirm('Este contrato tinha fim em ' + fmtDate(cl.contractEnd) + '. Registrar novo início remove essa data de fim. Continuar?')) return;
+        await contratoContabilSalvar(modo, { data, valor:g('ctValor'), per:g('ctPer'), motivo:g('ctMotivo') });
+        fecha(); render();
+      };
+    }
     root.querySelectorAll('[data-del-client]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este cliente?')) deleteClient(el.getAttribute('data-del-client')); };
     });
