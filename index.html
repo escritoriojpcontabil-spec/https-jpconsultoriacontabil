@@ -15986,7 +15986,7 @@
               <td>${c.city ? escapeHtml(c.city) + (c.uf ? '/' + escapeHtml(c.uf) : '') : '—'}</td>
               <td>${c.situacao ? `<span class="tag ${situacaoClass(c.situacao)}">${escapeHtml(c.situacao)}</span>` : '—'}</td>
               <td>${escapeHtml(c.phone||'—')}</td>
-              <td style="display:flex;gap:6px;flex-wrap:wrap;min-width:330px;"><button class="btn-detail" data-contrato-inicio="${c.id}" style="border-color:#2F7A52;color:#2F7A52;">Início contrato contábil</button><button class="btn-detail" data-contrato-fim="${c.id}" style="border-color:#B23B3B;color:#B23B3B;">Fim do contrato contábil</button><button class="btn-detail" data-view-client="${c.id}">Detalhes</button><button class="btn-detail" data-edit-client="${c.id}">Editar</button><button class="btn-sm danger" data-del-client="${c.id}">Excluir</button></td>
+              <td style="display:flex;gap:5px;flex-wrap:nowrap;white-space:nowrap;"><button class="btn-detail" data-contrato-inicio="${c.id}" title="Início do contrato contábil" style="border-color:#2F7A52;color:#2F7A52;font-size:11px;padding:4px 8px;">Início contrato</button><button class="btn-detail" data-contrato-fim="${c.id}" title="Fim do contrato contábil" style="border-color:#B23B3B;color:#B23B3B;font-size:11px;padding:4px 8px;">Fim contrato</button><button class="btn-detail" data-view-client="${c.id}">Detalhes</button><button class="btn-detail" data-edit-client="${c.id}">Editar</button><button class="btn-sm danger" data-del-client="${c.id}">Excluir</button></td>
             </tr>
           `).join('')}
         </tbody>
