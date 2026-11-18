@@ -7748,7 +7748,14 @@
   // Devoluções de venda do mês (notas "Devolução de venda", não canceladas): valor total e quanto disso é de produto monofásico (pelo NCM do XML).
   function nfDevolucaoMes(clientId, comp){
     const lista = (state.notasFiscais||[]).filter(n=>n.clientId===clientId && n.tipoOperacao===NF_DEV_VENDA && n.status!=='Cancelada' && String(n.dataEmissao||'').slice(0,7)===comp);
-    let total = 0, mono = 0;
+    let total = 0, mono = 0, st = 0, ambos = 0;
+    const docs = (state.produtosMonofasicos||[]).filter(d=>d.clientId===clientId).sort((a,b)=>(b.competencia===comp)-(a.competencia===comp));
+    const norm = x=>String(x||'').toUpperCase().replace(/\s+/g,' ').trim();
+    const achar = (ncm, desc)=>{
+      let porNcm = null;
+      for(const d of docs){ for(const it of (d.itens||[])){ if(String(it.ncm||'')!==String(ncm||'')) continue; if(norm(it.descricao)===norm(desc)) return it; if(!porNcm) porNcm = it; } }
+      return porNcm;
+    };
     lista.forEach(n=>{
       total += Number(n.valor)||0;
       const xml = n.xmlOriginal || (typeof NF_XML!=='undefined' && NF_XML.get(n.id)) || '';
@@ -7759,11 +7766,18 @@
         for(let i=0;i<dets.length;i++){
           const prod = dets[i].getElementsByTagName('prod')[0]; if(!prod) continue;
           const v = (parseFloat(getTagText(prod,'vProd'))||0) - (parseFloat(getTagText(prod,'vDesc'))||0);
-          if(classeMonofasicaItem({ ncm:getTagText(prod,'NCM'), descricao:getTagText(prod,'xProd'), valor:v }).status==='monofasico') mono += v;
+          const ncm = getTagText(prod,'NCM'), desc = getTagText(prod,'xProd');
+          // Classifica o item devolvido pelo mesmo item vendido (mesmo NCM/descrição) — é a mesma segregação que foi feita na venda.
+          const orig = achar(ncm, desc);
+          const ehMono = classeMonofasicaItem(orig ? Object.assign({}, orig, { valor:v }) : { ncm, descricao:desc, valor:v }).status==='monofasico';
+          let ehSt = false;
+          if(orig) ehSt = monoStEfetivo(orig);
+          else { const icmsEl = dets[i].getElementsByTagName('ICMS')[0]; let cst=''; if(icmsEl){ for(let k=0;k<icmsEl.children.length;k++){ const ch=icmsEl.children[k]; cst = getTagText(ch,'CSOSN')||getTagText(ch,'CST')||''; if(cst) break; } } ehSt = ['500','60','40','41','300','400'].includes(cst); }
+          if(ehMono && ehSt) ambos += v; else if(ehMono) mono += v; else if(ehSt) st += v;
         }
       }catch(e){}
     });
-    return { total:round2(total), mono:round2(mono), qtd:lista.length };
+    return { total:round2(total), mono:round2(mono), st:round2(st), ambos:round2(ambos), qtd:lista.length };
   }
   function monoSegregacaoCompetencia(clientId, comp){
     const d = monoDocDe(clientId, comp);
@@ -7772,7 +7786,9 @@
     // A devolução de produto monofásico também reduz a receita monofásica (senão ela ficaria como "tributação integral").
     const dev = nfDevolucaoMes(clientId, comp);
     const mono = round2(Math.max(0, r.soMono - dev.mono));
-    return { tem:true, mono, st:r.soSt, ambos:r.ambos, total:r.total, devMono: round2(r.soMono - mono) };
+    const st = round2(Math.max(0, r.soSt - dev.st));
+    const ambos = round2(Math.max(0, r.ambos - dev.ambos));
+    return { tem:true, mono, st, ambos, total:r.total, devMono: round2(r.soMono - mono), devSt: round2(r.soSt - st), devAmbos: round2(r.ambos - ambos) };
   }
   async function monoLimparCompetencia(empresaId, comp){
     try{ await Store.delete('produtosmonofasicos:'+monoDocId(empresaId, comp), true); }catch(e){}
@@ -16916,7 +16932,8 @@
   function faturamentoNotasMes(clientId, competencia){
     if(!clientId || !competencia) return { total: 0, quantidade: 0, notas: 0, manual: 0 };
     const n = faturamentoSoNotasMes(clientId, competencia);
-    const m = faturamentoManualMes(clientId, competencia);
+    // Lançamento manual (sem nota) só vale em mês SEM notas no sistema (ex.: ano anterior para o RBT12). Mês com notas usa só as notas — senão duplica a receita.
+    const m = n.quantidade > 0 ? { total:0 } : faturamentoManualMes(clientId, competencia);
     return { total: n.total + m.total, quantidade: n.quantidade, notas: n.total, manual: m.total };
   }
 
@@ -17058,7 +17075,8 @@
     const notasCliente = state.notasFiscais.filter(n => n.clientId === clientId && n.status !== 'Cancelada' && (n.tipoOperacao==='Saída' || n.tipoOperacao==='Serviços' || n.tipoOperacao===NF_DEV_VENDA));
     return listaCompetencias(mesInicio, mesFim).map(comp=>{
       const doMes = notasCliente.filter(n => (n.dataEmissao||'').slice(0,7) === comp);
-      const man = faturamentoManualMes(clientId, comp);
+      const man0 = faturamentoManualMes(clientId, comp);
+      const man = doMes.length ? Object.assign({}, man0, { vendas:0, servicos:0, total:0 }) : man0; // mês com notas: lançamento manual é ignorado (evita duplicar)
       const vendas = doMes.filter(n=>n.tipoOperacao==='Saída' || n.tipoOperacao===NF_DEV_VENDA).reduce((s,n)=>s+(n.tipoOperacao===NF_DEV_VENDA?-1:1)*(Number(n.valor)||0),0) + man.vendas;
       const servicos = doMes.filter(n=>n.tipoOperacao==='Serviços').reduce((s,n)=>s+(Number(n.valor)||0),0) + man.servicos;
       return { competencia: comp, vendas, servicos, total: vendas+servicos, quantidade: doMes.length, manualVendas: man.vendas, manualServicos: man.servicos, manualObs: man.observacao };
@@ -20251,7 +20269,7 @@
     if(!(fat.total > 0)) return null;
     const devo = nfDevolucaoMes(cl.id, ym);
     const out = { clientId:cl.id, ym, receita:round2(fat.total), notas:round2(fat.notas), manual:round2(fat.manual), devolucoes:devo.total, notasBruto:round2(fat.notas + devo.total), avisos:[] };
-    if(devo.total > 0) out.avisos.push('Devoluções de venda de ' + fmtBRL(devo.total) + ' já foram abatidas da receita usada no DAS' + (devo.mono > 0 ? ' (' + fmtBRL(devo.mono) + ' de produtos monofásicos abatidos também da receita monofásica)' : '') + '.');
+    if(devo.total > 0) out.avisos.push('Devoluções de venda de ' + fmtBRL(devo.total) + ' já foram abatidas da receita usada no DAS' + ((devo.mono+devo.st+devo.ambos) > 0 ? ' (também abatidas da segregação:' + (devo.mono>0?' monofásico ' + fmtBRL(devo.mono):'') + (devo.st>0?' ICMS-ST/isento ' + fmtBRL(devo.st):'') + (devo.ambos>0?' monofásico+ST ' + fmtBRL(devo.ambos):'') + ')' : '') + '.');
     if(!cl.anexoSimples){ out.avisos.push('Anexo do Simples Nacional não definido no cadastro da empresa — DAS não calculado.'); return out; }
     if(cl.anexoSimples2){ out.avisos.push('Empresa com dois anexos: o DAS depende da receita de cada atividade — use a aba Calculadoras (informe a receita de cada anexo).'); return out; }
     const usaFatorR = !!cl.fatorRAtivo && (cl.anexoSimples==='Anexo III — Serviços (locação, agências, etc.)' || cl.anexoSimples==='Anexo V — Serviços intelectuais/técnicos');
@@ -20602,7 +20620,7 @@
         <tr class="nf-total-geral"><td colspan="4" style="background:#DDE6F3;"><b>Total de devoluções (${devs.length})</b></td><td style="text-align:right;background:#DDE6F3;color:#B23B3B;" class="mono"><b>− ${fmtBRL(round2(tDv))}</b></td></tr></tbody></table>`
       : `<div class="form-hint" style="margin-top:8px;">Nenhuma nota de devolução de venda no período.</div>`;
     return cab + `<div class="form-hint" style="margin:-4px 0 10px;">Base do Simples Nacional = saídas + serviços − devoluções de venda (já é o valor líquido: a última coluna não se soma com as saídas). Notas canceladas e entradas não contam; devolução de compra também não reduz a receita.</div>
-      <table><thead><tr>${multi?'<th>Cliente</th>':''}<th>Competência</th><th style="text-align:right">Saídas</th><th style="text-align:right">Serviços</th><th style="text-align:right">(−) Devoluções</th><th style="text-align:right">Líquido após devolução = Base do Simples</th></tr></thead><tbody>${rows}${tot}</tbody></table>` + (avisosMan.length ? `<div class="form-hint" style="margin:8px 0 0;color:#b45309;">⚠ Há faturamento lançado à mão (sem nota) neste período — ${avisosMan.map(escapeHtml).join('; ')}. O DAS soma esse valor à base das notas; se for o mesmo faturamento das notas, apague o lançamento manual do mês para não contar em dobro.</div>` : '') + lista;
+      <table><thead><tr>${multi?'<th>Cliente</th>':''}<th>Competência</th><th style="text-align:right">Saídas</th><th style="text-align:right">Serviços</th><th style="text-align:right">(−) Devoluções</th><th style="text-align:right">Líquido após devolução = Base do Simples</th></tr></thead><tbody>${rows}${tot}</tbody></table>` + (avisosMan.length ? `<div class="form-hint" style="margin:8px 0 0;color:#b45309;">⚠ Há faturamento lançado à mão (sem nota) neste período — ${avisosMan.map(escapeHtml).join('; ')}. Em mês que tem notas, esse lançamento é IGNORADO no cálculo (vale só a receita das notas); ele só é usado em meses sem nenhuma nota. Se não existe, pode apagá-lo.</div>` : '') + lista;
   }
   function notasFiscaisTableHtml(){
     const escopo = nfNotasEscopo();
