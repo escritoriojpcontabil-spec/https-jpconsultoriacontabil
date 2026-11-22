@@ -15212,8 +15212,125 @@
   function clienteIEAtual(clientId){
     return (state.inscricoes||[]).find(i=>i.clientId===clientId && i.tipo==='Inscrição Estadual') || null;
   }
+  // ===== Cadastros duplicados: detecção, bloqueio na gravação e unificação =====
+  function clDocDigitos(c){ return onlyDigits((c && c.doc) || ''); }
+  function clNomeNorm(c){ return String((c && c.name) || '').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').replace(/^\d[\d ]*?(?=[A-Z])/,'').trim(); }
+  // Devolve outro cliente que já representa a mesma pessoa/empresa (mesmo CNPJ/CPF; ou mesmo nome quando algum lado não tem documento).
+  function clienteDuplicadoDe(c, ignorarId){
+    const dg = clDocDigitos(c), nn = clNomeNorm(c);
+    return (state.clients||[]).find(o=>{
+      if(o.id===ignorarId || (c.id && o.id===c.id)) return false;
+      const od = clDocDigitos(o);
+      if(dg.length>=11 && od.length>=11) return dg===od;
+      return !!nn && clNomeNorm(o)===nn && (dg.length<11 || od.length<11);
+    }) || null;
+  }
+  function clientesDuplicadosGrupos(){
+    const lista = state.clients||[]; const grupos = [];
+    const usado = new Set();
+    lista.forEach(a=>{
+      if(usado.has(a.id)) return;
+      const g = [a];
+      lista.forEach(b=>{ if(b.id!==a.id && !usado.has(b.id) && (function(){ const da=clDocDigitos(a), db=clDocDigitos(b), na=clNomeNorm(a), nb=clNomeNorm(b); if(da.length>=11 && db.length>=11) return da===db; return !!na && na===nb && (da.length<11 || db.length<11); })()) g.push(b); });
+      if(g.length>1){ g.forEach(x=>usado.add(x.id)); grupos.push(g); }
+    });
+    return grupos;
+  }
+  const _clSalvando = new Set();
+  function clCamposPreenchidos(c){ return Object.keys(c||{}).filter(k=>{ const v=c[k]; return !(v===undefined||v===null||v===''||(Array.isArray(v)&&!v.length)); }).length; }
+  function clVinculos(id){ return (state.notasFiscais||[]).filter(n=>n.clientId===id).length + (state.honorarios||[]).filter(h=>h.clientId===id).length; }
+  const CL_VAZIO = x=> x===undefined||x===null||x===''||(Array.isArray(x)&&!x.length);
+  // Passa tudo que está ligado ao cadastro duplicado (notas, honorários, cálculos, lançamentos…) para o cadastro mantido.
+  async function unificarClientes(keepId, dupIds, progresso){
+    const keep = state.clients.find(c=>c.id===keepId); if(!keep) throw new Error('Cadastro principal não encontrado.');
+    const dups = dupIds.map(id=>state.clients.find(c=>c.id===id)).filter(Boolean);
+    const backup = { geradoEm:new Date().toISOString(), principal:keep, duplicados:dups, alteracoes:[] };
+    // 1) completa o cadastro principal com o que só existe no duplicado
+    const merged = Object.assign({}, keep);
+    dups.forEach(d=>{ Object.keys(d).forEach(k=>{ if(k==='id') return;
+      if(Array.isArray(d[k]) && Array.isArray(merged[k]) && merged[k].length && k==='departments'){ d[k].forEach(x=>{ if(merged[k].indexOf(x)<0) merged[k] = merged[k].concat([x]); }); }
+      else if(CL_VAZIO(merged[k]) && !CL_VAZIO(d[k])) merged[k] = d[k]; }); });
+    await Store.set('clients:'+keepId, JSON.stringify(merged), true);
+    // 2) religa os registros
+    const dupSet = new Set(dupIds);
+    const todas = (await Store.list('', true)).keys || [];
+    let feitos = 0, movidos = 0, descartados = 0;
+    for(const k of todas){
+      feitos++;
+      if(progresso && feitos%200===0) progresso(feitos, todas.length);
+      if(/^(clients|users|notasxml|session|sessions):/.test(k)) continue;
+      let r; try{ r = await Store.get(k, true); }catch(e){ continue; }
+      const v = r && r.value; if(typeof v!=='string' || v.charAt(0)!=='{') continue;
+      let o; try{ o = JSON.parse(v); }catch(e){ continue; }
+      if(!o || !dupSet.has(o.clientId)) continue;
+      const did = o.clientId;
+      const novo = Object.assign({}, o, { clientId:keepId });
+      let nk = k.split(did).join(keepId);
+      if(typeof novo.id==='string' && novo.id.indexOf(did)>=0) novo.id = novo.id.split(did).join(keepId);
+      if(nk!==k){
+        let existe = false; try{ const e2 = await Store.get(nk, true); existe = !!e2; }catch(e){ existe = false; }
+        if(existe){ await Store.delete(k, true); descartados++; backup.alteracoes.push({ de:k, para:nk, acao:'descartado (já existia no cadastro principal)', registro:o }); continue; }
+        await Store.set(nk, JSON.stringify(novo), true); await Store.delete(k, true);
+      } else { await Store.set(k, JSON.stringify(novo), true); }
+      movidos++; backup.alteracoes.push({ de:k, para:nk, acao:'movido' });
+    }
+    // 3) apaga os cadastros duplicados
+    for(const d of dups){ await Store.delete('clients:'+d.id, true); }
+    return { movidos, descartados, backup };
+  }
+  function clBaixarBackup(backup){
+    try{
+      const blob = new Blob([JSON.stringify(backup,null,1)], {type:'application/json'});
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = 'unificacao-cadastros-'+new Date().toISOString().slice(0,10)+'.json';
+      document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+    }catch(e){}
+  }
+  function unificarClientesModalHtml(){
+    const grupos = clientesDuplicadosGrupos();
+    const msg = state.unificarMsg ? `<div class="lookup-msg ${state.unificarMsg.tipo}" style="display:block;margin-bottom:12px;">${escapeHtml(state.unificarMsg.texto)}</div>` : '';
+    const corpo = !grupos.length ? `<div class="empty">Nenhum cadastro duplicado encontrado. ✔</div>` : grupos.map((g,gi)=>{
+      const info = g.map(c=>({ c, v:clVinculos(c.id), p:clCamposPreenchidos(c) })).sort((a,b)=>(b.v-a.v) || (b.p-a.p));
+      return `<div style="border:1px solid var(--line,#d9dee5);border-radius:10px;padding:10px 12px;margin-bottom:12px;">
+        <table><thead><tr><th>Manter</th><th>Nome</th><th>CNPJ/CPF</th><th>Cidade</th><th style="text-align:right">Notas + honorários</th><th style="text-align:right">Campos preenchidos</th></tr></thead><tbody>
+        ${info.map((x,i)=>`<tr><td><input type="radio" name="dupKeep${gi}" value="${x.c.id}" ${i===0?'checked':''}/></td><td>${escapeHtml(x.c.name||'—')}</td><td class="mono">${escapeHtml(x.c.doc||'—')}</td><td>${escapeHtml(x.c.city||'—')}</td><td style="text-align:right">${x.v}</td><td style="text-align:right">${x.p}</td></tr>`).join('')}
+        </tbody></table>
+        <div style="margin-top:8px;"><button type="button" class="btn-add" data-unificar-grupo="${gi}">Unificar estes ${g.length} cadastros</button></div></div>`;
+    }).join('');
+    return `<div class="modal-bg" id="modalBg"><div class="modal" style="max-width:900px;width:94vw;max-height:88vh;overflow:auto;">
+      <h3>Cadastros duplicados</h3>
+      <div class="form-hint" style="margin:-4px 0 12px;">Marque qual cadastro será mantido em cada grupo (já vem marcado o que tem mais notas e dados). Todas as notas, honorários, cálculos e lançamentos do duplicado passam para o cadastro mantido, os dados que faltavam são completados e o duplicado é apagado. Um arquivo de backup da unificação é baixado automaticamente.</div>
+      ${msg}${corpo}
+      <div class="modal-actions"><button type="button" class="btn-sm" id="dupCliFechar">Fechar</button></div></div></div>`;
+  }
+  function unificarClientesBind(){
+    const f = document.getElementById('dupCliFechar'); if(f) f.onclick = ()=>{ state.modal=null; state.unificarMsg=null; render(); };
+    document.querySelectorAll('[data-unificar-grupo]').forEach(btn=>{ btn.onclick = async ()=>{
+      const gi = parseInt(btn.getAttribute('data-unificar-grupo'),10); const g = clientesDuplicadosGrupos()[gi]; if(!g) return;
+      const sel = document.querySelector('input[name="dupKeep'+gi+'"]:checked'); if(!sel) return;
+      const keepId = sel.value, dupIds = g.map(c=>c.id).filter(id=>id!==keepId);
+      const keep = g.find(c=>c.id===keepId);
+      if(!confirm('Manter o cadastro "'+(keep.name||'')+'" e unificar '+dupIds.length+' duplicado(s) nele?\n\nTudo que estiver ligado ao duplicado será passado para o cadastro mantido. Esta ação não pode ser desfeita (um backup será baixado).')) return;
+      btn.disabled = true; btn.textContent = 'Unificando… não feche a página';
+      try{
+        const r = await unificarClientes(keepId, dupIds, (a,b)=>{ btn.textContent = 'Unificando… '+a+' de '+b; });
+        clBaixarBackup(r.backup);
+        await loadAll(); try{ await loadNotasFiscais(); await dedupNotasFiscais(); await loadNotasFiscais(); }catch(e){}
+        state.unificarMsg = { tipo:'success', texto:'Unificado: '+r.movidos+' registro(s) passaram para "'+(keep.name||'')+'"'+(r.descartados?' e '+r.descartados+' repetido(s) foram descartados':'')+'. Backup baixado.' };
+      }catch(e){ state.unificarMsg = { tipo:'error', texto:'Falha ao unificar: '+((e&&e.message)||e)+'. Confira os cadastros e tente de novo.' }; try{ await loadAll(); }catch(_){} }
+      render();
+    }; });
+  }
   async function saveClient(c){
-    if(!c.id) c.id = uid();
+    const existente = c.id ? (state.clients||[]).find(x=>x.id===c.id) : null;
+    const dg = clDocDigitos(c);
+    if(!existente || clDocDigitos(existente)!==dg || (!dg && clNomeNorm(existente)!==clNomeNorm(c))){
+      const dup = clienteDuplicadoDe(c, c.id);
+      if(dup){ alert('Esta empresa/pessoa já está cadastrada: "'+(dup.name||'')+'"'+(dup.doc?' ('+dup.doc+')':'')+'.\n\nPara evitar duplicidade, o novo cadastro não foi salvo. Abra o cadastro existente para alterar os dados.'); return false; }
+    }
+    const trava = dg.length>=11 ? 'd:'+dg : 'n:'+clNomeNorm(c);
+    if(!existente){ if(_clSalvando.has(trava)) return false; _clSalvando.add(trava); }
+    try{ if(!c.id) c.id = uid();
     try{
       await Store.set('clients:'+c.id, JSON.stringify(c), true);
     }catch(e){
@@ -15223,6 +15340,7 @@
     }
     await loadAll(); render();
     return true;
+    } finally { _clSalvando.delete(trava); }
   }
   async function deleteClient(id){
     await Store.delete('clients:'+id, true);
@@ -16124,7 +16242,10 @@
       <div class="panel">
         <div class="panel-head">
           <h3>Clientes</h3>
-          <button class="btn-add" id="newClient">+ Novo cliente</button>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            ${(()=>{ const n = clientesDuplicadosGrupos().length; return n ? `<button type="button" class="btn-sm danger" id="dupClientesBtn">⚠ ${n} cadastro(s) duplicado(s) — unificar</button>` : ''; })()}
+            <button class="btn-add" id="newClient">+ Novo cliente</button>
+          </div>
         </div>
         <div class="panel-toolbar" style="margin-bottom:12px;">
           <div class="search-box">${ICONS.search}<input type="text" id="clientSearchInput" placeholder="Buscar por nome, CNPJ/CPF ou email..." value="${escapeHtml(state.clientSearch)}"/></div>
@@ -25676,6 +25797,7 @@
       ${state.modal==='tabHonImport' ? tabHonImportModalHtml() : ''}${state.modal==='honorario' ? honorarioModalHtml() : ''}${state.modal==='reajusteHon' ? reajusteModalHtml() : ''}
       ${state.modal==='pagamentoAvulso' ? pagamentoAvulsoModalHtml() : ''}
       ${state.modal==='contrato' ? contratoModalHtml() : ''}
+      ${state.modal==='unificarClientes' ? unificarClientesModalHtml() : ''}
       ${state.modal==='documentoSocietario' ? documentoSocietarioModalHtml() : ''}
       ${state.modal==='empresaConstituicao' ? empresaConstituicaoModalHtml() : ''}
       ${state.modal==='constituicaoDocumento' ? constituicaoDocumentoModalHtml() : ''}
@@ -25742,6 +25864,8 @@
     root.querySelectorAll('[data-del-tx]').forEach(el=>{
       el.onclick = ()=>{ if(confirm('Excluir este lançamento?')) deleteTransaction(el.getAttribute('data-del-tx')); };
     });
+    { const db = document.getElementById('dupClientesBtn'); if(db) db.onclick = ()=>{ state.unificarMsg = null; state.modal='unificarClientes'; render(); }; }
+    if(state.modal==='unificarClientes') unificarClientesBind();
     root.querySelectorAll('[data-contrato-inicio]').forEach(el=>{ el.onclick = ()=>{ state.contratoModal = { id: el.getAttribute('data-contrato-inicio'), modo:'inicio' }; state.modal='contratoContabil'; render(); }; });
     root.querySelectorAll('[data-contrato-fim]').forEach(el=>{ el.onclick = ()=>{ state.contratoModal = { id: el.getAttribute('data-contrato-fim'), modo:'fim' }; state.modal='contratoContabil'; render(); }; });
     const ctForm = document.getElementById('ctForm');
