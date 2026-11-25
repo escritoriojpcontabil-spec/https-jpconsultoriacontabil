@@ -10967,7 +10967,7 @@
   }
 
   // Histórico Contábil ÚNICO: um só catálogo padrão, valendo para todas as empresas (clientId '*').
-  const APP_VERSAO = 'v204 — 25/11/2026';
+  const APP_VERSAO = 'v205 — 25/11/2026';
   const HIST_PADRAO_CLI = '*';
   function historicosPadrao(){ return state.historicos.filter(h=>h.clientId===HIST_PADRAO_CLI).sort((a,b)=>String(a.codigo||'').localeCompare(String(b.codigo||''), undefined, {numeric:true})); }
   let _histMigrando = false;
@@ -26906,7 +26906,18 @@
           catch(err){ showMsg('Não foi possível ler o arquivo selecionado.', 'error'); return; }
           const xmlHash = await hashArquivoTexto(text);
           if(notaFiscalArquivoJaExiste(xmlHash)){
-            showMsg('Este arquivo XML já foi importado antes (mesmo conteúdo exato) — não foi importado de novo, para evitar duplicar.', 'error');
+            // Já existe: não duplica, mas refaz a contabilização dessa nota (ex.: remessa para industrialização que ficou sem lançamento).
+            const jaN = state.notasFiscais.find(x=>x.xmlHash===xmlHash);
+            let extra = '';
+            if(jaN){
+              try{
+                const rc = await contabilizarNotas([jaN.clientId], {silent:true});
+                const cl = state.clients.find(c=>c.id===jaN.clientId);
+                extra = ' A nota nº ' + (jaN.numero||'S/N') + ' está cadastrada em ' + (cl?cl.name:'outra empresa') + ' (' + jaN.tipoOperacao + ') e a contabilidade dela foi conferida.';
+                const nt = nfResumoContabil(rc); if(nt) extra += ' ' + nt;
+              }catch(err){ console.error(err); }
+            }
+            showMsg('Este arquivo XML já foi importado antes (mesmo conteúdo exato) — não foi importado de novo, para evitar duplicar.' + extra, extra ? 'info' : 'error');
             return;
           }
           const result = parseNotaFiscalXml(text);
