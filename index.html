@@ -10967,6 +10967,7 @@
   }
 
   // Histórico Contábil ÚNICO: um só catálogo padrão, valendo para todas as empresas (clientId '*').
+  const APP_VERSAO = 'v203 — 25/11/2026';
   const HIST_PADRAO_CLI = '*';
   function historicosPadrao(){ return state.historicos.filter(h=>h.clientId===HIST_PADRAO_CLI).sort((a,b)=>String(a.codigo||'').localeCompare(String(b.codigo||''), undefined, {numeric:true})); }
   let _histMigrando = false;
@@ -15579,6 +15580,7 @@
             <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;"></span>
             ${STORAGE_MODE==='firebase' ? 'Dados compartilhados (Firebase)' : (STORAGE_MODE==='claude' ? 'Dados compartilhados (Claude)' : 'Dados locais neste navegador')}
           </div>
+          <div style="font-size:10px;color:#8A93A8;margin:-4px 0 8px;">Versão do sistema: ${APP_VERSAO}</div>
           <div class="sb-user">${escapeHtml(state.user.name || state.user.username)}<br/><span class="tag ${state.user.role==='admin'?'role-admin':'role-user'}" style="margin-top:4px;display:inline-block;">${state.user.role==='admin'?'Administrador':'Usuário'}</span></div>
           ${USING_FIREBASE ? `<button class="sb-logout" id="trocaSenhaBtn" style="margin-bottom:6px;">Alterar senha</button>` : ''}
           <button class="sb-logout" id="logoutBtn">Sair</button>
@@ -23621,6 +23623,7 @@
 
   function renderContabilExtras(){
     state.contabilEmpresaAtiva = deptOneSelectedClient() || '';
+
     let tabContent = '';
     if(state.contabilTab==='plano') tabContent = planoContasPanelHtml();
     else if(state.contabilTab==='historico') tabContent = historicosPanelHtml();
@@ -26953,6 +26956,7 @@
         showMsg('Importando ' + files.length + ' arquivo(s)' + (((document.getElementById('nfCliente')||{}).value) ? ' somente de ' + clientName(document.getElementById('nfCliente').value) : '') + '...', 'info');
         const clienteFiltro = (document.getElementById('nfCliente')||{}).value || '';
         let outraEmpresa = 0;
+        const clientesJaExistiam = new Set();   // empresas cujas notas já estavam no sistema: também são recontabilizadas
         let ok = 0, skipped = 0, failed = 0, naoXml = 0, duplicadas = 0, eventosOk = 0, eventosPend = 0, canceladasImp = 0, reativadas = 0, devolImp = 0;
         const skippedNames = [];
         const chavesNesteLote = new Set();
@@ -26965,7 +26969,7 @@
           try{ text = await file.text(); }
           catch(err){ failed++; continue; }
           const xmlHash = await hashArquivoTexto(text);
-          if(notaFiscalArquivoJaExiste(xmlHash) || (xmlHash && hashesNesteLote.has(xmlHash))){ duplicadas++; continue; }
+          if(notaFiscalArquivoJaExiste(xmlHash) || (xmlHash && hashesNesteLote.has(xmlHash))){ duplicadas++; const jaN = xmlHash ? state.notasFiscais.find(x=>x.xmlHash===xmlHash) : null; if(jaN && (!clienteFiltro || jaN.clientId===clienteFiltro)) clientesJaExistiam.add(jaN.clientId); continue; }
           const result = parseNotaFiscalXml(text);
           if(!result.ok){ failed++; continue; }
           if(result.evento){
@@ -26983,6 +26987,7 @@
           if(chavesNesteLote.has(chave)){ duplicadas++; continue; }
           const jaNota = notaFiscalExistente(m.client.id, result.numero, result.serie, result.emitDoc, result.chaveAcesso);
           if(jaNota){
+            clientesJaExistiam.add(m.client.id);
             // O XML trouxe a nota CANCELADA e ela estava como emitida: atualiza o status (e a contabilidade/fiscal acompanham).
             if(result.status==='Cancelada' && jaNota.status!=='Cancelada'){
               await nfGravar(Object.assign({}, jaNota, { status:'Cancelada' }));
@@ -27018,7 +27023,7 @@
         }
         await loadNotasFiscais();
         let contabTxt = '';
-        if(ok || eventosOk || reativadas){ try{ const rc = await contabilizarNotas(Array.from(new Set(paresSync.map(p=>p.clientId))), {silent:true}); contabTxt = nfResumoContabil(rc); }catch(err){ console.error(err); } }
+        if(ok || eventosOk || reativadas || clientesJaExistiam.size){ try{ const rc = await contabilizarNotas(Array.from(new Set(paresSync.map(p=>p.clientId).concat(Array.from(clientesJaExistiam)))), {silent:true}); contabTxt = nfResumoContabil(rc); }catch(err){ console.error(err); } }
         let monoTxt = '';
         for(const cid of Object.keys(paraSeparador)){
           try{ const rm = await importarXmlsMonofasico(paraSeparador[cid], cid, {registrarNota:false}); if(rm.notas) monoTxt += (monoTxt?'; ':'') + clientName(cid) + ': ' + rm.notas + ' nota(s) / ' + rm.itens + ' linha(s) de produto'; }catch(err){ console.error(err); }
