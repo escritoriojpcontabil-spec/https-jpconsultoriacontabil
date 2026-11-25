@@ -10967,7 +10967,7 @@
   }
 
   // Histórico Contábil ÚNICO: um só catálogo padrão, valendo para todas as empresas (clientId '*').
-  const APP_VERSAO = 'v203 — 25/11/2026';
+  const APP_VERSAO = 'v204 — 25/11/2026';
   const HIST_PADRAO_CLI = '*';
   function historicosPadrao(){ return state.historicos.filter(h=>h.clientId===HIST_PADRAO_CLI).sort((a,b)=>String(a.codigo||'').localeCompare(String(b.codigo||''), undefined, {numeric:true})); }
   let _histMigrando = false;
@@ -18761,6 +18761,9 @@
     let doc; try{ doc = new DOMParser().parseFromString(xml, 'text/xml'); }catch(e){ return r; }
     const dets = doc.getElementsByTagName('det');
     let soma = 0, rem = 0, ret = 0, ter = 0, remF = 0;
+    // "REMESSA P/ INDUST. CONTA ADQUIRENTE" (ou "conta e ordem"): vale a natureza da operação, mesmo que o CFOP do item seja 5901/6901 etc.
+    const natTxt = String(getTagText(doc,'natOp')||'');
+    const natAdq = /indust/i.test(natTxt) && /adquirente|conta e ordem|conta.{0,6}ordem/i.test(natTxt) && !/retorno|devolu/i.test(natTxt);
     for(let i=0;i<dets.length;i++){
       const prod = dets[i].getElementsByTagName('prod')[0]; if(!prod) continue;
       const cf = String(getTagText(prod,'CFOP')||'').replace(/\D/g,''); if(cf.length!==4) continue;
@@ -18769,7 +18772,7 @@
       soma += v;
       const c3 = cf.slice(1);
       if(n.tipoOperacao==='Saída'){ if(IND_REMESSA3.includes(c3)) rem += v; else if(IND_RETORNO3.includes(c3)) ter += v; }
-      else { if(IND_RETORNO3.includes(c3)) ret += v; else if(c3==='924') remF += v; else if(IND_REMESSA3.includes(c3)) ter += v; }
+      else { if(IND_RETORNO3.includes(c3)) ret += v; else if(c3==='924' || (natAdq && IND_REMESSA3.includes(c3))) remF += v; else if(IND_REMESSA3.includes(c3)) ter += v; }
     }
     if(!(soma>0) || !(rem+ret+ter+remF>0)){
       // Sem CFOP de industrialização nos itens: reconhece pela "natureza da operação" do XML (ex.: "REMESSA PARA INDUSTRIALIZACAO").
@@ -18895,7 +18898,7 @@
         const n = vivas[nid];
         res.notas++;
         const ind = nfIndPartes(n);
-        if(ind.terceiros>0) res.terceiros = (res.terceiros||0) + 1;
+        if(ind.terceiros>0){ res.terceiros = (res.terceiros||0) + 1; (res.terceirosNotas = res.terceirosNotas||[]).push(n.numero||'S/N'); }
         if(ind.remessa>0 || ind.retorno>0 || ind.remessaForn>0) res.industrializacao = (res.industrializacao||0) + 1;
         const lista = [];
         if(ind.restante > 0){
@@ -18972,7 +18975,7 @@
     if(res.mantidosManual) p.push(res.mantidosManual + ' editado(s) à mão mantido(s)');
     if(res.jaLancadas) p.push(res.jaLancadas + ' nota(s) já estavam lançadas e foram mantidas');
     if(res.industrializacao) p.push(res.industrializacao + ' nota(s) de remessa/retorno para industrialização lançada(s) na conta Remessa para Industrialização');
-    if(res.terceiros) p.push(res.terceiros + ' nota(s) de industrialização de terceiros (sem lançamento)');
+    if(res.terceiros) p.push(res.terceiros + ' nota(s) de industrialização de terceiros (sem lançamento): nº ' + (res.terceirosNotas||[]).slice(0,8).join(', '));
     if(!res.criados && !res.atualizados && !res.removidos && !res.contasCriadas) p.unshift('nada novo para lançar — tudo já estava lançado');
     let txt = p.join(' · ');
     const falt = Object.keys(res.semConta).map(cid=>clientName(cid) + ': falta conta ' + res.semConta[cid].join(', '));
