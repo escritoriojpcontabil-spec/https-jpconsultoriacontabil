@@ -9285,8 +9285,8 @@
     if(ind) impostosRec.splice(0, 0, 'IPI a Recuperar');
     if(ser){ impostosRec.length = 0; impostosRec.push('PIS a Recuperar','COFINS a Recuperar'); }
     impostosRec.push('IRRF a Compensar','CSLL, PIS e COFINS Retidos a Compensar');
-    const estoques = com ? ['Mercadorias para Revenda','Mercadorias em Trânsito','Materiais de Embalagem e Consumo']
-      : ind ? ['Matérias-Primas','Materiais de Embalagem','Produtos em Elaboração','Produtos Acabados','Almoxarifado / Material de Consumo']
+    const estoques = com ? ['Mercadorias para Revenda','Mercadorias em Trânsito','Materiais de Embalagem e Consumo','Remessa para Industrialização']
+      : ind ? ['Matérias-Primas','Materiais de Embalagem','Produtos em Elaboração','Produtos Acabados','Almoxarifado / Material de Consumo','Remessa para Industrialização']
       : ['Materiais de Consumo','Materiais Aplicados em Serviços'];
     const imobil = ['Terrenos','Edificações e Benfeitorias','Instalações','Móveis e Utensílios','Computadores e Periféricos','Veículos'];
     if(ind) imobil.splice(3, 0, 'Máquinas e Equipamentos Industriais');
@@ -14654,6 +14654,7 @@
     await __et('loadRegrasOfx', loadRegrasOfx);
     await __et('dedupPlanoContas', dedupPlanoContas);
     await __et('dedupHistoricos', dedupHistoricos);
+    await __et('garantirContaRemessaInd', garantirContaRemessaInd);
     await __et('migrarContabilParaEmpresaUnica', migrarContabilParaEmpresaUnica);
     await __et('loadPropostas', loadPropostas);
     await __et('loadHonorarios', loadHonorarios);
@@ -18744,6 +18745,60 @@
     state.planoContas.push(conta);
     return conta;
   }
+  // ===== Remessa para industrialização (CFOP x901/x924 remessa; x902/x925 retorno) =====
+  // Saída com CFOP 5901/6901/5924/6924 (a empresa manda insumos para ser industrializado): D Remessa para Industrialização / C Estoque.
+  // Entrada com CFOP 5902/6902/1902/2902/x925 (volta a mercadoria remetida): D Estoque / C Remessa para Industrialização.
+  // Notas de industrialização de TERCEIROS (Entrada x901/x924 ou Saída x902/x925 — a empresa é a industrializadora) não são patrimônio dela: sem lançamento.
+  const IND_REMESSA3 = ['901','924'], IND_RETORNO3 = ['902','925'];
+  function nfIndPartes(n){
+    const r = { remessa:0, retorno:0, terceiros:0, restante: round2(Number(n.valor)||0) };
+    if(n.tipoOperacao!=='Saída' && n.tipoOperacao!=='Entrada') return r;
+    const xml = n.xmlOriginal || NF_XML.get(n.id) || '';
+    if(!xml || !/<det[\s>]/i.test(xml)) return r;
+    let doc; try{ doc = new DOMParser().parseFromString(xml, 'text/xml'); }catch(e){ return r; }
+    const dets = doc.getElementsByTagName('det');
+    let soma = 0, rem = 0, ret = 0, ter = 0;
+    for(let i=0;i<dets.length;i++){
+      const prod = dets[i].getElementsByTagName('prod')[0]; if(!prod) continue;
+      const cf = String(getTagText(prod,'CFOP')||'').replace(/\D/g,''); if(cf.length!==4) continue;
+      const num = t=>parseFloat(getTagText(prod,t)||'0')||0;
+      const v = num('vProd') + num('vFrete') + num('vSeg') + num('vOutro') - num('vDesc');
+      soma += v;
+      const c3 = cf.slice(1);
+      if(n.tipoOperacao==='Saída'){ if(IND_REMESSA3.includes(c3)) rem += v; else if(IND_RETORNO3.includes(c3)) ter += v; }
+      else { if(IND_RETORNO3.includes(c3)) ret += v; else if(IND_REMESSA3.includes(c3)) ter += v; }
+    }
+    if(!(soma>0) || !(rem+ret+ter>0)) return r;
+    const tot = Number(n.valor)||0, f = tot / soma;
+    r.remessa = round2(rem*f); r.retorno = round2(ret*f); r.terceiros = round2(ter*f);
+    r.restante = Math.max(0, round2(tot - r.remessa - r.retorno - r.terceiros));
+    if(r.restante < 0.01) r.restante = 0;
+    return r;
+  }
+  function nfContaRemessaInd(clientId){ return nfContaPorPadroes(clientId, [/^remessa para industrializa/i, /remessa.*industrializa/i], ['1'], 'Devedora'); }
+  function nfContaEstoqueBase(clientId){ return nfContaPorPadroes(clientId, [/^mercadorias para revenda/i, /^mat[ée]rias-primas/i, /^produtos acabados/i, /^materiais de embalagem/i], ['1'], 'Devedora'); }
+  // Cria "Remessa para Industrialização" no grupo Estoques (ao lado de Mercadorias/Matérias-Primas). Id fixo: nunca duplica.
+  async function nfCriarContaRemessaInd(clientId){
+    const ja = nfContaRemessaInd(clientId); if(ja) return ja;
+    const irma = nfContaEstoqueBase(clientId); if(!irma) return null;
+    const partes = String(irma.codigo).split('.'); if(partes.length<2) return null;
+    const largura = partes[partes.length-1].length; partes.pop();
+    const pai = partes.join('.');
+    let max = 0;
+    state.planoContas.filter(c=>c.clientId===clientId && String(c.codigo).startsWith(pai+'.')).forEach(c=>{ const resto = String(c.codigo).slice(pai.length+1); if(/^\d+$/.test(resto)) max = Math.max(max, parseInt(resto,10)); });
+    const conta = { id:'remessa_ind_'+clientId, clientId, codigo: pai+'.'+String(max+1).padStart(largura,'0'), nome:'Remessa para Industrialização',
+      tipo:'Analítica', natureza: irma.natureza || 'Devedora', contaSuperior: irma.contaSuperior || pai, origemAutomatica:true };
+    if(irma.modelo) conta.modelo = irma.modelo;
+    await Store.set('planocontas:'+conta.id, JSON.stringify(conta), true);
+    if(!state.planoContas.some(c=>c.id===conta.id)) state.planoContas.push(conta);
+    return conta;
+  }
+  async function garantirContaRemessaInd(){
+    for(const cli of (state.clients||[])){
+      if(!state.planoContas.some(c=>c.clientId===cli.id)) continue;
+      try{ await nfCriarContaRemessaInd(cli.id); }catch(e){}
+    }
+  }
   function nfContasDaOperacao(clientId, n){
     const op = n.tipoOperacao;
     const clientes = nfContaPorPadroes(clientId, [/^clientes/i, /contas? a receber/i, /duplicatas a receber/i], ['1'], 'Devedora');
@@ -18804,6 +18859,7 @@
   }
   async function contabilizarNotas(clientIds, opts){
     opts = opts || {};
+    try{ await carregarXmlsNotas(); }catch(e){}   // precisa dos XMLs para reconhecer os CFOPs de industrialização
     const res = { criados:0, atualizados:0, removidos:0, mantidosManual:0, contasCriadas:0, semConta:{}, semPlano:[], notas:0 };
     let planoMudou = false;
     const ids = (clientIds && clientIds.length) ? clientIds : Array.from(new Set(state.notasFiscais.map(n=>n.clientId)));
@@ -18817,32 +18873,55 @@
         vivas[n.id] = n;
       });
       const existentes = {};
-      state.lancamentosContabeis.filter(l=>l.clientId===clientId && l.origemNota).forEach(l=>{ existentes[l.origemNota] = l; });
+      state.lancamentosContabeis.filter(l=>l.clientId===clientId && l.origemNota).forEach(l=>{ existentes[l.id] = l; });
+      const gerados = new Set(), mantem = new Set();
       for(const nid of Object.keys(vivas)){
         const n = vivas[nid];
         res.notas++;
-        let c = nfContasDaOperacao(clientId, n);
-        if(n.tipoOperacao===NF_DEV_VENDA && !c.deb){ try{ if(await nfCriarContaDevolucao(clientId)){ planoMudou = true; res.contasCriadas++; c = nfContasDaOperacao(clientId, n); } }catch(e){ console.error(e); } }
-        if(!c.deb || !c.cred){ (res.semConta[clientId] = res.semConta[clientId] || new Set()); c.faltam.forEach(f=>res.semConta[clientId].add(f)); continue; }
-        let contaDeb = c.deb, contaCred = c.cred;
-        const antes = state.planoContas.length;
-        if(n.tipoOperacao==='Entrada' || n.tipoOperacao===NF_DEV_VENDA){ const pc = await nfContaDaPessoa(clientId, n, c.cred); if(pc) contaCred = pc; }
-        else { const pc = await nfContaDaPessoa(clientId, n, c.deb); if(pc) contaDeb = pc; }
-        if(state.planoContas.length > antes){ res.contasCriadas++; planoMudou = true; }
-        const novo = { id:'nf-'+nid, clientId, data:String(n.dataEmissao).slice(0,10), valor: Math.round((Number(n.valor)||0)*100)/100,
-          contaDebito:contaDeb.id, contaCredito:contaCred.id, historico: nfHistoricoContabil(n) + ' (lançamento automático da nota fiscal)',
-          origemAutomatica:true, origemNota:nid };
-        const ex = existentes[nid];
-        if(!ex){ escrever.push(novo); res.criados++; continue; }
-        if(opts.apenasNovos){ res.jaLancadas = (res.jaLancadas||0)+1; continue; }
-        if(ex.editadoManual){ res.mantidosManual++; continue; }
-        if(ex.data!==novo.data || Number(ex.valor)!==novo.valor || ex.contaDebito!==novo.contaDebito || ex.contaCredito!==novo.contaCredito || ex.historico!==novo.historico){
-          escrever.push(Object.assign({}, ex, novo)); res.atualizados++;
+        const ind = nfIndPartes(n);
+        if(ind.terceiros>0) res.terceiros = (res.terceiros||0) + 1;
+        const lista = [];
+        if(ind.restante > 0){
+          let c = nfContasDaOperacao(clientId, n);
+          if(n.tipoOperacao===NF_DEV_VENDA && !c.deb){ try{ if(await nfCriarContaDevolucao(clientId)){ planoMudou = true; res.contasCriadas++; c = nfContasDaOperacao(clientId, n); } }catch(e){ console.error(e); } }
+          if(!c.deb || !c.cred){ (res.semConta[clientId] = res.semConta[clientId] || new Set()); c.faltam.forEach(f=>res.semConta[clientId].add(f)); mantem.add(nid); }
+          else {
+            let contaDeb = c.deb, contaCred = c.cred;
+            const antes = state.planoContas.length;
+            if(n.tipoOperacao==='Entrada' || n.tipoOperacao===NF_DEV_VENDA){ const pc = await nfContaDaPessoa(clientId, n, c.cred); if(pc) contaCred = pc; }
+            else { const pc = await nfContaDaPessoa(clientId, n, c.deb); if(pc) contaDeb = pc; }
+            if(state.planoContas.length > antes){ res.contasCriadas++; planoMudou = true; }
+            lista.push({ id:'nf-'+nid, valor: (ind.restante === round2(Number(n.valor)||0)) ? (Math.round((Number(n.valor)||0)*100)/100) : ind.restante, deb:contaDeb, cred:contaCred, hist: nfHistoricoContabil(n) });
+          }
+        }
+        if(ind.remessa>0 || ind.retorno>0){
+          let rem = nfContaRemessaInd(clientId);
+          if(!rem){ try{ rem = await nfCriarContaRemessaInd(clientId); if(rem){ planoMudou = true; res.contasCriadas++; } }catch(e){ console.error(e); } }
+          const est = nfContaEstoqueBase(clientId);
+          if(!rem || !est){ (res.semConta[clientId] = res.semConta[clientId] || new Set()); if(!rem) res.semConta[clientId].add('Remessa para Industrialização (Estoques)'); if(!est) res.semConta[clientId].add('Mercadorias para Revenda / Matérias-Primas'); mantem.add(nid); }
+          else {
+            const num = (n.numero||'S/N') + (n.serie ? '/' + n.serie : ''), tp = (n.tipo||'Nota fiscal').replace(/\s*\(.*\)/,'');
+            if(ind.remessa>0) lista.push({ id:'nf-'+nid+'-ind', valor:ind.remessa, deb:rem, cred:est, hist:'Remessa para industrialização conf. '+tp+' nº '+num+(n.destNome?' — '+nomeProprio(n.destNome):'') });
+            if(ind.retorno>0) lista.push({ id:'nf-'+nid+'-ret', valor:ind.retorno, deb:est, cred:rem, hist:'Retorno de mercadoria remetida para industrialização conf. '+tp+' nº '+num+(n.emitNome?' — '+nomeProprio(n.emitNome):'') });
+          }
+        }
+        for(const it of lista){
+          gerados.add(it.id);
+          const novo = { id:it.id, clientId, data:String(n.dataEmissao).slice(0,10), valor: it.valor,
+            contaDebito:it.deb.id, contaCredito:it.cred.id, historico: it.hist + ' (lançamento automático da nota fiscal)',
+            origemAutomatica:true, origemNota:nid };
+          const ex = existentes[it.id];
+          if(!ex){ escrever.push(novo); res.criados++; continue; }
+          if(opts.apenasNovos){ res.jaLancadas = (res.jaLancadas||0)+1; continue; }
+          if(ex.editadoManual){ res.mantidosManual++; continue; }
+          if(ex.data!==novo.data || Number(ex.valor)!==novo.valor || ex.contaDebito!==novo.contaDebito || ex.contaCredito!==novo.contaCredito || ex.historico!==novo.historico){
+            escrever.push(Object.assign({}, ex, novo)); res.atualizados++;
+          }
         }
       }
-      if(!opts.apenasNovos) Object.keys(existentes).forEach(nid=>{
-        if(vivas[nid]) return;
-        const ex = existentes[nid];
+      if(!opts.apenasNovos) Object.keys(existentes).forEach(id=>{
+        const ex = existentes[id];
+        if(gerados.has(id) || mantem.has(ex.origemNota)) return;
         if(ex.editadoManual){ res.mantidosManual++; return; }
         apagar.push(ex.id); res.removidos++;
       });
@@ -18862,6 +18941,7 @@
     if(res.removidos) p.push(res.removidos + ' removido(s) (nota cancelada/excluída)');
     if(res.mantidosManual) p.push(res.mantidosManual + ' editado(s) à mão mantido(s)');
     if(res.jaLancadas) p.push(res.jaLancadas + ' nota(s) já estavam lançadas e foram mantidas');
+    if(res.terceiros) p.push(res.terceiros + ' nota(s) de industrialização de terceiros (sem lançamento)');
     if(!res.criados && !res.atualizados && !res.removidos && !res.contasCriadas) p.unshift('nada novo para lançar — tudo já estava lançado');
     let txt = p.join(' · ');
     const falt = Object.keys(res.semConta).map(cid=>clientName(cid) + ': falta conta ' + res.semConta[cid].join(', '));
@@ -21762,6 +21842,7 @@
                 <option value="">— Selecione —</option>
                 ${state.clients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
               </select>
+              <div class="form-hint" style="margin:6px 0 0;">Importando vários arquivos de uma vez (ou um .zip)? Escolha o cliente <b>antes</b> de selecionar os arquivos: só entram as notas dessa empresa; as de outras empresas são ignoradas. Deixe em "Selecione" para o sistema identificar a empresa pelo CNPJ de cada XML.</div>
             </div>
             <div class="form-row">
               <div class="field"><label>Tipo de operação</label><select id="nfTipoOperacao">${NF_TIPO_OPERACAO.map(t=>`<option value="${t}">${t}</option>`).join('')}</select></div>
@@ -26840,7 +26921,9 @@
 
         // Múltiplos arquivos: importação em lote — apenas XML pode ser processado automaticamente;
         // outros formatos são ignorados aqui e precisam ser cadastrados individualmente.
-        showMsg('Importando ' + files.length + ' arquivo(s)...', 'info');
+        showMsg('Importando ' + files.length + ' arquivo(s)' + (((document.getElementById('nfCliente')||{}).value) ? ' somente de ' + clientName(document.getElementById('nfCliente').value) : '') + '...', 'info');
+        const clienteFiltro = (document.getElementById('nfCliente')||{}).value || '';
+        let outraEmpresa = 0;
         let ok = 0, skipped = 0, failed = 0, naoXml = 0, duplicadas = 0, eventosOk = 0, eventosPend = 0, canceladasImp = 0, reativadas = 0, devolImp = 0;
         const skippedNames = [];
         const chavesNesteLote = new Set();
@@ -26866,6 +26949,7 @@
           }
           const m = matchClientAndOperacao(result);
           if(!m.client){ skipped++; skippedNames.push(file.name); continue; }
+          if(clienteFiltro && m.client.id!==clienteFiltro){ outraEmpresa++; continue; }
           const chave = nfIdentidadeChave({ clientId:m.client.id, numero:result.numero, serie:result.serie, emitDoc:result.emitDoc, chaveAcesso:result.chaveAcesso });
           if(chavesNesteLote.has(chave)){ duplicadas++; continue; }
           const jaNota = notaFiscalExistente(m.client.id, result.numero, result.serie, result.emitDoc, result.chaveAcesso);
@@ -26921,6 +27005,7 @@
         if(eventosOk || reativadas) parts.push((eventosOk + reativadas) + ' nota(s) marcada(s) como Cancelada (evento/XML de cancelamento) e retirada(s) da contabilidade');
         if(eventosPend) parts.push(eventosPend + ' evento(s) de cancelamento de nota que ainda não está no sistema (guardado(s): ao importar o XML da nota, ela entra como Cancelada)');
         if(duplicadas) parts.push(duplicadas + ' já existiam no sistema (mesma chave de acesso, ou mesmo número/série/emitente) e foram ignoradas');
+        if(outraEmpresa) parts.push(outraEmpresa + ' nota(s) de outra empresa (diferente de ' + clientName(clienteFiltro) + ') ignorada(s)');
         if(skipped) parts.push(skipped + ' sem cliente identificado no Cadastro (' + skippedNames.join(', ') + ')');
         if(naoXml) parts.push(naoXml + ' arquivo(s) em outro formato (cadastre-os individualmente, um de cada vez)');
         if(failed) parts.push(failed + ' com erro de leitura/formato');
