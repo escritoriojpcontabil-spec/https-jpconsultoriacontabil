@@ -7311,6 +7311,18 @@
     {codigoAntigo:'6.5.4', nome:'Encargos Sociais (INSS/FGTS Patronal)', codigoNovo:'6.5.04.001.0001', contaSuperiorNovo:'6.5.04.001'},
   ];
 
+  // Históricos-modelo adicionais (o botão "Incluir históricos-modelo" grava só os que ainda não existem no catálogo).
+  const HISTORICOS_MODELO = [
+    'Pelo pagamento de aluguel do mês','Pelo pagamento de energia elétrica','Pelo pagamento de água e esgoto','Pelo pagamento de telefone e internet',
+    'Pelo pagamento de honorários contábeis','Pelo pagamento de pró-labore','Pelo pagamento de distribuição de lucros','Pelo pagamento de adiantamento de salários',
+    'Pelo pagamento de FGTS','Pelo pagamento de INSS (GPS/DARF)','Pelo pagamento de DAS — Simples Nacional','Pelo pagamento de ICMS','Pelo pagamento de ISS',
+    'Pelo pagamento de IRPJ e CSLL','Pelo pagamento de PIS e COFINS','Pelo pagamento de IPTU e taxas municipais','Pelo pagamento de seguros',
+    'Pelo pagamento de tarifas bancárias','Pelo pagamento de juros e multas','Pelo pagamento de empréstimos e financiamentos','Pelo pagamento de parcelamento de tributos',
+    'Pela compra de mercadorias para revenda','Pela compra de material de uso e consumo','Pela compra de imobilizado','Pela venda de mercadorias à vista','Pela venda de mercadorias a prazo',
+    'Pela prestação de serviços','Pelo recebimento de duplicatas','Pelo recebimento de rendimentos de aplicação financeira','Pela devolução de vendas','Pela devolução de compras',
+    'Pela apropriação da depreciação do mês','Pela provisão de 13º salário','Pela provisão de férias e encargos','Pela baixa de bens do imobilizado','Pelo aporte de capital dos sócios',
+    'Pelo estorno do lançamento nº','Pela regularização/reclassificação contábil','Pelo encerramento das contas de resultado','Pelo saldo inicial do exercício'
+  ];
   const HISTORICOS_PADRAO = [
     {codigo:'001', descricao:'Pelo pagamento a fornecedores'},
     {codigo:'002', descricao:'Pelo recebimento de clientes'},
@@ -18103,7 +18115,7 @@
     return `
       <div class="panel-head">
         <h3>Histórico Contábil — padrão único</h3>
-        <button type="button" class="btn-add" id="novoHistoricoBtn">+ Novo histórico</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" class="btn-sm" id="incluirHistoricosModeloBtn">Incluir históricos-modelo</button><button type="button" class="btn-add" id="novoHistoricoBtn">+ Novo histórico</button></div>
       </div>
       <div class="form-hint" style="margin:-4px 0 14px;">Um só catálogo de descrições padronizadas, <b>vinculado a todas as empresas</b>: o que for criado, editado ou excluído aqui vale para todas, nos lançamentos contábeis e nas integrações automáticas.</div>
       ${!historicos.length ? `
@@ -23494,7 +23506,8 @@
     else if(state.contabilTab==='ofx') tabContent = ofxImportPanelHtml();
     else if(state.contabilTab==='relatorios') tabContent = relatoriosContabeisPanelHtml();
     // A contabilidade é sempre de UMA empresa: sem empresa marcada (ou com "Todos"), não mostra nada.
-    if(!state.contabilEmpresaAtiva) tabContent = `<div class="empty" style="padding:28px 16px;"><b>Marque uma empresa</b> no painel "Selecionar cliente", acima, para ver a contabilidade dela.<br><span class="form-hint">A contabilidade (lançamentos, plano de contas, balancete…) é feita empresa por empresa — por isso não é exibida com "Todos os clientes" marcado.</span></div>`;
+    // O catálogo de Histórico Contábil é único para todas as empresas: abre sem precisar marcar empresa.
+    if(!state.contabilEmpresaAtiva && state.contabilTab!=='historico') tabContent = `<div class="empty" style="padding:28px 16px;"><b>Marque uma empresa</b> no painel "Selecionar cliente", acima, para ver a contabilidade dela.<br><span class="form-hint">A contabilidade (lançamentos, plano de contas, balancete…) é feita empresa por empresa — por isso não é exibida com "Todos os clientes" marcado.</span></div>`;
     return `
       <div class="panel">
         <div class="panel-head"><h3>Departamento Contábil — Escrituração</h3></div>
@@ -29912,6 +29925,18 @@
     // Histórico Contábil
     const novoHistoricoBtn = document.getElementById('novoHistoricoBtn');
     if(novoHistoricoBtn) novoHistoricoBtn.onclick = ()=>{ state.historicoModalData = { clientId: HIST_PADRAO_CLI, codigo: proximoCodigoHistorico(HIST_PADRAO_CLI) }; state.modal='historico'; render(); };
+    const incModelo = document.getElementById('incluirHistoricosModeloBtn');
+    if(incModelo) incModelo.onclick = async ()=>{
+      const norm = t=>String(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+      const jaTem = new Set(historicosPadrao().map(h=>norm(h.descricao)));
+      const novos = HISTORICOS_MODELO.filter(d=>!jaTem.has(norm(d)));
+      if(!novos.length){ alert('Todos os históricos-modelo já estão no catálogo.'); return; }
+      if(!confirm('Incluir '+novos.length+' históricos-modelo no catálogo (válidos para todas as empresas)? Os que já existem não são repetidos e nada é alterado nos lançamentos.')) return;
+      incModelo.disabled = true; incModelo.textContent = 'Incluindo…';
+      let n = parseInt(String(proximoCodigoHistorico(HIST_PADRAO_CLI)).replace(/\D/g,''),10) || 1;
+      for(const d of novos){ const hh = { id: uid(), clientId: HIST_PADRAO_CLI, codigo: String(n++).padStart(3,'0'), descricao: d }; await Store.set('historicos:'+hh.id, JSON.stringify(hh), true); }
+      await loadHistoricos(); render();
+    };
     const htCancel = document.getElementById('htCancel');
     if(htCancel) htCancel.onclick = ()=>{ state.modal=null; state.historicoModalData=null; render(); };
     const historicoForm = document.getElementById('historicoForm');
