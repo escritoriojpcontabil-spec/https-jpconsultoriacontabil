@@ -18749,15 +18749,16 @@
   // Saída com CFOP 5901/6901/5924/6924 (a empresa manda insumos para ser industrializado): D Remessa para Industrialização / C Estoque.
   // Entrada com CFOP 5902/6902/1902/2902/x925 (volta a mercadoria remetida): D Estoque / C Remessa para Industrialização.
   // Notas de industrialização de TERCEIROS (Entrada x901/x924 ou Saída x902/x925 — a empresa é a industrializadora) não são patrimônio dela: sem lançamento.
-  const IND_REMESSA3 = ['901','924'], IND_RETORNO3 = ['902','903','925'];
+  const IND_REMESSA3 = ['901'], IND_RETORNO3 = ['902','903','925'];
+  // Entrada x924 = fornecedor remeteu, POR CONTA E ORDEM da empresa (adquirente), mercadoria para industrialização: D Remessa para Industrialização / C Fornecedores.
   function nfIndPartes(n){
-    const r = { remessa:0, retorno:0, terceiros:0, restante: round2(Number(n.valor)||0) };
+    const r = { remessa:0, retorno:0, terceiros:0, remessaForn:0, restante: round2(Number(n.valor)||0) };
     if(n.tipoOperacao!=='Saída' && n.tipoOperacao!=='Entrada') return r;
     const xml = n.xmlOriginal || NF_XML.get(n.id) || '';
     if(!xml || !/<det[\s>]/i.test(xml)) return r;
     let doc; try{ doc = new DOMParser().parseFromString(xml, 'text/xml'); }catch(e){ return r; }
     const dets = doc.getElementsByTagName('det');
-    let soma = 0, rem = 0, ret = 0, ter = 0;
+    let soma = 0, rem = 0, ret = 0, ter = 0, remF = 0;
     for(let i=0;i<dets.length;i++){
       const prod = dets[i].getElementsByTagName('prod')[0]; if(!prod) continue;
       const cf = String(getTagText(prod,'CFOP')||'').replace(/\D/g,''); if(cf.length!==4) continue;
@@ -18766,23 +18767,25 @@
       soma += v;
       const c3 = cf.slice(1);
       if(n.tipoOperacao==='Saída'){ if(IND_REMESSA3.includes(c3)) rem += v; else if(IND_RETORNO3.includes(c3)) ter += v; }
-      else { if(IND_RETORNO3.includes(c3)) ret += v; else if(IND_REMESSA3.includes(c3)) ter += v; }
+      else { if(IND_RETORNO3.includes(c3)) ret += v; else if(c3==='924') remF += v; else if(IND_REMESSA3.includes(c3)) ter += v; }
     }
-    if(!(soma>0) || !(rem+ret+ter>0)){
+    if(!(soma>0) || !(rem+ret+ter+remF>0)){
       // Sem CFOP de industrialização nos itens: reconhece pela "natureza da operação" do XML (ex.: "REMESSA PARA INDUSTRIALIZACAO").
       const nat = String(getTagText(doc,'natOp')||'');
       const tot0 = Number(n.valor)||0;
-      if(/industrializ/i.test(nat) && tot0>0){
+      if(/indust/i.test(nat) && tot0>0){   // pega "INDUSTRIALIZAÇÃO" e abreviações como "P/INDUST"
         const ehRet = /retorno|devolu/i.test(nat), ehRem = /remessa|envio/i.test(nat);
         const saida = n.tipoOperacao==='Saída';
-        if(ehRem && !ehRet){ if(saida) r.remessa = round2(tot0); else r.terceiros = round2(tot0); r.restante = 0; }
+        const porContaAdq = /adquirente|conta e ordem|conta.{0,6}ordem/i.test(nat);
+        if(ehRem && !ehRet && !saida && porContaAdq){ r.remessaForn = round2(tot0); r.restante = 0; }
+        else if(ehRem && !ehRet){ if(saida) r.remessa = round2(tot0); else r.terceiros = round2(tot0); r.restante = 0; }
         else if(ehRet){ if(saida) r.terceiros = round2(tot0); else r.retorno = round2(tot0); r.restante = 0; }
       }
       return r;
     }
     const tot = Number(n.valor)||0, f = tot / soma;
-    r.remessa = round2(rem*f); r.retorno = round2(ret*f); r.terceiros = round2(ter*f);
-    r.restante = Math.max(0, round2(tot - r.remessa - r.retorno - r.terceiros));
+    r.remessa = round2(rem*f); r.retorno = round2(ret*f); r.terceiros = round2(ter*f); r.remessaForn = round2(remF*f);
+    r.restante = Math.max(0, round2(tot - r.remessa - r.retorno - r.terceiros - r.remessaForn));
     if(r.restante < 0.01) r.restante = 0;
     return r;
   }
@@ -18891,7 +18894,7 @@
         res.notas++;
         const ind = nfIndPartes(n);
         if(ind.terceiros>0) res.terceiros = (res.terceiros||0) + 1;
-        if(ind.remessa>0 || ind.retorno>0) res.industrializacao = (res.industrializacao||0) + 1;
+        if(ind.remessa>0 || ind.retorno>0 || ind.remessaForn>0) res.industrializacao = (res.industrializacao||0) + 1;
         const lista = [];
         if(ind.restante > 0){
           let c = nfContasDaOperacao(clientId, n);
@@ -18904,6 +18907,19 @@
             else { const pc = await nfContaDaPessoa(clientId, n, c.deb); if(pc) contaDeb = pc; }
             if(state.planoContas.length > antes){ res.contasCriadas++; planoMudou = true; }
             lista.push({ id:'nf-'+nid, valor: (ind.restante === round2(Number(n.valor)||0)) ? (Math.round((Number(n.valor)||0)*100)/100) : ind.restante, deb:contaDeb, cred:contaCred, hist: nfHistoricoContabil(n) });
+          }
+        }
+        if(ind.remessaForn>0){
+          let rem = nfContaRemessaInd(clientId);
+          if(!rem){ try{ rem = await nfCriarContaRemessaInd(clientId); if(rem){ planoMudou = true; res.contasCriadas++; } }catch(e){ console.error(e); } }
+          const forn = nfContaPorPadroes(clientId, [/^fornecedores nacionais/i, /^fornecedores/i], ['2'], 'Credora');
+          if(!rem || !forn){ (res.semConta[clientId] = res.semConta[clientId] || new Set()); if(!rem) res.semConta[clientId].add('Remessa para Industrialização (Estoques)'); if(!forn) res.semConta[clientId].add('Fornecedores'); mantem.add(nid); }
+          else {
+            let contaForn = forn; const antes = state.planoContas.length;
+            const pc = await nfContaDaPessoa(clientId, n, forn); if(pc) contaForn = pc;
+            if(state.planoContas.length > antes){ res.contasCriadas++; planoMudou = true; }
+            const num = (n.numero||'S/N') + (n.serie ? '/' + n.serie : ''), tp = (n.tipo||'Nota fiscal').replace(/\s*\(.*\)/,'');
+            lista.push({ id:'nf-'+nid+'-ind', valor:ind.remessaForn, deb:rem, cred:contaForn, hist:'Remessa para industrialização por conta e ordem do adquirente conf. '+tp+' nº '+num+(n.emitNome?' — '+nomeProprio(n.emitNome):'') });
           }
         }
         if(ind.remessa>0 || ind.retorno>0){
