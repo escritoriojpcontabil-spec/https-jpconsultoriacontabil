@@ -10981,13 +10981,27 @@
       state.historicos.filter(h=>h.clientId && h.clientId!==HIST_PADRAO_CLI).forEach(h=>{ const k = String(h.codigo||'').trim(); if(k && !porCod.has(k)) porCod.set(k, h.descricao); });
       HISTORICOS_PADRAO.forEach(h=>{ if(!porCod.has(h.codigo)) porCod.set(h.codigo, h.descricao); });
       for(const [codigo, descricao] of porCod){
-        const hh = { id: uid(), clientId: HIST_PADRAO_CLI, codigo, descricao };
+        const hh = { id: 'padrao_'+codigo, clientId: HIST_PADRAO_CLI, codigo, descricao }; // id fixo: gravar duas vezes sobrescreve, não duplica
         await Store.set('historicos:'+hh.id, JSON.stringify(hh), true); state.historicos.push(hh);
       }
       await Store.set('historicos_unico_v1', '1', true);
     }catch(e){} finally { _histMigrando = false; }
   }
-  async function loadHistoricos(){
+  // Carregamentos simultâneos (boot + telas) criavam o catálogo em dobro; agora entram em fila, um por vez.
+  let _histFila = Promise.resolve();
+  function loadHistoricos(){ const p = _histFila.then(()=>loadHistoricosImpl()); _histFila = p.catch(()=>{}); return p; }
+  // Remove do catálogo único os históricos repetidos (mesmo código), mantendo um só.
+  async function limparHistoricosRepetidos(){
+    const por = new Map(), extras = [];
+    state.historicos.filter(h=>h.clientId===HIST_PADRAO_CLI).sort((a,b)=>(String(b.id).indexOf('padrao_')===0)-(String(a.id).indexOf('padrao_')===0)).forEach(h=>{
+      const k = String(h.codigo||'').trim();
+      if(por.has(k)) extras.push(h); else por.set(k, h);
+    });
+    for(let i=0;i<extras.length;i+=25) await Promise.all(extras.slice(i,i+25).map(h=>Store.delete('historicos:'+h.id, true).catch(()=>{})));
+    if(extras.length) state.historicos = state.historicos.filter(h=>!extras.some(e=>e.id===h.id));
+    return extras.length;
+  }
+  async function loadHistoricosImpl(){
     state.historicos = [];
     try{
       const keys = await Store.list('historicos:', true);
@@ -11021,6 +11035,7 @@
       }
     }catch(e){}
     await migrarHistoricoUnico();
+    try{ await limparHistoricosRepetidos(); }catch(e){}
     state.historicos.sort((a,b)=> (a.codigo||'').localeCompare(b.codigo||''));
   }
   async function saveHistoricoItem(h){
@@ -29752,7 +29767,7 @@
         const clientId = HIST_PADRAO_CLI;
         for(const h of HISTORICOS_PADRAO){
           if(state.historicos.some(x=>x.clientId===clientId && x.codigo===h.codigo)) continue;
-          const hh = Object.assign({id: uid(), clientId}, h);
+          const hh = Object.assign({id: 'padrao_'+h.codigo, clientId}, h);
           await Store.set('historicos:'+hh.id, JSON.stringify(hh), true);
         }
         await loadHistoricos();
@@ -29934,7 +29949,7 @@
       if(!confirm('Incluir '+novos.length+' históricos-modelo no catálogo (válidos para todas as empresas)? Os que já existem não são repetidos e nada é alterado nos lançamentos.')) return;
       incModelo.disabled = true; incModelo.textContent = 'Incluindo…';
       let n = parseInt(String(proximoCodigoHistorico(HIST_PADRAO_CLI)).replace(/\D/g,''),10) || 1;
-      for(const d of novos){ const hh = { id: uid(), clientId: HIST_PADRAO_CLI, codigo: String(n++).padStart(3,'0'), descricao: d }; await Store.set('historicos:'+hh.id, JSON.stringify(hh), true); }
+      for(const d of novos){ const cod = String(n++).padStart(3,'0'); const hh = { id: 'padrao_'+cod, clientId: HIST_PADRAO_CLI, codigo: cod, descricao: d }; await Store.set('historicos:'+hh.id, JSON.stringify(hh), true); }
       await loadHistoricos(); render();
     };
     const htCancel = document.getElementById('htCancel');
